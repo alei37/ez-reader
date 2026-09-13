@@ -26,6 +26,7 @@ export class ObsidianAnnotationStore implements AnnotationStore {
     this.cache = {
       version: 1,
       settings,
+      library: raw?.library ?? [],
       reading: raw?.reading ?? [],
       bookmarks: raw?.bookmarks ?? [],
       excerpts: raw?.excerpts ?? []
@@ -36,6 +37,25 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   async save(snapshot: AnnotationSnapshot): Promise<void> {
     this.cache = snapshot;
     await this.plugin.saveData(snapshot as unknown as Record<string, unknown>);
+  }
+
+  async listLibrary(): Promise<ReadonlyArray<BookId>> {
+    const snapshot = await this.load();
+    return snapshot.library;
+  }
+
+  async addToLibrary(bookId: BookId): Promise<void> {
+    const snapshot = await this.load();
+    if (snapshot.library.includes(bookId)) return;
+    await this.save({ ...snapshot, library: [...snapshot.library, bookId] });
+  }
+
+  async removeFromLibrary(bookId: BookId): Promise<void> {
+    const snapshot = await this.load();
+    await this.save({
+      ...snapshot,
+      library: snapshot.library.filter((id) => id !== bookId)
+    });
   }
 
   async listReading(): Promise<ReadonlyArray<ReadingState>> {

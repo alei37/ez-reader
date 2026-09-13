@@ -58,6 +58,14 @@ export interface Book {
   readonly locator: BookLocator;
   readonly metadata: BookMetadata | null;
   readonly sourceModifiedAt: number;
+  /**
+   * When the user explicitly added this book to their personal library.
+   * `null` means the file was discovered but the user has not opted in to
+   * tracking it yet. Only books with a non-null `addedToLibraryAt` show up
+   * on the shelf by default; the rest are candidates surfaced through the
+   * "Add to library" flow.
+   */
+  readonly addedToLibraryAt: number | null;
 }
 
 /** Cover image bytes cached alongside the book. */

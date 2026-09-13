@@ -28,6 +28,7 @@ class InMemoryAnnotationStore implements AnnotationStore {
     this.snapshot = {
       version: 1,
       settings: initial.settings ?? defaultSettings,
+      library: initial.library ?? [],
       reading: initial.reading ?? [],
       bookmarks: initial.bookmarks ?? [],
       excerpts: initial.excerpts ?? []
@@ -39,6 +40,16 @@ class InMemoryAnnotationStore implements AnnotationStore {
   }
   async save(snapshot: AnnotationSnapshot): Promise<void> {
     this.snapshot = snapshot;
+  }
+  async listLibrary(): Promise<ReadonlyArray<string>> {
+    return this.snapshot.library;
+  }
+  async addToLibrary(bookId: string): Promise<void> {
+    if (this.snapshot.library.includes(bookId)) return;
+    this.snapshot = { ...this.snapshot, library: [...this.snapshot.library, bookId] };
+  }
+  async removeFromLibrary(bookId: string): Promise<void> {
+    this.snapshot = { ...this.snapshot, library: this.snapshot.library.filter((id) => id !== bookId) };
   }
   async listReading(): Promise<ReadonlyArray<ReadingState>> {
     return this.snapshot.reading;

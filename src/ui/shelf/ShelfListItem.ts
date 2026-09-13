@@ -3,6 +3,7 @@ import { progressFraction } from "../../core/entities/ReadingState";
 
 export interface ShelfListHandlers {
   onOpen: (entry: LibraryEntry) => void;
+  onContextMenu: (entry: LibraryEntry, event: MouseEvent) => void;
 }
 
 export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers, coverResourcePath?: string): HTMLElement => {
@@ -42,6 +43,10 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
   });
 
   row.addEventListener("click", () => handlers.onOpen(entry));
+  row.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    handlers.onContextMenu(entry, event);
+  });
   return row;
 };
 

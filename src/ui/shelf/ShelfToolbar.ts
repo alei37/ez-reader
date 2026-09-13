@@ -7,6 +7,7 @@ export interface ShelfToolbarHandlers {
   onFilterOpen: () => void;
   onViewModeChange: (mode: ViewMode) => void;
   onSortChange: (sort: SortCriterion) => void;
+  onAddToLibrary: () => void;
 }
 
 export interface ShelfToolbarState {
@@ -15,6 +16,7 @@ export interface ShelfToolbarState {
   readonly sort: SortCriterion;
   readonly totalCount: number;
   readonly visibleCount: number;
+  readonly availableCount: number;
 }
 
 const SORT_LABELS: Record<SortCriterion, string> = {
@@ -53,6 +55,13 @@ export class ShelfToolbar {
     this.filterBadge.addClass("ez-reader__shelf-toolbar__filter");
     this.filterBadge.addEventListener("click", () => this.handlers.onFilterOpen());
 
+    const addButton = this.root.createEl("button", {
+      text: "+ 加入",
+      attr: { type: "button", title: "从 Vault 选书加入个人图书馆" }
+    });
+    addButton.addClass("ez-reader__shelf-toolbar__add");
+    addButton.addEventListener("click", () => this.handlers.onAddToLibrary());
+
     this.sortSelect = this.root.createEl("select");
     this.sortSelect.addClass("ez-reader__shelf-toolbar__sort");
     for (const [value, label] of Object.entries(SORT_LABELS)) {
@@ -78,7 +87,11 @@ export class ShelfToolbar {
     this.listButton.toggleClass("is-active", state.mode === "list");
     const filterActive = countActiveFilters(state.filter) > 0;
     this.filterBadge.toggleClass("is-active", filterActive);
-    this.countLabel.setText(`${state.visibleCount} / ${state.totalCount}`);
+    if (state.availableCount > 0) {
+      this.countLabel.setText(`${state.visibleCount} / ${state.totalCount} · ${state.availableCount} 本未加入`);
+    } else {
+      this.countLabel.setText(`${state.visibleCount} / ${state.totalCount}`);
+    }
   }
 
   focus(): void {

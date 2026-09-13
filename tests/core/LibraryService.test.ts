@@ -68,6 +68,7 @@ class InMemoryAnnotationStore implements AnnotationStore {
         defaultNoteTemplate: "",
         readerOpenMode: "tab"
       },
+      library: initial.library ?? [],
       reading: initial.reading ?? [],
       bookmarks: initial.bookmarks ?? [],
       excerpts: initial.excerpts ?? []
@@ -79,6 +80,16 @@ class InMemoryAnnotationStore implements AnnotationStore {
   }
   async save(snapshot: AnnotationSnapshot): Promise<void> {
     this.snapshot = snapshot;
+  }
+  async listLibrary(): Promise<ReadonlyArray<string>> {
+    return this.snapshot.library;
+  }
+  async addToLibrary(bookId: string): Promise<void> {
+    if (this.snapshot.library.includes(bookId)) return;
+    this.snapshot = { ...this.snapshot, library: [...this.snapshot.library, bookId] };
+  }
+  async removeFromLibrary(bookId: string): Promise<void> {
+    this.snapshot = { ...this.snapshot, library: this.snapshot.library.filter((id) => id !== bookId) };
   }
   async listReading(): Promise<ReadonlyArray<ReadingState>> {
     return this.snapshot.reading;
@@ -137,6 +148,7 @@ test("LibraryService.initialize joins book locators with stored reading states",
   const service = new LibraryService(source, store);
 
   await service.initialize();
+  await service.addAllToLibrary();
 
   const entries = service.list();
   assert.equal(entries.length, 2);
@@ -153,6 +165,7 @@ test("LibraryService.list applies filter by status", async () => {
   const store = new InMemoryAnnotationStore();
   const service = new LibraryService(source, store);
   await service.initialize();
+  await service.addAllToLibrary();
 
   await service.updateReading({
     bookId: "a.epub",
@@ -177,6 +190,7 @@ test("LibraryService.list applies progress buckets", async () => {
   const store = new InMemoryAnnotationStore();
   const service = new LibraryService(source, store);
   await service.initialize();
+  await service.addAllToLibrary();
 
   await service.updateReading({
     bookId: "a.epub",
@@ -208,6 +222,7 @@ test("LibraryService.list applies recency bucket", async () => {
   const store = new InMemoryAnnotationStore();
   const service = new LibraryService(source, store);
   await service.initialize();
+  await service.addAllToLibrary();
 
   await service.updateReading({
     bookId: "a.epub",
@@ -230,6 +245,7 @@ test("LibraryService.list sorts by addedDesc by default", async () => {
   const recent = { locator: { ...makeLocator("new.epub"), modifiedAt: 2 }, metadata: makeMetadata("New") };
   const service = new LibraryService(new FakeBookSource([old, recent]), new InMemoryAnnotationStore());
   await service.initialize();
+  await service.addAllToLibrary();
 
   const entries = service.list();
   assert.equal(entries[0]?.book.locator.path, "new.epub");
@@ -241,6 +257,7 @@ test("LibraryService.subscribe fires after updateReading", async () => {
   const store = new InMemoryAnnotationStore();
   const service = new LibraryService(source, store);
   await service.initialize();
+  await service.addToLibrary("a.epub");
 
   let fires = 0;
   service.subscribe(() => {
@@ -266,10 +283,46 @@ test("LibraryService.stats reports counts per status", async () => {
   ]);
   const service = new LibraryService(source, new InMemoryAnnotationStore());
   await service.initialize();
+  await service.addAllToLibrary();
 
   const stats = service.stats();
   assert.equal(stats.total, 2);
+  assert.equal(stats.inLibrary, 2);
   assert.equal(stats.statuses.unread, 2);
+});
+
+test("LibraryService.addToLibrary and removeFromLibrary gate list()", async () => {
+  const source = new FakeBookSource([
+    { locator: makeLocator("a.epub"), metadata: makeMetadata("A") },
+    { locator: makeLocator("b.epub"), metadata: makeMetadata("B") }
+  ]);
+  const service = new LibraryService(source, new InMemoryAnnotationStore());
+  await service.initialize();
+  assert.equal(service.list().length, 0, "library starts empty until the user opts in");
+
+  await service.addToLibrary("a.epub");
+  assert.equal(service.list().length, 1);
+
+  await service.addAllToLibrary();
+  assert.equal(service.list().length, 2);
+
+  await service.removeFromLibrary("a.epub");
+  const remaining = service.list();
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0]?.book.locator.path, "b.epub");
+});
+
+test("LibraryService.list(includeUntracked) surfaces candidate books", async () => {
+  const source = new FakeBookSource([
+    { locator: makeLocator("a.epub"), metadata: makeMetadata("A") },
+    { locator: makeLocator("b.epub"), metadata: makeMetadata("B") }
+  ]);
+  const service = new LibraryService(source, new InMemoryAnnotationStore());
+  await service.initialize();
+
+  const all = service.list({}, "titleAsc", true);
+  assert.equal(all.length, 2);
+  assert.equal(service.list().length, 0);
 });
 
 test("LibraryEntry shape", () => {

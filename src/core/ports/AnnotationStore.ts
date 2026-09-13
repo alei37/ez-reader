@@ -11,6 +11,8 @@ import type { PluginSettings } from "../types/ReaderSettings";
 export interface AnnotationSnapshot {
   readonly version: 1;
   readonly settings: PluginSettings;
+  /** Book IDs the user has explicitly added to the library, in the order they were added. */
+  readonly library: ReadonlyArray<string>;
   readonly reading: ReadonlyArray<ReadingState>;
   readonly bookmarks: ReadonlyArray<Bookmark>;
   readonly excerpts: ReadonlyArray<Excerpt>;
@@ -20,6 +22,10 @@ export interface AnnotationSnapshot {
 export interface AnnotationStore {
   load(): Promise<AnnotationSnapshot>;
   save(snapshot: AnnotationSnapshot): Promise<void>;
+
+  listLibrary(): Promise<ReadonlyArray<BookId>>;
+  addToLibrary(bookId: BookId): Promise<void>;
+  removeFromLibrary(bookId: BookId): Promise<void>;
 
   listReading(): Promise<ReadonlyArray<ReadingState>>;
   upsertReading(state: ReadingState): Promise<void>;

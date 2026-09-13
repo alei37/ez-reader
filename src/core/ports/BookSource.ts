@@ -46,5 +46,6 @@ export const reifyBook = (source: BookSource, locator: BookLocator, metadata: Bo
   id: source.resolveId(locator),
   locator,
   metadata,
-  sourceModifiedAt: locator.modifiedAt
+  sourceModifiedAt: locator.modifiedAt,
+  addedToLibraryAt: null
 });

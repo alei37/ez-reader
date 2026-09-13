@@ -3,7 +3,7 @@ import { progressFraction } from "../../core/entities/ReadingState";
 
 export interface ShelfItemHandlers {
   onOpen: (entry: LibraryEntry) => void;
-  onShowInfo: (entry: LibraryEntry) => void;
+  onContextMenu: (entry: LibraryEntry, event: MouseEvent) => void;
 }
 
 export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers, coverResourcePath?: string): HTMLElement => {
@@ -46,7 +46,7 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   card.addEventListener("click", () => handlers.onOpen(entry));
   card.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    handlers.onShowInfo(entry);
+    handlers.onContextMenu(entry, event);
   });
   return card;
 };

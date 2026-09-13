@@ -54,8 +54,12 @@ export class LibraryService {
 
   /** Initial load: scan the source and join against stored reading state. */
   async initialize(): Promise<void> {
-    const [reading] = await Promise.all([this.annotations.listReading()]);
+    const [reading, library] = await Promise.all([
+      this.annotations.listReading(),
+      this.annotations.listLibrary()
+    ]);
     const readingByPath = new Map(reading.map((state) => [state.bookId, state]));
+    const librarySet = new Set(library);
 
     const formats = new Set<BookFormat>(["epub", "mobi", "azw", "azw3", "txt", "pdf"]);
     for await (const locator of this.source.scan(formats)) {
@@ -66,11 +70,13 @@ export class LibraryService {
       } catch {
         metadata = null;
       }
+      const addedToLibraryAt = librarySet.has(id) ? Date.now() : null;
       const book: Book = {
         id,
         locator,
         metadata,
-        sourceModifiedAt: locator.modifiedAt
+        sourceModifiedAt: locator.modifiedAt,
+        addedToLibraryAt
       };
       const stored = readingByPath.get(id);
       this.entries.set(id, {
@@ -86,9 +92,11 @@ export class LibraryService {
       });
     }
 
-    console.info(`[ez-reader] Library scan: discovered ${this.entries.size} book(s) in the Vault.`);
+    const inLibrary = [...this.entries.values()].filter((entry) => entry.book.addedToLibraryAt !== null).length;
+    console.info(`[ez-reader] Library scan: ${this.entries.size} book(s) discovered, ${inLibrary} in library.`);
     for (const entry of this.entries.values()) {
-      console.info(`[ez-reader]   ${entry.book.locator.format.toUpperCase().padEnd(4)} ${entry.book.locator.path}`);
+      const flag = entry.book.addedToLibraryAt !== null ? "+" : "-";
+      console.info(`[ez-reader]   [${flag}] ${entry.book.locator.format.toUpperCase().padEnd(4)} ${entry.book.locator.path}`);
     }
 
     this.sourceDisposables.push(
@@ -135,9 +143,18 @@ export class LibraryService {
     }
   }
 
-  /** Apply a filter and sort, returning the slice the shelf renders. */
-  list(filter: ShelfFilter = emptyFilter(), sort: SortCriterion = DEFAULT_SORT): ReadonlyArray<LibraryEntry> {
-    const filtered = [...this.entries.values()].filter((entry) => matches(entry, filter));
+  /** Apply a filter and sort, returning the slice the shelf renders. By default only
+   *  books the user has explicitly added to the library are returned. Pass
+   *  `includeUntracked: true` to surface discovered-but-unadded books as well. */
+  list(
+    filter: ShelfFilter = emptyFilter(),
+    sort: SortCriterion = DEFAULT_SORT,
+    includeUntracked = false
+  ): ReadonlyArray<LibraryEntry> {
+    const filtered = [...this.entries.values()].filter((entry) => {
+      if (!includeUntracked && entry.book.addedToLibraryAt === null) return false;
+      return matches(entry, filter);
+    });
     filtered.sort((a, b) => compare(a, b, sort));
     return filtered;
   }
@@ -145,6 +162,47 @@ export class LibraryService {
   /** Look up a single entry by id. */
   get(bookId: string): LibraryEntry | undefined {
     return this.entries.get(bookId);
+  }
+
+  /** Add a book to the user's library. Idempotent. */
+  async addToLibrary(bookId: string, now = Date.now()): Promise<void> {
+    const entry = this.entries.get(bookId);
+    if (!entry) return;
+    if (entry.book.addedToLibraryAt !== null) return;
+    await this.annotations.addToLibrary(bookId);
+    this.entries.set(bookId, {
+      book: { ...entry.book, addedToLibraryAt: now },
+      reading: entry.reading
+    });
+    this.emit();
+  }
+
+  /** Add every currently-discovered book to the library. Idempotent. */
+  async addAllToLibrary(now = Date.now()): Promise<number> {
+    const ids = [...this.entries.values()].filter((entry) => entry.book.addedToLibraryAt === null).map((entry) => entry.book.id);
+    for (const id of ids) await this.annotations.addToLibrary(id);
+    for (const id of ids) {
+      const entry = this.entries.get(id);
+      if (!entry) continue;
+      this.entries.set(id, {
+        book: { ...entry.book, addedToLibraryAt: now },
+        reading: entry.reading
+      });
+    }
+    this.emit();
+    return ids.length;
+  }
+
+  /** Remove a book from the library. The underlying file stays in the Vault. */
+  async removeFromLibrary(bookId: string): Promise<void> {
+    const entry = this.entries.get(bookId);
+    if (!entry || entry.book.addedToLibraryAt === null) return;
+    await this.annotations.removeFromLibrary(bookId);
+    this.entries.set(bookId, {
+      book: { ...entry.book, addedToLibraryAt: null },
+      reading: entry.reading
+    });
+    this.emit();
   }
 
   /** Aggregate stats the shelf toolbar shows (counts per status, languages, etc.). */
@@ -156,13 +214,16 @@ export class LibraryService {
       abandoned: 0
     };
     const languages = new Map<string, number>();
+    let inLibrary = 0;
     for (const entry of this.entries.values()) {
+      if (entry.book.addedToLibraryAt === null) continue;
+      inLibrary += 1;
       statuses[entry.reading.status] += 1;
       for (const lang of entry.book.metadata?.languages ?? []) {
         languages.set(lang, (languages.get(lang) ?? 0) + 1);
       }
     }
-    return { total: this.entries.size, statuses, languages };
+    return { total: this.entries.size, inLibrary, statuses, languages };
   }
 
   /** Subscribe to data changes. */
@@ -185,6 +246,7 @@ export class LibraryService {
 
 export interface LibraryStats {
   readonly total: number;
+  readonly inLibrary: number;
   readonly statuses: Record<ReadingStatus, number>;
   readonly languages: ReadonlyMap<string, number>;
 }
