@@ -142,6 +142,7 @@ body::after {
   display: flex;
   flex-direction: column;
   width: 100%;
+  min-width: 0;
 }
 
 .ez-reader__shelf-list__item {
@@ -212,6 +213,7 @@ body::after {
   padding: 8px 10px;
   gap: 2px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .ez-reader__shelf-list__item {

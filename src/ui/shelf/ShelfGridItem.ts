@@ -33,11 +33,13 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   }
 
   const meta = card.createDiv({ cls: "ez-reader__shelf-grid__meta" });
-  meta.createEl("span", {
-    text: entry.book.metadata?.title ?? entry.book.locator.path,
-    cls: "ez-reader__shelf-grid__title",
-    attr: { title: entry.book.metadata?.title ?? entry.book.locator.path }
+  const titleText = entry.book.metadata?.title ?? entry.book.locator.path;
+  const titleEl = meta.createEl("span", {
+    text: titleText,
+    cls: "ez-reader__shelf-grid__title"
   });
+  titleEl.setAttribute("title", titleText);
+  titleEl.addEventListener("contextmenu", (event) => event.preventDefault());
   meta.createEl("span", {
     text: entry.book.metadata?.authors[0] ?? extractAuthorFallback(entry.book.locator.path),
     cls: "ez-reader__shelf-grid__author"
