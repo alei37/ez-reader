@@ -213,6 +213,8 @@ export default class EzReaderPlugin extends Plugin {
     if (view instanceof ReaderView) {
       view.setEntry(entry);
     }
+    // 把焦点切到 reader — 让键盘快捷键和划词立即可用
+    this.app.workspace.setActiveLeaf(leaf);
   }
 
   private async openPicker(): Promise<void> {

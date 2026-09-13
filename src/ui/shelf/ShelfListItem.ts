@@ -34,7 +34,7 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
     cls: "ez-reader__shelf-list__title"
   });
   info.createEl("span", {
-    text: entry.book.metadata?.authors.join("、") || extractAuthorFallback(entry.book.locator.path),
+    text: (entry.book.metadata?.authors ?? []).join("、") || extractAuthorFallback(entry.book.locator.path),
     cls: "ez-reader__shelf-list__author"
   });
   // Hover tooltip 同样给出路径信息, 帮用户识别未解析 metadata 的书

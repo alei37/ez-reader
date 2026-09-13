@@ -53,6 +53,11 @@ const configureWorker = (pdfjs: PdfjsModule): void => {
 };
 
 export class PdfjsBookReader implements BookReader {
+  // Cache of book path → parsed PdfDocument. Lets `extractCover` reuse
+  // the document that `open` already loaded instead of re-parsing the
+  // same PDF twice (which doubles the cost on first book open).
+  private readonly docCache = new Map<string, PdfDocument>();
+
   async open(
     book: Book,
     host: HTMLElement,
@@ -74,7 +79,16 @@ export class PdfjsBookReader implements BookReader {
     }
     console.info(`[ez-reader] PDF opened: ${book.locator.path} (${document.numPages} pages)`);
 
+    // 缓存 doc 给 extractCover 复用 — 避免同一本书被 getDocument 两次
+    this.docCache.set(book.locator.path, document);
+
     const session = new PdfjsSession(document, host, appearance);
+    // session.close 时清掉 cache, 否则切书后旧 doc 引用泄漏
+    const originalClose = session.close.bind(session);
+    session.close = async () => {
+      this.docCache.delete(book.locator.path);
+      return originalClose();
+    };
     await session.gotoPage(1);
     return session;
   }
@@ -85,10 +99,21 @@ export class PdfjsBookReader implements BookReader {
    * doesn't bloat the plugin data directory.
    */
   async extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null> {
-    const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs" as string)) as unknown as PdfjsModule;
-    configureWorker(pdfjs);
-    const bytes = new Uint8Array(await loader(book.locator.path));
-    const document = await pdfjs.getDocument({ data: bytes }).promise;
+    // 复用已经在 open() 加载过的 doc — 避免重复 IO + PDF 解析
+    let document = this.docCache.get(book.locator.path);
+    if (!document) {
+      const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs" as string)) as unknown as PdfjsModule;
+      configureWorker(pdfjs);
+      const bytes = new Uint8Array(await loader(book.locator.path));
+      try {
+        document = await pdfjs.getDocument({ data: bytes }).promise;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[ez-reader] PDF cover: load failed for ${book.locator.path}`, message);
+        return null;
+      }
+      this.docCache.set(book.locator.path, document);
+    }
     try {
       const page = await document.getPage(1);
       const baseViewport = page.getViewport({ scale: 1 });

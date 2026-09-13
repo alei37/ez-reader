@@ -33,6 +33,8 @@ export class TocPanel {
 
   setActive(id: string | null): void {
     this.activeId = id;
+    // 旧 active 一定要清掉 — 不清会导致用户跳到一个不在当前过滤列表的章节时,
+    // 上一章节仍然高亮, 视觉上没反应.
     this.refreshActiveStyles();
   }
 

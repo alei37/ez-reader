@@ -145,17 +145,20 @@ export class ShelfView extends ItemView {
     this.emptyState.createEl("h3", { text: "个人图书馆是空的" });
     if (stats.total === 0) {
       this.emptyState.createEl("p", {
-        text: "Vault 里没找到可识别的电子书文件。试着把 EPUB、PDF 或 TXT 放进 Vault。"
+        text: "Vault 里没找到可识别的电子书文件。试着把 EPUB、PDF 放进 Vault。文件需放在 Vault 内任意位置。"
       });
-    } else if (available === 0) {
+      // 没有候选时不显示"加入书籍"按钮 — modal 会空跑
+      return;
+    }
+    if (available === 0) {
       this.emptyState.createEl("p", {
         text: "所有发现的书都已加入,但筛选条件过滤掉了当前结果。"
       });
-    } else {
-      this.emptyState.createEl("p", {
-        text: `已发现 ${stats.total} 本书,但还没有加入任何一本。点击下面的按钮挑选加入。`
-      });
+      return;
     }
+    this.emptyState.createEl("p", {
+      text: `已发现 ${stats.total} 本书,但还没有加入任何一本。点击下面的按钮挑选加入。`
+    });
     const add = this.emptyState.createEl("button", { text: "+ 加入书籍", attr: { type: "button" } });
     add.addClass("mod-cta");
     add.onclick = () => this.openAddToLibrary();

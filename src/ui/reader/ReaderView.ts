@@ -464,8 +464,8 @@ export class ReaderView extends ItemView {
       }
     };
     // 用 capture: true 让我们的 handler 在 foliate 内部 keyboard handler 之前跑
-    this.containerEl.addEventListener("keydown", handler, { capture: true });
-    this.register(() => this.containerEl.removeEventListener("keydown", handler, { capture: true } as EventListenerOptions));
+    this.containerEl.addEventListener("keydown", handler, true);
+    this.register(() => this.containerEl.removeEventListener("keydown", handler, true));
   }
 
   private bindSwipeGestures(): void {
@@ -767,6 +767,10 @@ export class ReaderView extends ItemView {
   // ---- 翻页 / 跳转 ----
   private async goToNext(direction: -1 | 1): Promise<void> {
     if (!this.session) return;
+    // 翻页前清掉选区和菜单 — 否则 SelectionMenu 留在旧页面位置
+    this.selectionMenu?.hide();
+    const sel = globalThis.document.getSelection();
+    if (sel && !sel.isCollapsed) sel.removeAllRanges();
     if (direction === 1 && this.session.next) {
       await this.session.next();
     } else if (direction === -1 && this.session.previous) {
