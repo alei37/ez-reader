@@ -45,6 +45,12 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
     text: titleText,
     cls: "ez-reader__shelf-grid__title"
   });
+  // Hover tooltip: 标题 + 作者 + 出版 + 路径(在 metadata 缺失时帮助识别)
+  const tooltipParts = [titleText];
+  if (entry.book.metadata?.publisher) tooltipParts.push(entry.book.metadata.publisher);
+  if (entry.book.metadata?.published) tooltipParts.push(entry.book.metadata.published);
+  tooltipParts.push(entry.book.locator.path);
+  card.setAttribute("title", tooltipParts.join(" · "));
   titleEl.setAttribute("title", titleText);
   titleEl.addEventListener("contextmenu", (event) => event.preventDefault());
   const authorText =

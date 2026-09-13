@@ -46,6 +46,12 @@ export class LibraryService {
   private readonly entries = new Map<string, LibraryEntry>();
   private readonly listeners = new Set<() => void>();
   private readonly sourceDisposables: Disposable[] = [];
+  // Re-entrancy guard. Obsidian can fire 'added' events back-to-back
+  // during startup (one per new file it just loaded). Re-running
+  // `initialize` mid-flight overwrites entries and double-emits. We
+  // serialise on a single promise so the second caller awaits the
+  // first then no-ops if the entries are already populated.
+  private initializeInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly source: BookSource,
@@ -54,6 +60,20 @@ export class LibraryService {
 
   /** Initial load: scan the source and join against stored reading state. */
   async initialize(): Promise<void> {
+    // Re-entrancy guard: a second call while the first is mid-flight
+    // simply awaits it. Subsequent calls after a completed initial scan
+    // are a no-op (the entries map is already populated).
+    if (this.entries.size > 0 && this.initializeInFlight === null) return;
+    if (this.initializeInFlight) return this.initializeInFlight;
+    this.initializeInFlight = this.doInitialize();
+    try {
+      await this.initializeInFlight;
+    } finally {
+      this.initializeInFlight = null;
+    }
+  }
+
+  private async doInitialize(): Promise<void> {
     const [reading, library] = await Promise.all([
       this.annotations.listReading(),
       this.annotations.listLibrary()
@@ -113,10 +133,15 @@ export class LibraryService {
           this.entries.delete(id);
           this.emit();
         } else if (event.kind === "added") {
-          // For added events, re-run the scan to surface the new file plus
-          // any sibling files that Obsidian has just loaded. Refresh-on-id
-          // would miss new entries.
-          void this.initialize();
+          // For added events, we want to surface the new file. Refresh-on-id
+          // would miss sibling files Obsidian just loaded. We call refreshBook
+          // for the new path and trust the in-flight guard above to coalesce
+          // bursts of 'added' events from the startup scan.
+          if (this.entries.size === 0) {
+            void this.initialize();
+          } else {
+            void this.refreshBook(event.path);
+          }
         } else {
           // "modified" only needs to refresh the one book we already know about.
           void this.refreshBook(event.path);

@@ -28,14 +28,21 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
   }
 
   const info = row.createDiv({ cls: "ez-reader__shelf-list__info" });
+  const titleText = entry.book.metadata?.title ?? entry.book.locator.path;
   info.createEl("span", {
-    text: entry.book.metadata?.title ?? entry.book.locator.path,
+    text: titleText,
     cls: "ez-reader__shelf-list__title"
   });
   info.createEl("span", {
     text: entry.book.metadata?.authors.join("、") || extractAuthorFallback(entry.book.locator.path),
     cls: "ez-reader__shelf-list__author"
   });
+  // Hover tooltip 同样给出路径信息, 帮用户识别未解析 metadata 的书
+  const tip = [titleText];
+  if (entry.book.metadata?.publisher) tip.push(entry.book.metadata.publisher);
+  if (entry.book.metadata?.published) tip.push(entry.book.metadata.published);
+  tip.push(entry.book.locator.path);
+  row.setAttribute("title", tip.join(" · "));
 
   const fraction = progressFraction(entry.reading);
   let progressText = "—";

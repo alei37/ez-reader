@@ -157,9 +157,13 @@ export class SidebarNotesPanel {
       edit.onclick = () => this.handlers.onEdit(entry);
       const remove = actions.createEl("button", {
         text: "×",
-        attr: { type: "button", title: "删除", "aria-label": "删除" }
+        attr: { type: "button", title: "删除这条笔记", "aria-label": "删除这条笔记" }
       });
-      remove.onclick = () => this.handlers.onRemove(entry);
+      remove.onclick = () => {
+        if (globalThis.confirm("确定删除这条笔记? 原书高亮也会被移除。")) {
+          this.handlers.onRemove(entry);
+        }
+      };
     }
     this.refreshFlashStyles();
   }
