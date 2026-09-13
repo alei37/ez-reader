@@ -117,10 +117,11 @@ export class PdfjsBookReader implements BookReader {
       console.warn(`[ez-reader] PDF cover extraction failed for ${book.locator.path}`, error);
       return null;
     } finally {
-    try {
-      await document.destroy?.();
-    } catch {
-      // ignore double-destroy
+      try {
+        await document.destroy?.();
+      } catch {
+        // ignore double-destroy
+      }
     }
   }
 }
