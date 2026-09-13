@@ -80,7 +80,8 @@ export default class EzReaderPlugin extends Plugin {
       app: this.app,
       reading: this.reading,
       foliate: this.foliate,
-      pdfjs: this.pdfjs
+      pdfjs: this.pdfjs,
+      translation: this.translation
     };
   }
 

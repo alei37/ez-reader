@@ -14,7 +14,18 @@ interface FoliateViewElement extends HTMLElement {
   goTo(target: string | number): Promise<unknown>;
   goLeft(): Promise<void>;
   goRight(): Promise<void>;
+  goToFraction(fraction: number): Promise<void>;
+  getCFI(index: number, range?: Range): string;
+  addAnnotation(annotation: { value: string }, remove?: boolean): Promise<unknown>;
+  deselect(): void;
+  book?: {
+    toc?: ReadonlyArray<{ label: string; href?: string; subitems?: ReadonlyArray<unknown> }>;
+    metadata?: { title?: string; creator?: string | string[]; language?: string | string[] };
+  };
+  lastLocation?: { fraction?: number; cfi?: string; tocItem?: { label?: string } };
   addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void;
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions): void;
+  getRootNode(): ShadowRoot | Document;
 }
 
 interface FoliateModule {
@@ -22,16 +33,17 @@ interface FoliateModule {
 }
 
 /**
- * Adapter that wraps `foliate-js` and exposes it through the core
- * `BookReader` port. Each `open()` call constructs a fresh view element;
- * the host owns attaching it to the DOM.
+ * Adapter that wraps foliate-js and exposes it through the `BookReader`
+ * port. Each `open()` constructs a fresh `<foliate-view>` element; the host
+ * is responsible for attaching it to the DOM.
+ *
+ * Selection is detected on the iframe document that foliate-paginator
+ * embeds inside its shadow root. We walk through the shadow boundary to
+ * reach the live `contentDocument` and listen for `selectionchange`.
  */
 export class FoliateBookReader implements BookReader {
   async open(book: Book, host: HTMLElement, appearance: ReaderAppearance): Promise<ReaderSession> {
-    const [{ makeBook }, { Overlayer }] = await Promise.all([
-      import("foliate-js/view.js") as unknown as Promise<FoliateModule>,
-      import("foliate-js/overlayer.js") as unknown as Promise<{ Overlayer: unknown }>
-    ]);
+    const [{ makeBook }] = await Promise.all([import("foliate-js/view.js") as unknown as Promise<FoliateModule>]);
 
     const response = await fetch(book.locator.path);
     const bytes = await response.arrayBuffer();
@@ -39,34 +51,34 @@ export class FoliateBookReader implements BookReader {
       type: mimeTypeFor(book.locator.format)
     });
     const parsed = await makeBook(file);
+
     const view = document.createElement("foliate-view") as FoliateViewElement;
     view.setAttribute("data-ez-reader-flow", appearance.flow);
     host.append(view);
     await view.open(parsed);
 
-    return new FoliateSession(view, Overlayer, appearance);
+    return new FoliateSession(view);
   }
 }
 
 class FoliateSession implements ReaderSession {
   readonly element: HTMLElement;
+  private readonly view: FoliateViewElement;
+  private readonly docListeners = new Set<() => void>();
 
-  constructor(
-    private readonly view: FoliateViewElement,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    private readonly Overlayer: unknown,
-    private appearance: ReaderAppearance
-  ) {
+  constructor(view: FoliateViewElement) {
+    this.view = view;
     this.element = view;
   }
 
   async close(): Promise<void> {
+    for (const off of this.docListeners) off();
+    this.docListeners.clear();
     this.view.close();
     this.view.remove();
   }
 
   async applyAppearance(appearance: ReaderAppearance): Promise<void> {
-    this.appearance = appearance;
     this.view.setAttribute("data-ez-reader-flow", appearance.flow);
   }
 
@@ -79,8 +91,7 @@ class FoliateSession implements ReaderSession {
         await this.view.goLeft();
         return;
       case "fraction":
-        // foliate-js does not expose a public fraction API; we use a no-op
-        // stub so the contract is in place. Future work can resolve it.
+        await this.view.goToFraction(target.fraction);
         return;
       case "identifier":
         await this.view.goTo(target.value);
@@ -89,16 +100,98 @@ class FoliateSession implements ReaderSession {
   }
 
   async currentFraction(): Promise<number> {
-    return 0;
+    return this.view.lastLocation?.fraction ?? 0;
   }
 
   on<K extends keyof ReaderEventMap>(event: K, handler: (event: ReaderEventMap[K]) => void): () => void {
+    if (event === "selection-change") {
+      return this.bindSelectionChange(handler as (event: ReaderEventMap["selection-change"]) => void);
+    }
     const wrapped = ((e: Event) => handler(e as ReaderEventMap[K])) as EventListener;
     this.view.addEventListener(event, wrapped);
     return () => this.view.removeEventListener(event, wrapped);
   }
 
   async exportLocator(): Promise<string | null> {
-    return null;
+    return this.view.lastLocation?.cfi ?? null;
+  }
+
+  /** Reachable from the UI for the bookmark/excerpt flows. */
+  resolveCFI(index: number, range: Range | undefined): string {
+    return this.view.getCFI(index, range);
+  }
+
+  /** Annotation support (for the excerpt highlight). */
+  async addAnnotation(cfi: string): Promise<void> {
+    await this.view.addAnnotation({ value: cfi });
+  }
+
+  async removeAnnotation(cfi: string): Promise<void> {
+    await this.view.addAnnotation({ value: cfi }, true);
+  }
+
+  clearSelection(): void {
+    this.view.deselect();
+  }
+
+  /** Book metadata resolved after `view.open()`. */
+  describe(): {
+    title?: string;
+    authors?: string[];
+    languages?: string[];
+    toc?: ReadonlyArray<{ label: string; href?: string; subitems?: ReadonlyArray<unknown> }>;
+    chapter?: string;
+  } {
+    const meta = this.view.book?.metadata;
+    return {
+      title: meta?.title,
+      authors: meta?.creator ? (Array.isArray(meta.creator) ? meta.creator : [meta.creator]) : undefined,
+      languages: meta?.language ? (Array.isArray(meta.language) ? meta.language : [meta.language]) : undefined,
+      toc: this.view.book?.toc,
+      chapter: this.view.lastLocation?.tocItem?.label
+    };
+  }
+
+  /**
+   * foliate-paginator embeds the actual book document inside a shadow root.
+   * We descend into that shadow to reach the live iframe.contentDocument and
+   * listen for selectionchange; on every selection we package the text and
+   * a coarse CFI locator.
+   */
+  private bindSelectionChange(handler: (event: ReaderEventMap["selection-change"]) => void): () => void {
+    const off = () => {
+      for (const dispose of this.docListeners) dispose();
+      this.docListeners.clear();
+    };
+
+    const tryAttach = (): boolean => {
+      const shadow = this.view.getRootNode();
+      if (!(shadow instanceof ShadowRoot)) return false;
+      const iframe = shadow.querySelector("iframe");
+      const doc = iframe?.contentDocument;
+      if (!doc) return false;
+
+      const onChange = () => {
+        const selection = doc.getSelection();
+        if (!selection || selection.isCollapsed) return;
+        const text = selection.toString().trim();
+        if (!text) return;
+        handler({ text, locator: this.view.lastLocation?.cfi } as unknown as ReaderEventMap["selection-change"]);
+      };
+      doc.addEventListener("selectionchange", onChange);
+      this.docListeners.add(() => doc.removeEventListener("selectionchange", onChange));
+      return true;
+    };
+
+    if (!tryAttach()) {
+      // foliate-paginator loads the iframe lazily; retry on the next load event.
+      const wrapped = () => {
+        if (tryAttach()) this.view.removeEventListener("load", wrapped);
+      };
+      this.view.addEventListener("load", wrapped);
+      this.docListeners.add(() => this.view.removeEventListener("load", wrapped));
+    }
+
+    return off;
   }
 }
