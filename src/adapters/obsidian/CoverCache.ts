@@ -125,11 +125,13 @@ export class CoverCache {
     }
     const listing = await this.app.vault.adapter.list(this.coversDir);
     console.info(`[ez-reader] hydrateCovers: found ${listing.files.length} file(s) in ${this.coversDir}`);
-    for (const relativePath of listing.files) {
-      const fullPath = normalizePath(`${this.coversDir}/${relativePath}`);
-      const file = this.app.vault.getAbstractFileByPath(fullPath);
+    for (const filePath of listing.files) {
+      // Obsidian's adapter returns `filePath` as the full vault-relative
+      // path (not relative to the listed directory), so we use it
+      // verbatim for both `getAbstractFileByPath` and `getResourcePath`.
+      const file = this.app.vault.getAbstractFileByPath(filePath);
       if (!(file instanceof TFile)) {
-        console.warn(`[ez-reader] hydrateCovers: not a TFile: ${fullPath}`);
+        console.warn(`[ez-reader] hydrateCovers: not a TFile: ${filePath}`);
         continue;
       }
       const slug = file.basename;
@@ -140,7 +142,7 @@ export class CoverCache {
       }
       // Always rebuild the resource path so the cache-buster token is
       // fresh and Chromium will actually load the image.
-      const resourcePath = this.app.vault.adapter.getResourcePath(fullPath);
+      const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
       this.library.setCoverPath(bookId, resourcePath);
       console.info(`[ez-reader] hydrateCovers: hydrated ${bookId}`);
     }
