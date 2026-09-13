@@ -7,6 +7,9 @@ export interface ReaderToolbarHandlers {
   onAddBookmark: () => void;
   onToggleBookmarks: () => void;
   onToggleExcerpts: () => void;
+  onToggleToc: () => void;
+  onToggleNotes: () => void;
+  onToggleImmersive: () => void;
   onClose: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -20,6 +23,9 @@ export interface ReaderToolbarState {
   readonly status: ReadingState["status"];
   readonly showingBookmarks: boolean;
   readonly showingExcerpts: boolean;
+  readonly showingNotes: boolean;
+  readonly showingToc: boolean;
+  readonly showingImmersive: boolean;
   /** Current zoom level (1.0 = fit-width). Only meaningful for PDFs. */
   readonly zoom?: number;
   /** Whether to show zoom controls (true for PDFs, false otherwise). */
@@ -50,6 +56,9 @@ export class ReaderToolbar {
   private readonly zoomReset: HTMLButtonElement;
   private readonly zoomGroup: HTMLElement;
   private readonly fontButton: HTMLButtonElement;
+  private readonly tocToggle: HTMLButtonElement;
+  private readonly notesToggle: HTMLButtonElement;
+  private readonly immersiveToggle: HTMLButtonElement;
 
   constructor(handlers: ReaderToolbarHandlers, initial: ReaderToolbarState) {
     this.handlers = handlers;
@@ -101,6 +110,18 @@ export class ReaderToolbar {
     this.fontButton.addClass("ez-reader__reader-toolbar__action");
     this.fontButton.addEventListener("click", () => handlers.onShowFontSettings());
 
+    this.tocToggle = actionsGroup.createEl("button", { text: "目录", attr: { type: "button", title: "显示目录 (T)", "aria-label": "目录" } });
+    this.tocToggle.addClass("ez-reader__reader-toolbar__action");
+    this.tocToggle.addEventListener("click", () => handlers.onToggleToc());
+
+    this.notesToggle = actionsGroup.createEl("button", { text: "笔记", attr: { type: "button", title: "显示笔记侧边栏 (S)", "aria-label": "笔记" } });
+    this.notesToggle.addClass("ez-reader__reader-toolbar__action");
+    this.notesToggle.addEventListener("click", () => handlers.onToggleNotes());
+
+    this.immersiveToggle = actionsGroup.createEl("button", { text: "沉浸", attr: { type: "button", title: "切换沉浸模式 (Pad 全屏)", "aria-label": "沉浸模式" } });
+    this.immersiveToggle.addClass("ez-reader__reader-toolbar__action");
+    this.immersiveToggle.addEventListener("click", () => handlers.onToggleImmersive());
+
     this.excerptToggle = actionsGroup.createEl("button", { text: "摘录", attr: { type: "button", title: "显示摘录", "aria-label": "摘录" } });
     this.excerptToggle.addClass("ez-reader__reader-toolbar__action");
     this.excerptToggle.addEventListener("click", () => handlers.onToggleExcerpts());
@@ -136,6 +157,9 @@ export class ReaderToolbar {
     this.statusPill.addClass(`is-${state.status}`);
     this.bookmarkToggle.toggleClass("is-active", state.showingBookmarks);
     this.excerptToggle.toggleClass("is-active", state.showingExcerpts);
+    this.tocToggle.toggleClass("is-active", state.showingToc);
+    this.notesToggle.toggleClass("is-active", state.showingNotes);
+    this.immersiveToggle.toggleClass("is-active", state.showingImmersive);
     this.zoomGroup.toggleClass("is-hidden", state.showZoomControls !== true);
     this.fontButton.toggleClass("is-hidden", state.showFontSettings !== true);
     if (typeof state.zoom === "number") {

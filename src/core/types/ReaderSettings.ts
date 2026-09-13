@@ -10,6 +10,10 @@ export interface ReaderAppearance {
   readonly margin: number;
   readonly theme: ReaderTheme;
   readonly flow: ReaderFlow;
+  /** 双页模式: 桌面端用,EPUB 自动双列 */
+  readonly twoPages?: boolean;
+  /** 沉浸模式: pad 上隐藏工具栏,边距更小 */
+  readonly immersive?: boolean;
 }
 
 export type ReaderTheme = "system" | "light" | "dark" | "sepia";
@@ -20,7 +24,9 @@ export const DEFAULT_READER_APPEARANCE: ReaderAppearance = Object.freeze({
   lineHeight: 1.6,
   margin: 32,
   theme: "system",
-  flow: "paginated"
+  flow: "paginated",
+  twoPages: false,
+  immersive: false
 });
 
 /** Plugin-wide preferences, not per-book. */
@@ -33,9 +39,35 @@ export interface PluginSettings {
   readonly libraryOwnerName: string;
   readonly defaultNoteTemplate: string;
   readonly readerOpenMode: ReaderOpenMode;
+  /** 双页模式默认开关 */
+  readonly twoPagesByDefault?: boolean;
+  /** Pad 沉浸模式默认开关 */
+  readonly immersiveOnTablet?: boolean;
+  /** 默认笔记创建行为 */
+  readonly autoCreateNoteOnOpen?: boolean;
+  /** 翻页快捷键 */
+  readonly keyboardShortcuts?: KeyboardShortcuts;
 }
 
 export type ReaderOpenMode = "tab" | "window";
+
+export interface KeyboardShortcuts {
+  readonly prev: string;
+  readonly next: string;
+  readonly toggleSidebar: string;
+  readonly toggleToc: string;
+  readonly translate: string;
+  readonly highlight: string;
+}
+
+export const DEFAULT_KEYBOARD_SHORTCUTS: KeyboardShortcuts = Object.freeze({
+  prev: "ArrowLeft",
+  next: "ArrowRight",
+  toggleSidebar: "s",
+  toggleToc: "t",
+  translate: "T",
+  highlight: "h"
+});
 
 export interface TranslationSettings {
   readonly providerId: string;
@@ -52,5 +84,9 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = Object.freeze({
   researchDirectory: "zz_阅读与研究/主题研究",
   libraryOwnerName: "",
   defaultNoteTemplate: "# {{title}}\n",
-  readerOpenMode: "tab"
+  readerOpenMode: "tab",
+  twoPagesByDefault: false,
+  immersiveOnTablet: false,
+  autoCreateNoteOnOpen: true,
+  keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS
 });

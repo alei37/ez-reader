@@ -47,8 +47,10 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   });
   titleEl.setAttribute("title", titleText);
   titleEl.addEventListener("contextmenu", (event) => event.preventDefault());
+  const authorText =
+    entry.book.metadata?.authors?.[0] ?? extractAuthorFallback(entry.book.locator.path);
   meta.createEl("span", {
-    text: entry.book.metadata?.authors[0] ?? extractAuthorFallback(entry.book.locator.path),
+    text: authorText,
     cls: "ez-reader__shelf-grid__author"
   });
 
@@ -58,8 +60,18 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   if (fraction > 0) {
     footer.createEl("span", { text: `${Math.round(fraction * 100)}%`, cls: "ez-reader__shelf-grid__progress" });
   }
+  // 平台标签: EPUB / PDF 等
+  footer.createEl("span", {
+    text: entry.book.locator.format.toUpperCase(),
+    cls: "ez-reader__shelf-grid__format"
+  });
   if (entry.reading.favorite) {
     footer.createEl("span", { text: "★", cls: "ez-reader__shelf-grid__favorite" });
+  }
+  // 显示语种(只显示第一个)
+  const lang = entry.book.metadata?.languages?.[0];
+  if (lang) {
+    footer.createEl("span", { text: lang, cls: "ez-reader__shelf-grid__lang" });
   }
 
   card.addEventListener("click", () => handlers.onOpen(entry));

@@ -262,6 +262,29 @@
   margin-left: auto;
 }
 
+.ez-reader__shelf-grid__format {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.ez-reader__shelf-grid__lang {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 1px 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 3px;
+}
+
+.ez-reader__shelf-grid__favorite {
+  color: var(--color-yellow);
+}
+
 .ez-reader__shelf-list__progress {
   margin-left: auto;
   color: var(--text-muted);
@@ -373,6 +396,20 @@
 .ez-reader__pdf-stage__text-layer > span {
   pointer-events: auto;
   user-select: text;
+}
+
+.ez-reader__pdf-highlight {
+  background: rgba(243, 201, 77, 0.45) !important;
+  color: transparent !important;
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+}
+
+@media (prefers-color-scheme: dark) {
+  .ez-reader__pdf-highlight {
+    background: rgba(243, 201, 77, 0.35) !important;
+    mix-blend-mode: screen;
+  }
 }
 
 .ez-reader__reader__error {
@@ -788,6 +825,44 @@
   background: var(--background-modifier-hover);
 }
 
+.ez-reader__add-modal__row__cover {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 50px;
+  border-radius: 4px;
+  background: var(--background-modifier-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.ez-reader__add-modal__row__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ez-reader__add-modal__row__cover.is-placeholder {
+  background: linear-gradient(135deg, var(--interactive-accent) 0%, var(--background-modifier-border-hover) 100%);
+}
+
+.ez-reader__add-modal__row__glyph {
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 700;
+  font-size: 16px;
+  text-transform: uppercase;
+}
+
+.ez-reader__add-modal__summary {
+  margin-top: 10px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
 .ez-reader__add-modal__row__info {
   flex: 1 1 auto;
   display: flex;
@@ -838,6 +913,399 @@
 
 .ez-reader__shelf__empty p {
   margin-bottom: 12px;
+}
+
+/* === 笔记侧边栏 === */
+.ez-reader__notes-panel {
+  flex: 0 0 320px;
+  border-right: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  max-height: 100%;
+}
+
+.ez-reader__notes-panel.is-hidden {
+  display: none;
+}
+
+.ez-reader__notes-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  position: sticky;
+  top: 0;
+  background: var(--background-secondary);
+  z-index: 1;
+}
+
+.ez-reader__notes-panel__header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ez-reader__notes-panel__count {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.ez-reader__notes-panel__add {
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ez-reader__notes-panel__empty {
+  padding: 24px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.ez-reader__notes-panel__entry {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: background-color 1.5s ease-out;
+}
+
+.ez-reader__notes-panel__entry.is-flashing {
+  background-color: rgba(var(--interactive-accent-rgb, 99, 99, 255), 0.2);
+}
+
+.ez-reader__notes-panel__quote {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-primary);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+
+.ez-reader__notes-panel__meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.ez-reader__notes-panel__tags {
+  font-size: 10px;
+  color: var(--text-accent);
+}
+
+.ez-reader__notes-panel__note {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--background-modifier-hover);
+  font-size: 12px;
+  color: var(--text-normal);
+}
+
+.ez-reader__notes-panel__actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.ez-reader__notes-panel__actions button {
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.ez-reader__notes-panel__actions button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* === 阅读器 body 双栏布局 === */
+.ez-reader__reader__body {
+  display: flex;
+  flex: 1 1 auto;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.ez-reader__reader__stage {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  background: var(--background-secondary);
+  min-width: 0;
+}
+
+@media (max-width: 1024px) {
+  .ez-reader__notes-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+    flex-basis: auto;
+  }
+}
+
+/* === TOC 面板 === */
+.ez-reader__reader-panel--toc {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 8px 12px;
+  background: var(--background-secondary);
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.ez-reader__reader-panel--toc.is-hidden {
+  display: none;
+}
+
+.ez-reader__reader-panel--toc h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.ez-reader__toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ez-reader__toc-item {
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ez-reader__toc-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ez-reader__toc-item.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* === 翻译侧边栏 === */
+.ez-reader__translation-drawer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 320px;
+  max-width: 90%;
+  background: var(--background-secondary);
+  border-left: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 40;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.12);
+}
+
+.ez-reader__translation-drawer.is-hidden {
+  display: none;
+}
+
+.ez-reader__translation-drawer__header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ez-reader__translation-drawer__header h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ez-reader__translation-drawer__close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 6px;
+}
+
+.ez-reader__translation-drawer__body {
+  padding: 12px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ez-reader__translation-drawer__body blockquote {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--background-modifier-border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ez-reader__translation-drawer__translation {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+
+.ez-reader__translation-drawer__meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ez-reader__translation-drawer__meta button {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ez-reader__translation-drawer__loading,
+.ez-reader__translation-drawer__error {
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.ez-reader__translation-drawer__error {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+/* === 选区菜单 (增强版) === */
+.ez-reader__selection-menu button.is-primary {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ez-reader__selection-menu button.is-primary:hover {
+  background: var(--interactive-accent-hover);
+}
+
+/* === 想法 modal === */
+.ez-reader__thought-modal__input {
+  width: 100%;
+  min-height: 120px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font: inherit;
+  box-sizing: border-box;
+  font-family: var(--font-monospace);
+  resize: vertical;
+}
+
+.ez-reader__thought-modal__tags {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font: inherit;
+  box-sizing: border-box;
+  margin-top: 8px;
+}
+
+.ez-reader__thought-modal__chapter {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+/* === 沉浸模式 === */
+.ez-reader__immersive .ez-reader__reader-toolbar {
+  transform: translateY(-100%);
+  transition: transform 0.2s ease;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+}
+
+.ez-reader__immersive.is-toolbar-visible .ez-reader__reader-toolbar {
+  transform: translateY(0);
+}
+
+.ez-reader__immersive .ez-reader__reader__body {
+  height: 100%;
+}
+
+.ez-reader__immersive .ez-reader__reader__stage {
+  padding: 0;
+}
+
+/* === toolbar is-active for new toggles === */
+.ez-reader__reader-toolbar__action.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+/* === Settings === */
+.ez-reader__settings-about {
+  padding: 8px 0;
+  color: var(--text-muted);
+}
+
+.ez-reader__settings-about p {
+  margin: 4px 0;
+}
+
+.ez-reader__settings-about__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ez-reader__settings-about__actions button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  cursor: pointer;
 }
 
 /* Mobile tweaks. Keep simple; full responsive pass lands in Phase 1.4. */

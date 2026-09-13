@@ -29,6 +29,10 @@ export class ExcerptsPanel {
     this.root.addClass("is-hidden");
   }
 
+  isVisible(): boolean {
+    return !this.root.hasClass("is-hidden");
+  }
+
   private render(): void {
     this.root.empty();
     this.root.createEl("h3", { text: "摘录" });

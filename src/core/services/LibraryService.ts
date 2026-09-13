@@ -61,7 +61,13 @@ export class LibraryService {
     const readingByPath = new Map(reading.map((state) => [state.bookId, state]));
     const librarySet = new Set(library);
 
-    const formats = new Set<BookFormat>(["epub", "mobi", "azw", "azw3", "txt", "pdf"]);
+    // Note: `txt`, `mobi`, `azw`, `azw3` are still listed above for format
+    // discovery, but we only push reader-capable formats to the shelf. TXT
+    // and MOBI are not yet supported by any `BookReader` adapter, so we
+    // surface them as candidates (for visibility) but skip them during the
+    // reader selection path. Until those adapters exist, drop them entirely
+    // from the scan so users don't see "broken" entries.
+    const formats = new Set<BookFormat>(["epub", "pdf"]);
     for await (const locator of this.source.scan(formats)) {
       const id = this.source.resolveId(locator);
       let metadata = null;

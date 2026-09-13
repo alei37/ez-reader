@@ -3,14 +3,27 @@ import type { App } from "obsidian";
 import { CoverCache } from "./adapters/obsidian/CoverCache";
 import { ObsidianAnnotationStore } from "./adapters/obsidian/ObsidianAnnotationStore";
 import { ObsidianBookSource } from "./adapters/obsidian/ObsidianBookSource";
+import { ObsidianNoteWriter } from "./adapters/obsidian/ObsidianNoteWriter";
 import { FoliateBookReader } from "./adapters/foliate/FoliateBookReader";
 import { PdfjsBookReader } from "./adapters/pdfjs/PdfjsBookReader";
 import { GoogleTranslationProvider } from "./adapters/translation/GoogleTranslationProvider";
+import { YoudaoTranslationProvider } from "./adapters/translation/YoudaoTranslationProvider";
+import { DeeplTranslationProvider } from "./adapters/translation/DeeplTranslationProvider";
 import { LibraryService } from "./core/services/LibraryService";
 import { ReadingService } from "./core/services/ReadingService";
 import { TranslationCoordinator } from "./core/services/TranslationService";
 import type { LibraryEntry } from "./core/services/LibraryService";
 import type { BookBytesLoader, BookReader } from "./core/ports/BookReader";
+import type { NoteWriter } from "./core/ports/NoteWriter";
+import type {
+  KeyboardShortcuts,
+  ReaderAppearance
+} from "./core/types/ReaderSettings";
+import {
+  DEFAULT_KEYBOARD_SHORTCUTS,
+  DEFAULT_READER_APPEARANCE
+} from "./core/types/ReaderSettings";
+import type { Locale } from "./core/types/Locale";
 import { ShelfView, SHELF_VIEW_TYPE } from "./ui/shelf/ShelfView";
 import { READER_VIEW_TYPE, ReaderView } from "./ui/reader/ReaderView";
 import { SettingsTab } from "./ui/settings/SettingsTab";
@@ -31,6 +44,7 @@ export default class EzReaderPlugin extends Plugin {
   private foliate!: BookReader;
   private pdfjs!: BookReader;
   private covers!: CoverCache;
+  private noteWriter!: NoteWriter;
 
   async onload(): Promise<void> {
     this.bookSource = new ObsidianBookSource(this.app);
@@ -41,10 +55,15 @@ export default class EzReaderPlugin extends Plugin {
     await this.enableAllBookFormatsInFileExplorer();
     this.library = new LibraryService(this.bookSource, this.annotationStore);
     this.reading = new ReadingService(this.annotationStore);
-    this.translation = new TranslationCoordinator(this.annotationStore, [new GoogleTranslationProvider()]);
+    this.translation = new TranslationCoordinator(this.annotationStore, [
+      new YoudaoTranslationProvider(),
+      new DeeplTranslationProvider(),
+      new GoogleTranslationProvider()
+    ]);
     this.foliate = new FoliateBookReader();
     this.pdfjs = new PdfjsBookReader();
     this.covers = new CoverCache(this.app, this, this.library, this.foliate, this.pdfjs, this.annotationStore);
+    this.noteWriter = new ObsidianNoteWriter(this.app, this, this.annotationStore);
 
     // Obsidian loads files asynchronously. `vault.getFiles()` returns an
     // empty list until the layout is ready and the initial vault scan has
@@ -74,6 +93,13 @@ export default class EzReaderPlugin extends Plugin {
     this.addRibbonIcon("book-open", "从书库打开电子书", () => {
       void this.openPicker();
     });
+
+    // Reverse-jump protocol: a note may link back to the source via
+    // `obsidian://ez-reader?book=<bookId>&annotation=<excerptId>`. The
+    // handler opens the book and jumps the reader to the excerpt.
+    this.registerObsidianProtocolHandler("ez-reader", (params) => {
+      void this.handleProtocol(params);
+    });
   }
 
   onunload(): void {
@@ -100,9 +126,50 @@ export default class EzReaderPlugin extends Plugin {
       foliate: this.foliate,
       pdfjs: this.pdfjs,
       translation: this.translation,
+      noteWriter: this.noteWriter,
       bookBytesLoader: this.makeBookBytesLoader(),
+      settingsProvider: () => this.loadReaderSettings(),
       onBookOpened: (entry) => void this.covers.ensureCoverFor(entry.book, this.makeBookBytesLoader())
     };
+  }
+
+  private async loadReaderSettings(): Promise<{
+    defaultAppearance: ReaderAppearance;
+    shortcuts: KeyboardShortcuts;
+    twoPagesByDefault: boolean;
+    immersiveOnTablet: boolean;
+    translationLocale: Locale;
+  }> {
+    const settings = await this.annotationStore.listSettings();
+    return {
+      defaultAppearance: settings.defaultAppearance ?? DEFAULT_READER_APPEARANCE,
+      shortcuts: settings.keyboardShortcuts ?? DEFAULT_KEYBOARD_SHORTCUTS,
+      twoPagesByDefault: settings.twoPagesByDefault ?? false,
+      immersiveOnTablet: settings.immersiveOnTablet ?? false,
+      translationLocale: (settings.translation?.targetLocale as Locale) ?? "zh-CN"
+    };
+  }
+
+  private async handleProtocol(params: Record<string, string>): Promise<void> {
+    const bookId = params.book ?? params.path;
+    const excerptId = params.annotation;
+    if (!bookId) return;
+    const entry = this.library.get(bookId);
+    if (!entry) {
+      const { Notice } = await import("obsidian");
+      new Notice(`找不到书: ${bookId}`);
+      return;
+    }
+    await this.openReader(entry);
+    if (excerptId) {
+      // 等 reader session 创建完毕再跳
+      globalThis.setTimeout(() => {
+        const leaf = this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
+        if (leaf?.view instanceof ReaderView) {
+          void leaf.view.openExcerptById(excerptId);
+        }
+      }, 250);
+    }
   }
 
   /**
