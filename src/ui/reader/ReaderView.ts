@@ -27,6 +27,7 @@ interface ReaderViewDeps {
   readonly pdfjs: BookReader;
   readonly translation: TranslationService;
   readonly bookBytesLoader: BookBytesLoader;
+  readonly onBookOpened?: (entry: LibraryEntry) => void;
 }
 
 interface ActiveSelection {
@@ -185,6 +186,7 @@ export class ReaderView extends ItemView {
     const book = this.entry.book;
     const engine = this.bookReaderFor(book);
     this.session = await engine.open(book, this.host, DEFAULT_READER_APPEARANCE, this.deps.bookBytesLoader);
+    this.deps.onBookOpened?.(this.entry);
 
     const fraction = await this.session.currentFraction();
     this.fraction = fraction;

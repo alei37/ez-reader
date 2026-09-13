@@ -117,16 +117,17 @@ export class ShelfView extends ItemView {
     } else {
       this.emptyState.addClass("is-hidden");
       for (const entry of entries) {
+        const coverPath = entry.book.coverPath ?? undefined;
         const node =
           this.mode === "grid"
             ? renderGridItem(entry, {
                 onOpen: (item) => void this.openBook(item),
                 onContextMenu: (item, event) => this.openItemMenu(item, event)
-              })
+              }, coverPath)
             : renderListItem(entry, {
                 onOpen: (item) => void this.openBook(item),
                 onContextMenu: (item, event) => this.openItemMenu(item, event)
-              });
+              }, coverPath);
         this.body.append(node);
       }
     }

@@ -15,13 +15,20 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
 
   const cover = card.createDiv({ cls: "ez-reader__shelf-grid__cover" });
   if (coverResourcePath) {
+    cover.addClass("has-image");
     const img = cover.createEl("img", {
-      attr: { src: coverResourcePath, alt: entry.book.metadata?.title ?? "" }
+      attr: { src: coverResourcePath, alt: entry.book.metadata?.title ?? "" },
+      cls: "ez-reader__shelf-grid__cover-image"
     });
-    img.addEventListener("error", () => img.remove());
+    img.addEventListener("error", () => {
+      img.remove();
+      cover.removeClass("has-image");
+      cover.addClass("is-placeholder");
+    });
   } else {
     cover.addClass("is-placeholder");
     const title = entry.book.metadata?.title ?? entry.book.locator.path;
+    cover.setCssStyles(placeholderBackground(title));
     cover.createEl("span", {
       text: title.charAt(0).toLocaleUpperCase(),
       cls: "ez-reader__shelf-grid__cover-glyph"
@@ -91,4 +98,23 @@ const extractAuthorFallback = (path: string): string => {
   const parts = path.split("/").filter(Boolean);
   if (parts.length >= 2) return parts.slice(0, -1).join(" / ");
   return "未知作者";
+};
+
+/**
+ * Generate a stable, deterministic gradient for the placeholder cover.
+ * Two books with similar titles will have similar hues, but each book
+ * still gets its own background — no two covers look identical.
+ */
+const placeholderBackground = (title: string): Record<string, string> => {
+  let hash = 0;
+  for (let i = 0; i < title.length; i++) {
+    hash = ((hash << 5) - hash) + title.charCodeAt(i);
+    hash = hash & hash;
+  }
+  const hue1 = Math.abs(hash) % 360;
+  const hue2 = (hue1 + 28) % 360;
+  return {
+    background: `linear-gradient(135deg, hsl(${hue1}, 38%, 28%), hsl(${hue2}, 48%, 18%))`,
+    color: "rgba(255, 255, 255, 0.92)"
+  };
 };

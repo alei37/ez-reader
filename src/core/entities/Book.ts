@@ -66,6 +66,13 @@ export interface Book {
    * "Add to library" flow.
    */
   readonly addedToLibraryAt: number | null;
+  /**
+   * Optional Obsidian resource path (`app://...`) for the cached cover
+   * image. Set by the cover-extraction flow once the user has opened the
+   * book at least once; otherwise null and the shelf falls back to a
+   * generated placeholder.
+   */
+  readonly coverPath: string | null;
 }
 
 /** Cover image bytes cached alongside the book. */

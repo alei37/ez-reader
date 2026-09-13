@@ -1,5 +1,6 @@
 import { Plugin, TFile } from "obsidian";
 import type { App } from "obsidian";
+import { CoverCache } from "./adapters/obsidian/CoverCache";
 import { ObsidianAnnotationStore } from "./adapters/obsidian/ObsidianAnnotationStore";
 import { ObsidianBookSource } from "./adapters/obsidian/ObsidianBookSource";
 import { FoliateBookReader } from "./adapters/foliate/FoliateBookReader";
@@ -29,6 +30,7 @@ export default class EzReaderPlugin extends Plugin {
   private translation!: TranslationCoordinator;
   private foliate!: BookReader;
   private pdfjs!: BookReader;
+  private covers!: CoverCache;
 
   async onload(): Promise<void> {
     this.bookSource = new ObsidianBookSource(this.app);
@@ -42,6 +44,7 @@ export default class EzReaderPlugin extends Plugin {
     this.translation = new TranslationCoordinator(this.annotationStore, [new GoogleTranslationProvider()]);
     this.foliate = new FoliateBookReader();
     this.pdfjs = new PdfjsBookReader();
+    this.covers = new CoverCache(this.app, this, this.library, this.foliate, this.pdfjs);
 
     // Obsidian loads files asynchronously. `vault.getFiles()` returns an
     // empty list until the layout is ready and the initial vault scan has
@@ -49,6 +52,7 @@ export default class EzReaderPlugin extends Plugin {
     // matching the upstream plugin's pattern.
     this.app.workspace.onLayoutReady(() => {
       void this.library.initialize();
+      void this.covers.hydrateCovers();
     });
 
     this.addSettingTab(new SettingsTab(this.app, this, this.annotationStore));
@@ -92,7 +96,8 @@ export default class EzReaderPlugin extends Plugin {
       foliate: this.foliate,
       pdfjs: this.pdfjs,
       translation: this.translation,
-      bookBytesLoader: this.makeBookBytesLoader()
+      bookBytesLoader: this.makeBookBytesLoader(),
+      onBookOpened: (entry) => void this.covers.ensureCoverFor(entry.book, this.makeBookBytesLoader())
     };
   }
 

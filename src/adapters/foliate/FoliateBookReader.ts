@@ -2,6 +2,7 @@ import type { Book } from "../../core/entities/Book";
 import type {
   BookBytesLoader,
   BookReader,
+  ExtractedCover,
   ReaderEventMap,
   ReaderSession,
   ReaderTarget
@@ -22,6 +23,7 @@ interface FoliateViewElement extends HTMLElement {
   book?: {
     toc?: ReadonlyArray<{ label: string; href?: string; subitems?: ReadonlyArray<unknown> }>;
     metadata?: { title?: string; creator?: string | string[]; language?: string | string[] };
+    getCover?: () => Promise<Blob | null>;
   };
   lastLocation?: { fraction?: number; cfi?: string; tocItem?: { label?: string } };
   addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void;
@@ -63,6 +65,21 @@ export class FoliateBookReader implements BookReader {
     await view.open(parsed);
 
     return new FoliateSession(view);
+  }
+
+  async extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null> {
+    const [{ makeBook }] = await Promise.all([import("foliate-js/view.js") as unknown as Promise<FoliateModule>]);
+    const bytes = await loader(book.locator.path);
+    const file = new File([bytes], book.locator.path.split("/").pop() ?? "book", {
+      type: mimeTypeFor(book.locator.format)
+    });
+    const parsed = await makeBook(file);
+    const bookObj = parsed as { getCover?: () => Promise<Blob | null> };
+    if (typeof bookObj.getCover !== "function") return null;
+    const blob = await bookObj.getCover();
+    if (!blob) return null;
+    const coverBytes = await blob.arrayBuffer();
+    return { bytes: coverBytes, mimeType: blob.type || "image/jpeg" };
   }
 }
 

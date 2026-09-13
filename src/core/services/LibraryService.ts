@@ -76,7 +76,8 @@ export class LibraryService {
         locator,
         metadata,
         sourceModifiedAt: locator.modifiedAt,
-        addedToLibraryAt
+        addedToLibraryAt,
+        coverPath: null
       };
       const stored = readingByPath.get(id);
       this.entries.set(id, {
@@ -205,6 +206,21 @@ export class LibraryService {
     await this.annotations.removeFromLibrary(bookId);
     this.entries.set(bookId, {
       book: { ...entry.book, addedToLibraryAt: null },
+      reading: entry.reading
+    });
+    this.emit();
+  }
+
+  /**
+   * Update a book's cover path. Called by the cover-extraction flow once
+   * the user has opened the book and the engine has surfaced an image.
+   */
+  setCoverPath(bookId: string, coverPath: string | null): void {
+    const entry = this.entries.get(bookId);
+    if (!entry) return;
+    if (entry.book.coverPath === coverPath) return;
+    this.entries.set(bookId, {
+      book: { ...entry.book, coverPath },
       reading: entry.reading
     });
     this.emit();

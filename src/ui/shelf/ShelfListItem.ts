@@ -17,7 +17,11 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
       attr: { src: coverResourcePath, alt: "" },
       cls: "ez-reader__shelf-list__cover"
     });
-    cover.addEventListener("error", () => cover.remove());
+    cover.addEventListener("error", () => {
+      cover.remove();
+      const placeholder = row.createDiv({ cls: "ez-reader__shelf-list__cover is-placeholder" });
+      placeholder.setText((entry.book.metadata?.title ?? entry.book.locator.path).charAt(0));
+    });
   } else {
     const cover = row.createDiv({ cls: "ez-reader__shelf-list__cover is-placeholder" });
     cover.setText((entry.book.metadata?.title ?? entry.book.locator.path).charAt(0));

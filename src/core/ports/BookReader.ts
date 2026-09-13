@@ -46,12 +46,29 @@ export interface ReaderSession {
 export type BookBytesLoader = (path: string) => Promise<ArrayBuffer>;
 
 /**
+ * A book cover extracted from the source file. `bytes` is the raw image
+ * data; the host (plugin) is responsible for writing it to disk and
+ * surfacing an `app://` resource URL for the renderer to consume.
+ */
+export interface ExtractedCover {
+  readonly bytes: ArrayBuffer;
+  readonly mimeType: string;
+}
+
+/**
  * Adapter interface for a reader engine. The core layer depends only on this;
  * implementations wrap foliate-js, PDF.js, or any future engine.
  */
 export interface BookReader {
   /** Open a book and return a session bound to the given host element. */
   open(book: Book, host: HTMLElement, appearance: ReaderAppearance, loader: BookBytesLoader): Promise<ReaderSession>;
+
+  /**
+   * Extract the book's cover image (if any) without rendering it. Returns
+   * null when the format has no embedded cover (e.g. plain TXT) or when
+   * extraction fails; the host can then fall back to a generated cover.
+   */
+  extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null>;
 }
 
 /** Helper to resolve how a reader should be displayed inside a leaf. */

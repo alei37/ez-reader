@@ -2,6 +2,7 @@ import type { Book } from "../../core/entities/Book";
 import type {
   BookBytesLoader,
   BookReader,
+  ExtractedCover,
   ReaderEventMap,
   ReaderSession,
   ReaderTarget
@@ -63,6 +64,37 @@ export class PdfjsBookReader implements BookReader {
     const session = new PdfjsSession(document, host);
     await session.gotoPage(1);
     return session;
+  }
+
+  /**
+   * Render the first page to a small canvas and snapshot it as a PNG.
+   * Keeps the dimensions modest (480 wide max) so a shelf full of covers
+   * doesn't bloat the plugin data directory.
+   */
+  async extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null> {
+    const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs" as string)) as unknown as PdfjsModule;
+    configureWorker(pdfjs);
+    const bytes = new Uint8Array(await loader(book.locator.path));
+    const document = await pdfjs.getDocument({ data: bytes }).promise;
+    try {
+      const page = await document.getPage(1);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const maxWidth = 480;
+      const scale = Math.min(1.5, maxWidth / baseViewport.width);
+      const viewport = page.getViewport({ scale });
+      const canvas = globalThis.document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      await page.render({ canvasContext: ctx, canvas, viewport }).promise;
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) return null;
+      const arrayBuffer = await blob.arrayBuffer();
+      return { bytes: arrayBuffer, mimeType: "image/png" };
+    } finally {
+      await document.destroy();
+    }
   }
 }
 
