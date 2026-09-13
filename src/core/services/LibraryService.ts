@@ -105,8 +105,13 @@ export class LibraryService {
           const id = this.source.resolveId({ path: event.path, format: event.format, sizeBytes: 0, modifiedAt: 0 });
           this.entries.delete(id);
           this.emit();
+        } else if (event.kind === "added") {
+          // For added events, re-run the scan to surface the new file plus
+          // any sibling files that Obsidian has just loaded. Refresh-on-id
+          // would miss new entries.
+          void this.initialize();
         } else {
-          // "added" and "modified" trigger a full refresh on that book.
+          // "modified" only needs to refresh the one book we already know about.
           void this.refreshBook(event.path);
         }
       })

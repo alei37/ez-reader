@@ -43,7 +43,13 @@ export default class EzReaderPlugin extends Plugin {
     this.foliate = new FoliateBookReader();
     this.pdfjs = new PdfjsBookReader();
 
-    await this.library.initialize();
+    // Obsidian loads files asynchronously. `vault.getFiles()` returns an
+    // empty list until the layout is ready and the initial vault scan has
+    // finished. Wait for that moment before doing the first library scan,
+    // matching the upstream plugin's pattern.
+    this.app.workspace.onLayoutReady(() => {
+      void this.library.initialize();
+    });
 
     this.addSettingTab(new SettingsTab(this.app, this, this.annotationStore));
 
