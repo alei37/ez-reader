@@ -11,7 +11,18 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   card.addClass("ez-reader__shelf-grid__item");
   card.setAttribute("role", "button");
   card.setAttribute("tabindex", "0");
-  card.title = entry.book.metadata?.title ?? entry.book.locator.path;
+  // title 用 hover tooltip, aria-label 用 screen reader — 两者都需要
+  const titleText = entry.book.metadata?.title ?? entry.book.locator.path;
+  card.title = titleText;
+  const authorText = entry.book.metadata?.authors?.[0] ?? extractAuthorFallback(entry.book.locator.path);
+  const fraction = progressFraction(entry.reading);
+  let progressText = "—";
+  if (entry.reading.position?.kind === "pdf") {
+    progressText = `第 ${entry.reading.position.page} 页`;
+  } else if (fraction > 0) {
+    progressText = `${Math.round(fraction * 100)}%`;
+  }
+  card.setAttribute("aria-label", `${titleText} · ${authorText} · ${progressText} · ${statusLabel(entry.reading.status)}`);
 
   const cover = card.createDiv({ cls: "ez-reader__shelf-grid__cover" });
   if (coverResourcePath) {
@@ -40,7 +51,6 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   }
 
   const meta = card.createDiv({ cls: "ez-reader__shelf-grid__meta" });
-  const titleText = entry.book.metadata?.title ?? entry.book.locator.path;
   const titleEl = meta.createEl("span", {
     text: titleText,
     cls: "ez-reader__shelf-grid__title"
@@ -53,8 +63,6 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   card.setAttribute("title", tooltipParts.join(" · "));
   titleEl.setAttribute("title", titleText);
   titleEl.addEventListener("contextmenu", (event) => event.preventDefault());
-  const authorText =
-    entry.book.metadata?.authors?.[0] ?? extractAuthorFallback(entry.book.locator.path);
   meta.createEl("span", {
     text: authorText,
     cls: "ez-reader__shelf-grid__author"
@@ -62,7 +70,6 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
 
   const footer = card.createDiv({ cls: "ez-reader__shelf-grid__footer" });
   footer.createEl("span", { text: statusLabel(entry.reading.status), cls: `ez-reader__status-pill is-${entry.reading.status}` });
-  const fraction = progressFraction(entry.reading);
   // PDF 没有 fraction, 用 page number 替代
   if (entry.reading.position?.kind === "pdf") {
     const page = entry.reading.position.page;

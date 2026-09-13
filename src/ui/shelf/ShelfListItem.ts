@@ -29,12 +29,13 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
 
   const info = row.createDiv({ cls: "ez-reader__shelf-list__info" });
   const titleText = entry.book.metadata?.title ?? entry.book.locator.path;
+  const authorText = (entry.book.metadata?.authors ?? []).join("、") || extractAuthorFallback(entry.book.locator.path);
   info.createEl("span", {
     text: titleText,
     cls: "ez-reader__shelf-list__title"
   });
   info.createEl("span", {
-    text: (entry.book.metadata?.authors ?? []).join("、") || extractAuthorFallback(entry.book.locator.path),
+    text: authorText,
     cls: "ez-reader__shelf-list__author"
   });
   // Hover tooltip 同样给出路径信息, 帮用户识别未解析 metadata 的书
@@ -51,6 +52,8 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
   } else if (fraction > 0) {
     progressText = `${Math.round(fraction * 100)}%`;
   }
+  // aria-label 让屏幕阅读器读出完整信息 (hover tooltip 用 title, screen reader 用 aria-label)
+  row.setAttribute("aria-label", `${titleText} · ${authorText} · ${progressText} · ${statusLabel(entry.reading.status)}`);
   row.createEl("span", {
     text: progressText,
     cls: "ez-reader__shelf-list__progress"
