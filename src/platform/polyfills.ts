@@ -17,34 +17,21 @@
 //
 // This module must be imported before any code that depends on it. main.ts
 // imports it as its first statement; foliate-js is reached only through a
-// dynamic import() inside BookReaderView.openReflowableBook, and pdfjs is
-// reached only through an import() inside PdfSession.open. Both run after
+// dynamic import() inside FoliateBookReader.open, and pdfjs is reached only
+// through an import() inside PdfjsBookReader.open. Both run after
 // Obsidian evaluates this module, so the polyfills are guaranteed to be
 // installed by then.
-//
-// The native semantics differ slightly from these polyfills in two areas:
-//   1. Object.groupBy's native keys go through ToPropertyKey (Symbol keys).
-//   2. The result of Object.groupBy is non-extensible and null-prototype.
-// foliate-js only passes string keys and never inspects the prototype, so
-// these differences do not affect the plugin. Map.groupBy and
-// ReadableStream's async iterator are spec-exact reimplementations.
 
 type GroupByCallback<T> = (item: T, index: number) => unknown;
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-empty-interface
   interface ObjectConstructor {
-    groupBy<T>(
-      items: Iterable<T>,
-      callback: GroupByCallback<T>
-    ): Record<string, T[]>;
+    groupBy<T>(items: Iterable<T>, callback: GroupByCallback<T>): Record<string, T[]>;
   }
   // eslint-disable-next-line @typescript-eslint/no-empty-interface
   interface MapConstructor {
-    groupBy<K, T>(
-      items: Iterable<T>,
-      callback: GroupByCallback<T>
-    ): Map<K, T[]>;
+    groupBy<K, T>(items: Iterable<T>, callback: GroupByCallback<T>): Map<K, T[]>;
   }
   // eslint-disable-next-line @typescript-eslint/no-empty-interface
   interface PromiseConstructor {
@@ -116,9 +103,6 @@ if (
   typeof ReadableStream !== "undefined" &&
   typeof ReadableStream.prototype[Symbol.asyncIterator] !== "function"
 ) {
-  // The spec-compliant async iterator: obtain a reader, yield each chunk,
-  // release the lock on completion. pdfjs-dist reads chunks via the default
-  // reader mode, which our polyfill mirrors exactly.
   ReadableStream.prototype[Symbol.asyncIterator] = function asyncIterator<R>(this: ReadableStream<R>): AsyncIterableIterator<R> {
     const reader = this.getReader();
     const iterator: AsyncIterableIterator<R> = {
@@ -143,7 +127,7 @@ if (
       },
       [Symbol.asyncIterator]() {
         return iterator;
-      },
+      }
     };
     return iterator;
   };
