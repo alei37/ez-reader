@@ -160,6 +160,8 @@ export default class EzReaderPlugin extends Plugin {
       new Notice(`找不到书: ${bookId}`);
       return;
     }
+    // 同步 ShelfView.openBook 的行为: 先标记"在读"
+    await this.reading.openBook(entry.book.id);
     await this.openReader(entry);
     if (excerptId) {
       // 等 reader session 创建完毕再跳

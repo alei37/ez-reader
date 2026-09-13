@@ -48,6 +48,14 @@ interface ReaderViewDeps {
   readonly onBookOpened?: (entry: LibraryEntry) => void;
 }
 
+interface LoadedSettings {
+  defaultAppearance: ReaderAppearance;
+  shortcuts: KeyboardShortcuts;
+  twoPagesByDefault: boolean;
+  immersiveOnTablet: boolean;
+  translationLocale: Locale;
+}
+
 interface ActiveSelection {
   text: string;
   rect: DOMRect | undefined;
@@ -114,20 +122,26 @@ export class ReaderView extends ItemView {
     container.empty();
     container.addClass("ez-reader__reader");
     // 加载 settings
+    let loadedSettings: LoadedSettings | undefined;
     if (this.deps.settingsProvider) {
       try {
-        const settings = await this.deps.settingsProvider();
-        this.appearance = { ...settings.defaultAppearance };
-        this.shortcuts = settings.shortcuts;
+        loadedSettings = await this.deps.settingsProvider();
+        this.appearance = { ...loadedSettings.defaultAppearance };
+        this.shortcuts = loadedSettings.shortcuts;
       } catch (error) {
         console.warn("[ez-reader] failed to load settings", error);
       }
     }
 
     this.isDesktopWide = window.matchMedia("(min-width: 1024px)").matches;
-    this.isImmersive = !this.isDesktopWide && this.shouldAutoImmerse();
+    // 自动进沉浸: pad / phone + 设置里允许时
+    this.isImmersive = !this.isDesktopWide && (loadedSettings?.immersiveOnTablet ?? false);
     container.toggleClass("ez-reader__immersive", this.isImmersive);
     container.toggleClass("ez-reader__desktop-wide", this.isDesktopWide);
+    // 双页默认
+    if (loadedSettings?.twoPagesByDefault && this.appearance.flow !== "scrolled") {
+      this.appearance = { ...this.appearance, twoPages: true };
+    }
 
     this.toolbar = new ReaderToolbar(
       {
@@ -209,7 +223,7 @@ export class ReaderView extends ItemView {
       },
       this.deps.translation,
       body,
-      { source: "auto", target: "zh-CN" }
+      { source: "auto", target: (loadedSettings?.translationLocale as Locale) ?? "zh-CN" }
     );
 
     this.selectionMenu = new ReaderSelectionMenu({
@@ -221,6 +235,7 @@ export class ReaderView extends ItemView {
 
     this.bindSwipeGestures();
     this.bindKeyboardNavigation();
+    this.bindImmersiveToolbarToggle();
     if (this.entry) await this.openSession();
   }
 
@@ -254,6 +269,62 @@ export class ReaderView extends ItemView {
     // 默认 desktop 不进沉浸; pad / phone 进
     // (具体从 settings 读)
     return false;
+  }
+
+  private bindImmersiveToolbarToggle(): void {
+    if (!this.host) return;
+    let lastTouchY = 0;
+    let lastTouchX = 0;
+    let visibleTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const show = () => {
+      const root = this.containerEl.children[1] as HTMLElement;
+      root.addClass("is-toolbar-visible");
+      if (visibleTimer !== undefined) globalThis.clearTimeout(visibleTimer);
+      visibleTimer = globalThis.setTimeout(() => {
+        if (this.isImmersive) root.removeClass("is-toolbar-visible");
+      }, 2400);
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (!this.isImmersive) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      lastTouchX = touch.clientX;
+      lastTouchY = touch.clientY;
+    };
+    const onTouchEnd = (event: TouchEvent) => {
+      if (!this.isImmersive) return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dy = touch.clientY - lastTouchY;
+      // Tap (no significant motion) or top-edge swipe → show toolbar
+      if (Math.abs(touch.clientY - lastTouchY) < 12 && Math.abs(touch.clientX - lastTouchX) < 12) {
+        show();
+        return;
+      }
+      // Swipe down from the top edge: show toolbar
+      if (dy > 30 && lastTouchY < 80) {
+        show();
+      }
+      // 防止 click 被算成 selection
+      event.preventDefault();
+    };
+    const onMouseMove = (event: MouseEvent) => {
+      if (!this.isImmersive) return;
+      // 在桌面端 pad 触控上,鼠标移到顶部 80px 也显示 toolbar
+      if (event.clientY < 80) show();
+    };
+
+    this.host.addEventListener("touchstart", onTouchStart, { passive: true });
+    this.host.addEventListener("touchend", onTouchEnd, { passive: false });
+    this.host.addEventListener("mousemove", onMouseMove);
+    this.register(() => {
+      this.host?.removeEventListener("touchstart", onTouchStart);
+      this.host?.removeEventListener("touchend", onTouchEnd);
+      this.host?.removeEventListener("mousemove", onMouseMove);
+      if (visibleTimer !== undefined) globalThis.clearTimeout(visibleTimer);
+    });
   }
 
   // ---- 键盘 ----
