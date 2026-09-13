@@ -119,18 +119,30 @@ export class CoverCache {
    * to load them after the original session ends.
    */
   async hydrateCovers(): Promise<void> {
-    if (!(await this.app.vault.adapter.exists(this.coversDir))) return;
+    if (!(await this.app.vault.adapter.exists(this.coversDir))) {
+      console.info(`[ez-reader] hydrateCovers: covers dir missing: ${this.coversDir}`);
+      return;
+    }
     const listing = await this.app.vault.adapter.list(this.coversDir);
-    for (const filePath of listing.files) {
-      const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (!(file instanceof TFile)) continue;
+    console.info(`[ez-reader] hydrateCovers: found ${listing.files.length} file(s) in ${this.coversDir}`);
+    for (const relativePath of listing.files) {
+      const fullPath = normalizePath(`${this.coversDir}/${relativePath}`);
+      const file = this.app.vault.getAbstractFileByPath(fullPath);
+      if (!(file instanceof TFile)) {
+        console.warn(`[ez-reader] hydrateCovers: not a TFile: ${fullPath}`);
+        continue;
+      }
       const slug = file.basename;
       const bookId = this.slugToBookId(slug);
-      if (!bookId) continue;
+      if (!bookId) {
+        console.warn(`[ez-reader] hydrateCovers: no matching book for slug: ${slug}`);
+        continue;
+      }
       // Always rebuild the resource path so the cache-buster token is
       // fresh and Chromium will actually load the image.
-      const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
+      const resourcePath = this.app.vault.adapter.getResourcePath(fullPath);
       this.library.setCoverPath(bookId, resourcePath);
+      console.info(`[ez-reader] hydrateCovers: hydrated ${bookId}`);
     }
   }
 
