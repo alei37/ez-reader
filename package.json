@@ -1,0 +1,47 @@
+{
+  "name": "ez-reader",
+  "version": "0.1.0",
+  "description": "Obsidian plugin for reading local ebooks in the active Vault, with progress, bookmarks, excerpts, research notes, and optional online translation.",
+  "main": "main.js",
+  "author": {
+    "name": "alei37",
+    "url": "https://github.com/alei37"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alei37/ez-reader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alei37/ez-reader/issues"
+  },
+  "homepage": "https://github.com/alei37/ez-reader#readme",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "test": "node esbuild.tests.config.mjs && node --test tests/dist/i18n.test.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "ebook",
+    "reader",
+    "epub",
+    "pdf",
+    "translation"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.15.2",
+    "esbuild": "^0.25.2",
+    "obsidian": "1.13.1",
+    "tslib": "^2.8.1",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "foliate-js": "1.0.1",
+    "pdfjs-dist": "6.1.200"
+  }
+}
