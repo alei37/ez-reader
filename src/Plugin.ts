@@ -9,7 +9,7 @@ import { LibraryService } from "./core/services/LibraryService";
 import { ReadingService } from "./core/services/ReadingService";
 import { TranslationCoordinator } from "./core/services/TranslationService";
 import type { LibraryEntry } from "./core/services/LibraryService";
-import type { BookReader } from "./core/ports/BookReader";
+import type { BookBytesLoader, BookReader } from "./core/ports/BookReader";
 import { ShelfView, SHELF_VIEW_TYPE } from "./ui/shelf/ShelfView";
 import { READER_VIEW_TYPE, ReaderView } from "./ui/reader/ReaderView";
 import { SettingsTab } from "./ui/settings/SettingsTab";
@@ -91,7 +91,24 @@ export default class EzReaderPlugin extends Plugin {
       reading: this.reading,
       foliate: this.foliate,
       pdfjs: this.pdfjs,
-      translation: this.translation
+      translation: this.translation,
+      bookBytesLoader: this.makeBookBytesLoader()
+    };
+  }
+
+  /**
+   * Adapter-level bridge from the BookReader port to the Obsidian Vault.
+   * The renderer cannot `fetch()` an `obsidian://` URL, so we hand each
+   * reader engine a function that resolves the file's bytes through the
+   * Vault API instead.
+   */
+  private makeBookBytesLoader(): BookBytesLoader {
+    return async (path: string): Promise<ArrayBuffer> => {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) {
+        throw new Error(`Book file not found: ${path}`);
+      }
+      return this.app.vault.readBinary(file);
     };
   }
 

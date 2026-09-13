@@ -15,6 +15,7 @@ import { ReaderSelectionMenu } from "./ReaderSelectionMenu";
 import { ReaderToolbar } from "./ReaderToolbar";
 import { TranslationModal } from "./TranslationModal";
 import { DEFAULT_READER_APPEARANCE } from "../../core/types/ReaderSettings";
+import type { BookBytesLoader } from "../../core/ports/BookReader";
 import type { TranslationService } from "../../core/ports/TranslationProvider";
 
 export const READER_VIEW_TYPE = "ez-reader-view";
@@ -25,6 +26,7 @@ interface ReaderViewDeps {
   readonly foliate: BookReader;
   readonly pdfjs: BookReader;
   readonly translation: TranslationService;
+  readonly bookBytesLoader: BookBytesLoader;
 }
 
 interface ActiveSelection {
@@ -182,7 +184,7 @@ export class ReaderView extends ItemView {
     if (!this.entry || !this.host) return;
     const book = this.entry.book;
     const engine = this.bookReaderFor(book);
-    this.session = await engine.open(book, this.host, DEFAULT_READER_APPEARANCE);
+    this.session = await engine.open(book, this.host, DEFAULT_READER_APPEARANCE, this.deps.bookBytesLoader);
 
     const fraction = await this.session.currentFraction();
     this.fraction = fraction;

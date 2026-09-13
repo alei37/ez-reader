@@ -1,5 +1,6 @@
 import type { Book } from "../../core/entities/Book";
 import type {
+  BookBytesLoader,
   BookReader,
   ReaderEventMap,
   ReaderSession,
@@ -46,12 +47,16 @@ const configureWorker = (pdfjs: PdfjsModule): void => {
 };
 
 export class PdfjsBookReader implements BookReader {
-  async open(book: Book, host: HTMLElement, _appearance: ReaderAppearance): Promise<ReaderSession> {
+  async open(
+    book: Book,
+    host: HTMLElement,
+    _appearance: ReaderAppearance,
+    loader: BookBytesLoader
+  ): Promise<ReaderSession> {
     const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs" as string)) as unknown as PdfjsModule;
     configureWorker(pdfjs);
 
-    const response = await fetch(book.locator.path);
-    const bytes = new Uint8Array(await response.arrayBuffer());
+    const bytes = new Uint8Array(await loader(book.locator.path));
     const loadingTask = pdfjs.getDocument({ data: bytes });
     const document = await loadingTask.promise;
 

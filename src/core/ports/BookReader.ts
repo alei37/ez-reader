@@ -38,12 +38,20 @@ export interface ReaderSession {
 }
 
 /**
+ * Loads the raw bytes for a given Vault-relative path. Book adapters cannot
+ * use `fetch()` directly because Obsidian's `obsidian://` resources are not
+ * reachable from the renderer. Concrete adapters get a loader injected so
+ * they stay portable while still being able to read the file contents.
+ */
+export type BookBytesLoader = (path: string) => Promise<ArrayBuffer>;
+
+/**
  * Adapter interface for a reader engine. The core layer depends only on this;
  * implementations wrap foliate-js, PDF.js, or any future engine.
  */
 export interface BookReader {
   /** Open a book and return a session bound to the given host element. */
-  open(book: Book, host: HTMLElement, appearance: ReaderAppearance): Promise<ReaderSession>;
+  open(book: Book, host: HTMLElement, appearance: ReaderAppearance, loader: BookBytesLoader): Promise<ReaderSession>;
 }
 
 /** Helper to resolve how a reader should be displayed inside a leaf. */

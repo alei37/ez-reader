@@ -1,5 +1,6 @@
 import type { Book } from "../../core/entities/Book";
 import type {
+  BookBytesLoader,
   BookReader,
   ReaderEventMap,
   ReaderSession,
@@ -42,11 +43,15 @@ interface FoliateModule {
  * reach the live `contentDocument` and listen for `selectionchange`.
  */
 export class FoliateBookReader implements BookReader {
-  async open(book: Book, host: HTMLElement, appearance: ReaderAppearance): Promise<ReaderSession> {
+  async open(
+    book: Book,
+    host: HTMLElement,
+    appearance: ReaderAppearance,
+    loader: BookBytesLoader
+  ): Promise<ReaderSession> {
     const [{ makeBook }] = await Promise.all([import("foliate-js/view.js") as unknown as Promise<FoliateModule>]);
 
-    const response = await fetch(book.locator.path);
-    const bytes = await response.arrayBuffer();
+    const bytes = await loader(book.locator.path);
     const file = new File([bytes], book.locator.path.split("/").pop() ?? "book", {
       type: mimeTypeFor(book.locator.format)
     });
