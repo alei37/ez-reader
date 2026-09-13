@@ -116,6 +116,7 @@ export class ReaderView extends ItemView {
     });
 
     this.host = container.createDiv({ cls: "ez-reader__reader__stage" });
+    this.bindSwipeGestures();
     if (this.entry) await this.openSession();
   }
 
@@ -127,6 +128,47 @@ export class ReaderView extends ItemView {
     this.selectionMenu?.destroy();
     this.selectionMenu = undefined;
     this.host = undefined;
+  }
+
+  /**
+   * Bind swipe gestures on the reader stage. Horizontal swipes flip pages;
+   * the threshold is conservative so accidental taps while selecting text
+   * never trigger a page change. We attach to `this.host` once, but the
+   * `once: true` listener is removed in onClose via `this.register(...)`.
+   */
+  private bindSwipeGestures(): void {
+    if (!this.host) return;
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+
+    const onStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      tracking = true;
+    };
+
+    const onEnd = (event: TouchEvent) => {
+      if (!tracking) return;
+      tracking = false;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (Math.abs(dx) < 50 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
+      void this.goToNext(dx < 0 ? 1 : -1);
+      event.preventDefault();
+    };
+
+    this.host.addEventListener("touchstart", onStart, { passive: true });
+    this.host.addEventListener("touchend", onEnd, { passive: false });
+    this.register(() => {
+      this.host?.removeEventListener("touchstart", onStart);
+      this.host?.removeEventListener("touchend", onEnd);
+    });
   }
 
   setEntry(entry: LibraryEntry): void {

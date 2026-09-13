@@ -455,4 +455,41 @@
     grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
     gap: 12px;
   }
+
+  .ez-reader__shelf-toolbar__sort,
+  .ez-reader__shelf-toolbar__filter {
+    display: none;
+  }
+
+  .ez-reader__shelf-toolbar__count {
+    width: 100%;
+    margin-left: 0;
+    order: 99;
+  }
+
+  .ez-reader__reader-toolbar {
+    padding: 6px 8px;
+    gap: 4px;
+  }
+
+  .ez-reader__reader-toolbar__close,
+  .ez-reader__reader-toolbar__action {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .ez-reader__reader-toolbar__chapter {
+    display: none;
+  }
+
+  .ez-reader__selection-menu {
+    bottom: 24px;
+    left: 50% !important;
+    transform: translateX(-50%);
+    top: auto !important;
+  }
+
+  .ez-reader__reader__stage {
+    touch-action: pan-y;
+  }
 }
