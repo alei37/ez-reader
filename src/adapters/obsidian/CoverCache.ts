@@ -109,24 +109,16 @@ export class CoverCache {
   }
 
   /**
-   * Scan the covers directory on startup to recover paths written by
-   * previous sessions. Maps existing files onto the same `bookId` slug
-   * we use when writing.
+   * Recover cover paths for every book in the library. The source of
+   * truth is the covers directory on disk: we list it and ask Obsidian
+   * for a fresh resource path for each file. The persisted snapshot is
+   * only used as a hint for which bookId a given slug corresponds to.
+   *
+   * We deliberately do not reuse the `app://...?token` URLs stored in
+   * the snapshot — those tokens are session-scoped and Chrome refuses
+   * to load them after the original session ends.
    */
   async hydrateCovers(): Promise<void> {
-    // First, restore the resource paths from the persistent snapshot.
-    // We trust the snapshot verbatim — if the underlying file has been
-    // deleted, the <img> onerror handler will fall back to the
-    // generated placeholder. Trying to validate the path with
-    // `getAbstractFileByPath` is fragile because the app:// resource
-    // path carries a token that the Vault API does not accept.
-    const stored = await this.annotations.loadCoverPaths();
-    for (const [bookId, path] of Object.entries(stored)) {
-      this.library.setCoverPath(bookId, path);
-    }
-
-    // Then scan the covers directory to pick up files that exist but
-    // were not recorded (e.g. left over from a previous plugin version).
     if (!(await this.app.vault.adapter.exists(this.coversDir))) return;
     const listing = await this.app.vault.adapter.list(this.coversDir);
     for (const filePath of listing.files) {
@@ -135,7 +127,8 @@ export class CoverCache {
       const slug = file.basename;
       const bookId = this.slugToBookId(slug);
       if (!bookId) continue;
-      if (stored[bookId]) continue;
+      // Always rebuild the resource path so the cache-buster token is
+      // fresh and Chromium will actually load the image.
       const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
       this.library.setCoverPath(bookId, resourcePath);
     }

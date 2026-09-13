@@ -96,8 +96,16 @@ class FoliateSession implements ReaderSession {
   async close(): Promise<void> {
     for (const off of this.docListeners) off();
     this.docListeners.clear();
-    this.view.close();
-    this.view.remove();
+    try {
+      this.view.close();
+    } catch (error) {
+      console.warn("[ez-reader] foliate view.close failed", error);
+    }
+    try {
+      this.view.remove();
+    } catch (error) {
+      console.warn("[ez-reader] foliate view.remove failed", error);
+    }
   }
 
   async applyAppearance(appearance: ReaderAppearance): Promise<void> {

@@ -18,7 +18,7 @@ import workerSource from "pdfjs-dist/legacy/build/pdf.worker.min.mjs";
 interface PdfDocument {
   numPages: number;
   getPage(pageNumber: number): Promise<PdfPage>;
-  destroy(): Promise<void>;
+  destroy?: () => Promise<void>;
 }
 
 interface PdfPage {
@@ -117,11 +117,10 @@ export class PdfjsBookReader implements BookReader {
       console.warn(`[ez-reader] PDF cover extraction failed for ${book.locator.path}`, error);
       return null;
     } finally {
-      try {
-        await document.destroy();
-      } catch {
-        // ignore double-destroy
-      }
+    try {
+      await document.destroy?.();
+    } catch {
+      // ignore double-destroy
     }
   }
 }
@@ -144,7 +143,11 @@ class PdfjsSession implements ReaderSession {
 
   async close(): Promise<void> {
     this.canvas.remove();
-    await this.doc.destroy();
+    try {
+      await this.doc.destroy?.();
+    } catch (error) {
+      console.warn("[ez-reader] pdf destroy failed", error);
+    }
   }
 
   async applyAppearance(_appearance: ReaderAppearance): Promise<void> {
