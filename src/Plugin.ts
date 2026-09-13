@@ -44,15 +44,17 @@ export default class EzReaderPlugin extends Plugin {
     this.translation = new TranslationCoordinator(this.annotationStore, [new GoogleTranslationProvider()]);
     this.foliate = new FoliateBookReader();
     this.pdfjs = new PdfjsBookReader();
-    this.covers = new CoverCache(this.app, this, this.library, this.foliate, this.pdfjs);
+    this.covers = new CoverCache(this.app, this, this.library, this.foliate, this.pdfjs, this.annotationStore);
 
     // Obsidian loads files asynchronously. `vault.getFiles()` returns an
     // empty list until the layout is ready and the initial vault scan has
     // finished. Wait for that moment before doing the first library scan,
     // matching the upstream plugin's pattern.
-    this.app.workspace.onLayoutReady(() => {
-      void this.library.initialize();
-      void this.covers.hydrateCovers();
+    this.app.workspace.onLayoutReady(async () => {
+      await this.library.initialize();
+      // Cover hydration must run after the library has populated its
+      // entries — slug → bookId mapping needs them to exist.
+      await this.covers.hydrateCovers();
     });
 
     this.addSettingTab(new SettingsTab(this.app, this, this.annotationStore));

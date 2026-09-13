@@ -20,6 +20,7 @@ export class CoverCache {
   private readonly library: LibraryService;
   private readonly foliate: BookReader;
   private readonly pdfjs: BookReader;
+  private readonly annotations: import("../../core/ports/AnnotationStore").AnnotationStore;
   private readonly inFlight = new Set<string>();
 
   constructor(
@@ -27,13 +28,15 @@ export class CoverCache {
     plugin: Plugin,
     library: LibraryService,
     foliate: BookReader,
-    pdfjs: BookReader
+    pdfjs: BookReader,
+    annotations: import("../../core/ports/AnnotationStore").AnnotationStore
   ) {
     this.app = app;
     this.plugin = plugin;
     this.library = library;
     this.foliate = foliate;
     this.pdfjs = pdfjs;
+    this.annotations = annotations;
     this.coversDir = normalizePath(`${app.vault.configDir}/plugins/${plugin.manifest.id}/data/covers`);
   }
 
@@ -55,6 +58,10 @@ export class CoverCache {
       if (!extracted) return;
       const path = await this.writeCover(book, extracted.bytes, extracted.mimeType);
       this.library.setCoverPath(book.id, path);
+      // Persist alongside the rest of the annotation data so the path
+      // survives even if the covers directory goes missing.
+      const current = await this.annotations.loadCoverPaths();
+      await this.annotations.saveCoverPaths({ ...current, [book.id]: path });
     } catch (error) {
       console.warn(`[ez-reader] cover extraction failed for ${book.locator.path}`, error);
     } finally {
@@ -107,6 +114,20 @@ export class CoverCache {
    * we use when writing.
    */
   async hydrateCovers(): Promise<void> {
+    // First, restore the resource paths from the persistent snapshot —
+    // this is the source of truth that survives even if the covers
+    // directory is gone (e.g. user reset the plugin data folder).
+    const stored = await this.annotations.loadCoverPaths();
+    for (const [bookId, path] of Object.entries(stored)) {
+      // Verify the file still exists on disk before rehydrating.
+      const file = this.app.vault.getAbstractFileByPath(this.pathFromResource(path));
+      if (file instanceof TFile) {
+        this.library.setCoverPath(bookId, path);
+      }
+    }
+
+    // Then scan the covers directory to pick up files that exist but
+    // were not recorded (e.g. left over from a previous plugin version).
     if (!(await this.app.vault.adapter.exists(this.coversDir))) return;
     const listing = await this.app.vault.adapter.list(this.coversDir);
     for (const filePath of listing.files) {
@@ -115,9 +136,14 @@ export class CoverCache {
       const slug = file.basename;
       const bookId = this.slugToBookId(slug);
       if (!bookId) continue;
+      if (stored[bookId]) continue;
       const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
       this.library.setCoverPath(bookId, resourcePath);
     }
+  }
+
+  private pathFromResource(resource: string): string {
+    return decodeURIComponent(resource.replace(/^app:\/\//, ""));
   }
 
   private slugToBookId(slug: string): string | null {

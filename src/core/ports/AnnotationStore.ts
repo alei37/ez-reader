@@ -16,6 +16,8 @@ export interface AnnotationSnapshot {
   readonly reading: ReadonlyArray<ReadingState>;
   readonly bookmarks: ReadonlyArray<Bookmark>;
   readonly excerpts: ReadonlyArray<Excerpt>;
+  /** Cached Obsidian resource paths for book cover images, keyed by book id. */
+  readonly coverPaths?: Readonly<Record<string, string>>;
 }
 
 /** Read/write access to annotation data, independent of how it's persisted. */
@@ -38,4 +40,7 @@ export interface AnnotationStore {
 
   listSettings(): Promise<PluginSettings>;
   saveSettings(settings: PluginSettings): Promise<void>;
+
+  loadCoverPaths(): Promise<Readonly<Record<string, string>>>;
+  saveCoverPaths(coverPaths: Record<string, string>): Promise<void>;
 }

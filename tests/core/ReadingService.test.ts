@@ -90,6 +90,12 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async saveSettings(settings: PluginSettings): Promise<void> {
     this.snapshot = { ...this.snapshot, settings };
   }
+  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> {
+    return this.snapshot.coverPaths ?? {};
+  }
+  async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
+    this.snapshot = { ...this.snapshot, coverPaths };
+  }
 }
 
 test("ReadingService.openBook transitions unread -> reading and stamps lastOpenedAt", async () => {

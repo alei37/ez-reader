@@ -124,6 +124,12 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async saveSettings(settings: AnnotationSnapshot["settings"]): Promise<void> {
     this.snapshot = { ...this.snapshot, settings };
   }
+  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> {
+    return this.snapshot.coverPaths ?? {};
+  }
+  async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
+    this.snapshot = { ...this.snapshot, coverPaths };
+  }
 }
 
 const makeLocator = (path: string, format: BookFormat = "epub"): BookLocator => ({

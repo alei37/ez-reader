@@ -29,7 +29,8 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       library: raw?.library ?? [],
       reading: raw?.reading ?? [],
       bookmarks: raw?.bookmarks ?? [],
-      excerpts: raw?.excerpts ?? []
+      excerpts: raw?.excerpts ?? [],
+      coverPaths: raw?.coverPaths ?? {}
     };
     return this.cache;
   }
@@ -113,6 +114,16 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   async saveSettings(settings: PluginSettings): Promise<void> {
     const snapshot = await this.load();
     await this.save({ ...snapshot, settings });
+  }
+
+  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> {
+    const snapshot = await this.load();
+    return snapshot.coverPaths ?? {};
+  }
+
+  async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
+    const snapshot = await this.load();
+    await this.save({ ...snapshot, coverPaths });
   }
 
   private normalizeSettings(input: PluginSettings | undefined): PluginSettings {
