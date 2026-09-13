@@ -31,7 +31,7 @@ export default class EzReaderPlugin extends Plugin {
   private pdfjs!: BookReader;
 
   async onload(): Promise<void> {
-    this.bookSource = new ObsidianBookSource(this.app.vault);
+    this.bookSource = new ObsidianBookSource(this.app);
     this.annotationStore = new ObsidianAnnotationStore(this);
     this.library = new LibraryService(this.bookSource, this.annotationStore);
     this.reading = new ReadingService(this.annotationStore);

@@ -86,6 +86,11 @@ export class LibraryService {
       });
     }
 
+    console.info(`[ez-reader] Library scan: discovered ${this.entries.size} book(s) in the Vault.`);
+    for (const entry of this.entries.values()) {
+      console.info(`[ez-reader]   ${entry.book.locator.format.toUpperCase().padEnd(4)} ${entry.book.locator.path}`);
+    }
+
     this.sourceDisposables.push(
       this.source.watch((event) => {
         if (event.kind === "removed") {
