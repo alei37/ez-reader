@@ -33,6 +33,10 @@ export default class EzReaderPlugin extends Plugin {
   async onload(): Promise<void> {
     this.bookSource = new ObsidianBookSource(this.app);
     this.annotationStore = new ObsidianAnnotationStore(this);
+    // Local Book Reader upstream opens Obsidian's "Detect all file
+    // extensions" setting so `vault.getFiles()` returns PDF/EPUB alongside
+    // markdown. We do the same before initializing the library.
+    await this.enableAllBookFormatsInFileExplorer();
     this.library = new LibraryService(this.bookSource, this.annotationStore);
     this.reading = new ReadingService(this.annotationStore);
     this.translation = new TranslationCoordinator(this.annotationStore, [new GoogleTranslationProvider()]);
@@ -114,5 +118,24 @@ export default class EzReaderPlugin extends Plugin {
     if (!(file instanceof TFile)) return;
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.openFile(file, { active: true });
+  }
+
+  /**
+   * Mirrors `enableAllBookFormatsInFileExplorer` from the upstream plugin:
+   * turns on Obsidian's "Detect all file extensions" so `vault.getFiles()`
+   * returns PDF and EPUB files. Without this, those file types are hidden
+   * from the file explorer and excluded from scans.
+   */
+  private async enableAllBookFormatsInFileExplorer(): Promise<void> {
+    const vaultWithConfig = this.app.vault as typeof this.app.vault & {
+      getConfig?: (key: string) => unknown;
+      setConfig?: (key: string, value: boolean) => Promise<void> | void;
+    };
+    if (vaultWithConfig.getConfig?.("showUnsupportedFiles") === true) return;
+    try {
+      await vaultWithConfig.setConfig?.("showUnsupportedFiles", true);
+    } catch (error) {
+      console.warn("[ez-reader] could not enable showUnsupportedFiles; scans may miss PDF/EPUB", error);
+    }
   }
 }

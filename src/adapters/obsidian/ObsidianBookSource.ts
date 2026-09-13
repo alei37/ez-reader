@@ -34,47 +34,62 @@ export class ObsidianBookSource implements BookSource {
   async *scan(formats: ReadonlySet<BookFormat>): AsyncIterable<BookLocator> {
     const wanted = formats.size === 0 ? SUPPORTED_BOOK_FORMATS : formats;
     const seenPaths = new Set<string>();
+    let totalFromGetFiles = 0;
 
-    const accept = (file: TFile): BookLocator | null => {
-      if (seenPaths.has(file.path)) return null;
+    for (const file of this.app.vault.getFiles()) {
+      if (!(file instanceof TFile)) continue;
+      totalFromGetFiles += 1;
+      if (seenPaths.has(file.path)) continue;
       const format = extensionToFormat(file.extension);
-      if (!format || !wanted.has(format)) return null;
+      if (!format || !wanted.has(format)) continue;
       seenPaths.add(file.path);
-      return {
+      yield {
         path: file.path,
         format,
         sizeBytes: file.stat.size,
         modifiedAt: file.stat.mtime
       };
-    };
+    }
 
+    // Fallback: vault.getFiles() may still miss files Obsidian hasn't
+    // loaded yet. Walk the adapter explicitly so we surface them too.
+    let acceptedFromAdapter = 0;
+    const adapterFolders: string[] = [""];
     const visited: string[] = [];
-    const queue: string[] = [""];
-    while (queue.length > 0) {
-      const folder = queue.shift() ?? "";
-      const entries = await this.app.vault.adapter.list(folder);
+    while (adapterFolders.length > 0) {
+      const folder = adapterFolders.shift() ?? "";
+      let entries: { files: string[]; folders: string[] };
+      try {
+        entries = await this.app.vault.adapter.list(folder);
+      } catch (error) {
+        console.warn(`[ez-reader] adapter.list failed for ${folder || "/"}`, error);
+        continue;
+      }
       for (const filePath of entries.files) {
+        if (seenPaths.has(filePath)) continue;
         const abstract = this.app.vault.getAbstractFileByPath(filePath);
-        if (abstract instanceof TFile) {
-          const locator = accept(abstract);
-          if (locator) yield locator;
-        }
+        if (!(abstract instanceof TFile)) continue;
+        const format = extensionToFormat(abstract.extension);
+        if (!format || !wanted.has(format)) continue;
+        seenPaths.add(filePath);
+        acceptedFromAdapter += 1;
+        yield {
+          path: filePath,
+          format,
+          sizeBytes: abstract.stat.size,
+          modifiedAt: abstract.stat.mtime
+        };
       }
       for (const subFolder of entries.folders) {
         if (visited.includes(subFolder)) continue;
         visited.push(subFolder);
-        queue.push(subFolder);
+        adapterFolders.push(subFolder);
       }
     }
 
-    // Fall back to `vault.getFiles()` for any file Obsidian already
-    // surfaced through other plugins. The seenPaths guard prevents
-    // double-yielding the same path.
-    for (const file of this.app.vault.getFiles()) {
-      if (!(file instanceof TFile)) continue;
-      const locator = accept(file);
-      if (locator) yield locator;
-    }
+    console.info(
+      `[ez-reader] Scan: vault.getFiles()=${totalFromGetFiles}, adapter additions=${acceptedFromAdapter}, total seen=${seenPaths.size}.`
+    );
   }
 
   async read(locator: BookLocator): Promise<ArrayBuffer> {
