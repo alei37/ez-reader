@@ -47,6 +47,8 @@ export interface PluginSettings {
   readonly autoCreateNoteOnOpen?: boolean;
   /** 翻页快捷键 */
   readonly keyboardShortcuts?: KeyboardShortcuts;
+  /** 关闭"记住阅读进度"。默认 true. 关闭后打开书不再自动跳转到上次位置 */
+  readonly rememberProgress?: boolean;
 }
 
 export type ReaderOpenMode = "tab" | "window";
@@ -88,5 +90,6 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = Object.freeze({
   twoPagesByDefault: false,
   immersiveOnTablet: false,
   autoCreateNoteOnOpen: true,
-  keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS
+  keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
+  rememberProgress: true
 });

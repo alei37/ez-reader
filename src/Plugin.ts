@@ -139,6 +139,7 @@ export default class EzReaderPlugin extends Plugin {
     twoPagesByDefault: boolean;
     immersiveOnTablet: boolean;
     translationLocale: Locale;
+    rememberProgress: boolean;
   }> {
     const settings = await this.annotationStore.listSettings();
     return {
@@ -146,7 +147,8 @@ export default class EzReaderPlugin extends Plugin {
       shortcuts: settings.keyboardShortcuts ?? DEFAULT_KEYBOARD_SHORTCUTS,
       twoPagesByDefault: settings.twoPagesByDefault ?? false,
       immersiveOnTablet: settings.immersiveOnTablet ?? false,
-      translationLocale: (settings.translation?.targetLocale as Locale) ?? "zh-CN"
+      translationLocale: (settings.translation?.targetLocale as Locale) ?? "zh-CN",
+      rememberProgress: settings.rememberProgress !== false
     };
   }
 

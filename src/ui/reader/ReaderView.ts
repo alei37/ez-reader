@@ -38,13 +38,7 @@ interface ReaderViewDeps {
   readonly translation: TranslationService;
   readonly noteWriter?: NoteWriter;
   readonly bookBytesLoader: BookBytesLoader;
-  readonly settingsProvider?: () => Promise<{
-    defaultAppearance: ReaderAppearance;
-    shortcuts: KeyboardShortcuts;
-    twoPagesByDefault: boolean;
-    immersiveOnTablet: boolean;
-    translationLocale: Locale;
-  }>;
+  readonly settingsProvider?: () => Promise<LoadedSettings>;
   readonly onBookOpened?: (entry: LibraryEntry) => void;
 }
 
@@ -54,6 +48,7 @@ interface LoadedSettings {
   twoPagesByDefault: boolean;
   immersiveOnTablet: boolean;
   translationLocale: Locale;
+  rememberProgress: boolean;
 }
 
 interface ActiveSelection {
@@ -66,6 +61,60 @@ interface ActiveSelection {
 const isEditableTarget = (target: EventTarget | null): boolean =>
   target instanceof Element &&
   Boolean(target.closest("input, textarea, select, button, [contenteditable='true'], a"));
+
+/**
+ * Heuristic that expands a too-short selection to a nearby sentence
+ * boundary when the surrounding text looks CJK. Browsers without
+ * CJK word segmentation tend to leave a selection as a single
+ * character; the user usually meant the whole clause.
+ *
+ * Trigger conditions:
+ *   - the original selection is shorter than 12 chars
+ *   - the selection contains CJK characters (otherwise leave alone —
+ *     Latin selections are tokenized correctly)
+ *   - we can find a stop character (。！？!?;,，;\n) within ±80 chars
+ *     of the selection inside `docText` (we approximate by walking
+ *     the current Selection's surrounding text node when possible)
+ */
+const maybeExpandChineseSelection = (raw: string): { text: string } => {
+  if (raw.length >= 12) return { text: raw };
+  // CJK 字符比例 > 0.5 才认为需要扩展
+  const cjkCount = Array.from(raw).filter((ch) => /[\u3400-\u9fff\uf900-\ufaff]/.test(ch)).length;
+  if (cjkCount === 0) return { text: raw };
+  // 从当前 DOM selection 拿到上下文, 在 ±120 字符窗口内找标点
+  const sel = globalThis.document.getSelection();
+  const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
+  if (!range) return { text: raw };
+  const container = range.commonAncestorContainer;
+  const containerText = container.nodeType === 3 ? container.textContent ?? "" : container.textContent ?? "";
+  if (!containerText) return { text: raw };
+  // 找到 raw 在 containerText 里的位置 (近似)
+  const idx = containerText.indexOf(raw);
+  if (idx < 0) return { text: raw };
+  const before = containerText.slice(Math.max(0, idx - 120), idx);
+  const after = containerText.slice(idx + raw.length, Math.min(containerText.length, idx + raw.length + 120));
+  // 找左侧最近的句号/逗号
+  const leftStop = Math.max(
+    before.lastIndexOf("。"), before.lastIndexOf("！"), before.lastIndexOf("？"),
+    before.lastIndexOf("."), before.lastIndexOf("!"), before.lastIndexOf("?"),
+    before.lastIndexOf("，"), before.lastIndexOf(","),
+    before.lastIndexOf("\n"), before.lastIndexOf("；"), before.lastIndexOf(";")
+  );
+  const rightStopMatch = [
+    "。", "！", "？", ".", "!", "?",
+    "，", ",", "\n", "；", ";"
+  ].map((c) => ({ ch: c, at: after.indexOf(c) }))
+    .filter((m) => m.at >= 0)
+    .sort((a, b) => a.at - b.at)[0];
+  const leftStart = leftStop >= 0 ? Math.max(0, idx - 120) + leftStop + 1 : Math.max(0, idx - 20);
+  const rightEnd = rightStopMatch
+    ? idx + raw.length + rightStopMatch.at + 1
+    : idx + raw.length + 20;
+  const expanded = containerText.slice(leftStart, rightEnd).trim();
+  // 只接受 < 100 字符的扩展结果
+  if (expanded.length > 100 || expanded.length <= raw.length) return { text: raw };
+  return { text: expanded };
+};
 
 /**
  * ItemView that holds one reader session. Layout (single column on tablet,
@@ -125,9 +174,11 @@ export class ReaderView extends ItemView {
     let loadedSettings: LoadedSettings | undefined;
     if (this.deps.settingsProvider) {
       try {
-        loadedSettings = await this.deps.settingsProvider();
-        this.appearance = { ...loadedSettings.defaultAppearance };
-        this.shortcuts = loadedSettings.shortcuts;
+        const fetched = await this.deps.settingsProvider();
+        loadedSettings = fetched;
+        this.appearance = { ...fetched.defaultAppearance };
+        this.shortcuts = fetched.shortcuts;
+        this.rememberProgress = fetched.rememberProgress !== false;
       } catch (error) {
         console.warn("[ez-reader] failed to load settings", error);
       }
@@ -278,13 +329,13 @@ export class ReaderView extends ItemView {
 
   /**
    * Check whether the user has disabled progress memory in settings.
-   * We always return true for now — the dedicated disable flag will land
-   * when SettingsTab exposes the field; until then the safest default is
-   * to honour the stored position.
+   * The flag lives on PluginSettings (rememberProgress). Defaults to
+   * true so first-run users see the resume behaviour out of the box.
    */
+  private rememberProgress: boolean = true;
+
   private async isProgressMemoryEnabled(): Promise<boolean> {
-    void this.deps.reading;
-    return true;
+    return this.rememberProgress;
   }
 
   /**
@@ -559,7 +610,7 @@ export class ReaderView extends ItemView {
       }
     });
 
-    // 防抖: selectionchange 在用户拖拽过程中多次触发, 我们延迟 150ms
+    // 防抖: selectionchange 在用户拖拽过程中多次触发, 我们延迟 180ms
     // 等待用户真正完成选词再弹菜单
     let selectionDebounce: ReturnType<typeof setTimeout> | undefined;
     const offSelect = this.session.on("selection-change", (event) => {
@@ -570,11 +621,14 @@ export class ReaderView extends ItemView {
         this.selectionMenu?.hide();
         return;
       }
-      this.pendingSelection = { text: detail.text, rect: detail.rect, locator: detail.locator, chapter: this.chapter };
+      // 中文段落里, 浏览器按"字符"分词. 如果只选了一两个字符 (没有空格), 自动扩到最近的句号/逗号,
+      // 这样想法/摘录更有意义. CJK 段落 (没有空格 / 拉丁词比例低) 才触发.
+      const expanded = maybeExpandChineseSelection(detail.text);
+      const text = expanded.text;
+      this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter };
       if (selectionDebounce !== undefined) globalThis.clearTimeout(selectionDebounce);
       selectionDebounce = globalThis.setTimeout(() => {
         selectionDebounce = undefined;
-        // 取最新 selection 的 rect (selection 完成后)
         const sel = globalThis.document.getSelection();
         const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
         const rect = range?.getBoundingClientRect() ?? detail.rect;

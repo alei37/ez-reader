@@ -38,8 +38,14 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
   });
 
   const fraction = progressFraction(entry.reading);
+  let progressText = "—";
+  if (entry.reading.position?.kind === "pdf") {
+    progressText = `第 ${entry.reading.position.page} 页`;
+  } else if (fraction > 0) {
+    progressText = `${Math.round(fraction * 100)}%`;
+  }
   row.createEl("span", {
-    text: fraction > 0 ? `${Math.round(fraction * 100)}%` : "—",
+    text: progressText,
     cls: "ez-reader__shelf-list__progress"
   });
   row.createEl("span", {

@@ -174,7 +174,8 @@ const renderExcerptBlock = (input: ExcerptInput, bookTitle: string, bookId: stri
     "> [!quote] 摘录",
     `> **${bookTitle}** · ${sourceParts.join(" · ")}`,
     `> Created: ${new Date(input.createdAt).toISOString().slice(0, 16).replace("T", " ")}`,
-    `> 返回原文: [打开阅读器](obsidian://${protocol}?book=${encodeURIComponent(bookId)}&annotation=${encodeURIComponent(input.excerptId)})`,
+    // 双向链接: 协议 URL 用于外部跳转, wiki link 用于 vault 内跳转 (光标在块上即可)
+    `> 返回原文: [打开阅读器](obsidian://${protocol}?book=${encodeURIComponent(bookId)}&annotation=${encodeURIComponent(input.excerptId)}) · [[#^${input.excerptId}|回到此摘录]]`,
     tagLine,
     ">",
     ...quoteLines

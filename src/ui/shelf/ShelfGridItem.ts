@@ -57,7 +57,11 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   const footer = card.createDiv({ cls: "ez-reader__shelf-grid__footer" });
   footer.createEl("span", { text: statusLabel(entry.reading.status), cls: `ez-reader__status-pill is-${entry.reading.status}` });
   const fraction = progressFraction(entry.reading);
-  if (fraction > 0) {
+  // PDF 没有 fraction, 用 page number 替代
+  if (entry.reading.position?.kind === "pdf") {
+    const page = entry.reading.position.page;
+    footer.createEl("span", { text: `第 ${page} 页`, cls: "ez-reader__shelf-grid__progress" });
+  } else if (fraction > 0) {
     footer.createEl("span", { text: `${Math.round(fraction * 100)}%`, cls: "ez-reader__shelf-grid__progress" });
   }
   // 平台标签: EPUB / PDF 等

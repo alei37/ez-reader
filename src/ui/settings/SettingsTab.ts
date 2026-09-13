@@ -151,16 +151,11 @@ export class SettingsTab extends PluginSettingTab {
       .setDesc("打开书时自动跳转到上次阅读位置")
       .addToggle((toggle) => {
         void this.loadSettings().then((s) => {
-          toggle.setValue(s.notesDirectory !== "__disabled__");
+          toggle.setValue(s.rememberProgress !== false);
         });
         toggle.onChange(async (value) => {
           const s = await this.loadSettings();
-          // 关闭时用 "__disabled__" 标记(向后兼容); 开启时恢复默认目录
-          if (!value) {
-            await this.saveSettings({ ...s, notesDirectory: "__disabled__" });
-          } else if (s.notesDirectory === "__disabled__") {
-            await this.saveSettings({ ...s, notesDirectory: "zz_阅读与研究/阅读笔记" });
-          }
+          await this.saveSettings({ ...s, rememberProgress: value });
         });
       });
     new Setting(containerEl)
