@@ -72,7 +72,7 @@
 
 .ez-reader__shelf__body.is-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 24px;
 }
 
@@ -146,7 +146,7 @@
 }
 
 .ez-reader__shelf-grid__cover {
-  aspect-ratio: 2 / 3;
+  aspect-ratio: 3 / 4;
 }
 
 .ez-reader__shelf-grid__cover img,
@@ -158,13 +158,13 @@
 
 .ez-reader__shelf-grid__cover.is-placeholder {
   background: linear-gradient(135deg, var(--background-modifier-border), var(--background-secondary));
-  padding: 16px 12px;
+  padding: 12px 10px;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .ez-reader__shelf-grid__cover-glyph {
-  font-size: 48px;
+  font-size: 42px;
   font-weight: 700;
   color: var(--text-muted);
   line-height: 1;
@@ -181,9 +181,26 @@
   word-break: break-word;
 }
 
+.ez-reader__shelf-grid__author {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ez-reader__shelf-grid__footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .ez-reader__shelf-list__cover {
-  width: 36px;
-  height: 54px;
+  width: 40px;
+  height: 56px;
   border-radius: 4px;
   flex-shrink: 0;
 }
