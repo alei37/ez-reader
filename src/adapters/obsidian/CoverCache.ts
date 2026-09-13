@@ -114,16 +114,15 @@ export class CoverCache {
    * we use when writing.
    */
   async hydrateCovers(): Promise<void> {
-    // First, restore the resource paths from the persistent snapshot —
-    // this is the source of truth that survives even if the covers
-    // directory is gone (e.g. user reset the plugin data folder).
+    // First, restore the resource paths from the persistent snapshot.
+    // We trust the snapshot verbatim — if the underlying file has been
+    // deleted, the <img> onerror handler will fall back to the
+    // generated placeholder. Trying to validate the path with
+    // `getAbstractFileByPath` is fragile because the app:// resource
+    // path carries a token that the Vault API does not accept.
     const stored = await this.annotations.loadCoverPaths();
     for (const [bookId, path] of Object.entries(stored)) {
-      // Verify the file still exists on disk before rehydrating.
-      const file = this.app.vault.getAbstractFileByPath(this.pathFromResource(path));
-      if (file instanceof TFile) {
-        this.library.setCoverPath(bookId, path);
-      }
+      this.library.setCoverPath(bookId, path);
     }
 
     // Then scan the covers directory to pick up files that exist but
@@ -140,10 +139,6 @@ export class CoverCache {
       const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
       this.library.setCoverPath(bookId, resourcePath);
     }
-  }
-
-  private pathFromResource(resource: string): string {
-    return decodeURIComponent(resource.replace(/^app:\/\//, ""));
   }
 
   private slugToBookId(slug: string): string | null {
