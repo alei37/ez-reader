@@ -231,11 +231,39 @@ export class ReaderView extends ItemView {
     root.addClass(`ez-reader__theme-${theme}`);
   }
 
+  /**
+   * Render a friendly error message in the stage when the reader fails to
+   * open. We keep the toolbar intact so the user can close the view or
+   * try a different book.
+   */
+  private renderOpenError(error: unknown): void {
+    if (!this.host) return;
+    this.host.empty();
+    this.host.removeClass("ez-reader__pdf-stage");
+    this.host.addClass("ez-reader__reader__error");
+    const message = error instanceof Error ? error.message : String(error);
+    const title = this.host.createEl("h3", { text: "无法打开这本书" });
+    title.addClass("ez-reader__reader__error-title");
+    this.host.createEl("p", { text: message }).addClass("ez-reader__reader__error-message");
+    const stack = error instanceof Error ? error.stack : undefined;
+    if (stack) {
+      const details = this.host.createEl("details");
+      details.createEl("summary", { text: "技术细节" });
+      details.createEl("pre", { text: stack }).addClass("ez-reader__reader__error-stack");
+    }
+  }
+
   private async openSession(): Promise<void> {
     if (!this.entry || !this.host) return;
     const book = this.entry.book;
     const engine = this.bookReaderFor(book);
-    this.session = await engine.open(book, this.host, this.appearance, this.deps.bookBytesLoader);
+    try {
+      this.session = await engine.open(book, this.host, this.appearance, this.deps.bookBytesLoader);
+    } catch (error) {
+      console.error("[ez-reader] failed to open book", book.locator.path, error);
+      this.renderOpenError(error);
+      return;
+    }
     this.deps.onBookOpened?.(this.entry);
 
     const fraction = await this.session.currentFraction();

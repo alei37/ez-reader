@@ -248,28 +248,31 @@ class PdfjsSession implements ReaderSession {
     const baseViewport = pdfPage.getViewport({ scale: 1 });
     let scale = this.scale;
     if (this.fitWidth) {
-      const hostWidth = Math.max(this.host.clientWidth - 24, 100);
+      // If the stage isn't laid out yet, fall back to a sensible width so
+      // the page renders at a usable size even on the very first frame.
+      const measured = this.host.clientWidth;
+      const hostWidth = measured > 100 ? measured - 32 : 600;
       scale = hostWidth / baseViewport.width;
     }
     const viewport = pdfPage.getViewport({ scale });
     const dpr = Math.max(1, Math.floor(globalThis.devicePixelRatio ?? 1));
     const displayWidth = viewport.width;
     const displayHeight = viewport.height;
-    const pixelWidth = Math.round(displayWidth * dpr);
-    const pixelHeight = Math.round(displayHeight * dpr);
+    const pixelWidth = Math.max(1, Math.round(displayWidth * dpr));
+    const pixelHeight = Math.max(1, Math.round(displayHeight * dpr));
     const context = this.canvas.getContext("2d");
     if (!context) throw new Error("PDF canvas 2D context unavailable.");
     // Render at device pixel resolution for crisp output on HiDPI screens.
+    // Setting canvas.width/height clears the buffer and resets the
+    // context, so the new dimensions take effect immediately.
     this.canvas.width = pixelWidth;
     this.canvas.height = pixelHeight;
     this.canvas.style.width = `${displayWidth}px`;
     this.canvas.style.height = `${displayHeight}px`;
-    context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // Clear any previous frame so transparent PDFs don't ghost.
-    context.clearRect(0, 0, displayWidth, displayHeight);
-    // Fill with white so dark-themed PDFs are still legible.
-    context.fillStyle = "#ffffff";
-    context.fillRect(0, 0, displayWidth, displayHeight);
+    // pdfjs's page.render accepts a canvasContext + viewport pair. The
+    // render call ignores the context's current transform — it computes
+    // its own from canvas.width/height vs viewport.width/height — so we
+    // don't need to call setTransform here.
     await pdfPage.render({ canvasContext: context, canvas: this.canvas, viewport }).promise;
     await this.renderTextLayer(pdfPage, viewport, displayWidth, displayHeight);
     this.currentPage = target;
