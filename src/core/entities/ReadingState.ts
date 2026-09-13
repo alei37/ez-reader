@@ -4,7 +4,19 @@ import type { BookId } from "./Book";
 export type ReadingPosition =
   | { readonly kind: "reflow"; readonly fraction: number; readonly cfi?: string }
   | { readonly kind: "text"; readonly fraction: number; readonly start: number; readonly end: number }
-  | { readonly kind: "pdf"; readonly page: number; readonly scale?: number; readonly fitWidth?: boolean };
+  | {
+      readonly kind: "pdf";
+      readonly page: number;
+      readonly scale?: number;
+      readonly fitWidth?: boolean;
+      /**
+       * Optional PDF subpath describing a 4-tuple selection on the page
+       * (beginIndex,beginOffset,endIndex,endOffset). The format mirrors
+       * PDF++ so a deep-link from a vault note jumps back to the same
+       * highlighted range the user originally captured.
+       */
+      readonly selection?: string;
+    };
 
 /** User-tagged shelf state, similar to Goodreads shelves. */
 export type ReadingStatus = "unread" | "reading" | "finished" | "abandoned";

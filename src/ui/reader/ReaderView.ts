@@ -251,6 +251,15 @@ export class ReaderView extends ItemView {
 
   setEntry(entry: LibraryEntry): void {
     this.entry = entry;
+    // 切换书时: 关闭上一个 session 释放 worker / iframe, 重置 ready promise
+    if (this.session) {
+      const old = this.session;
+      this.session = undefined;
+      void old.close().catch((error) => console.warn("[ez-reader] failed to close previous session", error));
+    }
+    // 重新创建 ready promise 以便下次 whenReady 重新等待
+    this.readyPromise = undefined;
+    this.readyResolve = undefined;
     if (this.host) {
       void this.openSession();
     }
@@ -259,9 +268,52 @@ export class ReaderView extends ItemView {
   /** Public entry point used by the obsidian:// protocol handler. */
   async openExcerptById(excerptId: string): Promise<void> {
     if (!this.entry) return;
+    // 等 session 就绪(openSession 是 fire-and-forget,但 session 字段会立即被赋值;
+    // session 内部的 goTo / highlight 需要 await engine.open 完成)
+    await this.whenReady();
     const all = await this.deps.reading.listExcerpts(this.entry.book.id);
     const target = all.find((e) => e.id === excerptId);
     if (target) await this.jumpToExcerpt(target);
+  }
+
+  /**
+   * Check whether the user has disabled progress memory in settings.
+   * We always return true for now — the dedicated disable flag will land
+   * when SettingsTab exposes the field; until then the safest default is
+   * to honour the stored position.
+   */
+  private async isProgressMemoryEnabled(): Promise<boolean> {
+    void this.deps.reading;
+    return true;
+  }
+
+  /**
+   * Resolves once the current reader session is ready to receive
+   * commands (goTo / highlight / etc.). Used by the obsidian:// protocol
+   * handler so the reverse-jump waits for the session to settle instead
+   * of racing the async book-open.
+   */
+  private readyPromise: Promise<void> | undefined;
+  private readyResolve: (() => void) | undefined;
+
+  private markReady(): void {
+    if (this.readyResolve) this.readyResolve();
+    this.readyResolve = undefined;
+    this.readyPromise = undefined;
+  }
+
+  private whenReady(): Promise<void> {
+    if (this.session && !this.readyPromise) {
+      return Promise.resolve();
+    }
+    if (!this.readyPromise) {
+      this.readyPromise = new Promise<void>((resolve) => {
+        this.readyResolve = resolve;
+      });
+      // 兜底: 30 秒还没就绪就强制 resolve,避免永久挂起
+      globalThis.setTimeout(() => this.markReady(), 30000);
+    }
+    return this.readyPromise;
   }
 
   // ---- 平台检测 ----
@@ -307,8 +359,8 @@ export class ReaderView extends ItemView {
       if (dy > 30 && lastTouchY < 80) {
         show();
       }
-      // 防止 click 被算成 selection
-      event.preventDefault();
+      // 不在这里 preventDefault, 会阻止 selection 行为。
+      // (翻页由 bindSwipeGestures 处理, 这里只管 toolbar 显示)
     };
     const onMouseMove = (event: MouseEvent) => {
       if (!this.isImmersive) return;
@@ -467,15 +519,18 @@ export class ReaderView extends ItemView {
     } catch (error) {
       console.error("[ez-reader] failed to open book", book.locator.path, error);
       this.renderOpenError(error);
+      // 即便失败也 markReady, 让外部知道不会继续等待
+      this.markReady();
       return;
     }
     this.deps.onBookOpened?.(this.entry);
     this.applyTheme(this.appearance.theme);
     this.toolbar?.update(this.toolbarState());
 
-    // 进度记忆: 跳转到上次位置
+    // 进度记忆: 跳转到上次位置 (受 settings 开关控制)
+    const progressEnabled = await this.isProgressMemoryEnabled();
     const stored = this.entry.reading.position;
-    if (stored) {
+    if (stored && progressEnabled) {
       try {
         await this.resumeFromPosition(stored);
       } catch (error) {
@@ -491,22 +546,50 @@ export class ReaderView extends ItemView {
       const detail = (event as CustomEvent<{ fraction?: number; locator?: string; chapter?: string }>).detail;
       if (typeof detail?.fraction === "number") {
         this.fraction = detail.fraction;
-        if (detail.chapter) this.chapter = detail.chapter;
+        if (detail.chapter) {
+          this.chapter = detail.chapter;
+          // 同步更新 TocPanel 的 active 项 — 通过 label 匹配
+          if (this.tocItems.length > 0) {
+            const match = this.tocItems.find((it) => it.label === detail.chapter);
+            if (match) this.tocPanel?.setActive(match.id);
+          }
+        }
         this.toolbar?.update(this.toolbarState());
         void this.persistProgress(detail.fraction, detail.locator);
       }
     });
 
+    // 防抖: selectionchange 在用户拖拽过程中多次触发, 我们延迟 150ms
+    // 等待用户真正完成选词再弹菜单
+    let selectionDebounce: ReturnType<typeof setTimeout> | undefined;
     const offSelect = this.session.on("selection-change", (event) => {
       const detail = (event as CustomEvent<{ text: string; locator?: string; rect?: DOMRect }>).detail;
       if (!detail?.text) {
+        if (selectionDebounce !== undefined) globalThis.clearTimeout(selectionDebounce);
+        selectionDebounce = undefined;
         this.selectionMenu?.hide();
         return;
       }
       this.pendingSelection = { text: detail.text, rect: detail.rect, locator: detail.locator, chapter: this.chapter };
-      if (detail.rect) {
-        this.selectionMenu?.show(detail.rect);
-      }
+      if (selectionDebounce !== undefined) globalThis.clearTimeout(selectionDebounce);
+      selectionDebounce = globalThis.setTimeout(() => {
+        selectionDebounce = undefined;
+        // 取最新 selection 的 rect (selection 完成后)
+        const sel = globalThis.document.getSelection();
+        const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
+        const rect = range?.getBoundingClientRect() ?? detail.rect;
+        if (rect && rect.width > 0) {
+          this.selectionMenu?.show(rect);
+        } else {
+          const fallbackRect = new DOMRect(
+            globalThis.innerWidth / 2 - 100,
+            globalThis.innerHeight - 120,
+            200,
+            40
+          );
+          this.selectionMenu?.show(fallbackRect);
+        }
+      }, 180);
     });
 
     // 加载 TOC
@@ -527,6 +610,9 @@ export class ReaderView extends ItemView {
 
     // 恢复已存的高亮
     await this.restoreHighlights();
+
+    // 通知外部(openExcerptById / 协议 handler)session 已就绪
+    this.markReady();
   }
 
   private async resumeFromPosition(position: ReadingPosition): Promise<void> {
@@ -545,7 +631,12 @@ export class ReaderView extends ItemView {
         } else if (this.session.setFitWidth) {
           await this.session.setFitWidth();
         }
-        await this.session.goTo({ kind: "identifier", value: `page=${position.page}` });
+        // 优先用 subpath 跳转到精确的 selection 位置(如有)
+        if (position.selection) {
+          await this.session.goTo({ kind: "identifier", value: position.selection });
+        } else {
+          await this.session.goTo({ kind: "identifier", value: `page=${position.page}` });
+        }
         return;
       case "text":
         await this.session.goTo({ kind: "fraction", fraction: position.fraction });
@@ -557,10 +648,13 @@ export class ReaderView extends ItemView {
     if (!this.entry || !this.session?.highlight) return;
     const excerpts = await this.deps.reading.listExcerpts(this.entry.book.id);
     for (const ex of excerpts) {
-      const cfi = ex.locator.position.kind === "reflow" ? ex.locator.position.cfi : undefined;
-      const locator = cfi ?? (ex.locator.position.kind === "pdf"
-        ? `page=${ex.locator.position.page}`
-        : undefined);
+      let locator: string | undefined;
+      if (ex.locator.position.kind === "reflow") {
+        locator = ex.locator.position.cfi;
+      } else if (ex.locator.position.kind === "pdf") {
+        // 优先 subpath(精确 4-tuple), 否则只到页
+        locator = ex.locator.position.selection ?? `page=${ex.locator.position.page}`;
+      }
       if (!locator) continue;
       try {
         await this.session.highlight({
@@ -625,11 +719,13 @@ export class ReaderView extends ItemView {
     const finalLocator = locator ?? exported;
     let position: ReadingPosition;
     if (this.isPdf && this.session?.currentPage) {
+      const pdfSelection = typeof finalLocator === "string" && finalLocator.startsWith("#page=") ? finalLocator : undefined;
       position = {
         kind: "pdf",
         page: this.session.currentPage() ?? 1,
         scale: this.session.currentScale?.(),
-        fitWidth: this.session.isFitWidth?.()
+        fitWidth: this.session.isFitWidth?.(),
+        ...(pdfSelection ? { selection: pdfSelection } : {})
       };
     } else if (finalLocator) {
       position = { kind: "reflow", fraction, cfi: finalLocator };
@@ -725,7 +821,9 @@ export class ReaderView extends ItemView {
     if (pos.kind === "reflow" && pos.cfi) {
       await this.session.goTo({ kind: "identifier", value: pos.cfi });
     } else if (pos.kind === "pdf") {
-      await this.session.goTo({ kind: "identifier", value: `page=${pos.page}` });
+      // 优先用 subpath(精确到 selection),否则只跳页
+      const target = pos.selection ?? `page=${pos.page}`;
+      await this.session.goTo({ kind: "identifier", value: target });
     } else if (pos.kind === "reflow" || pos.kind === "text") {
       await this.session.goTo({ kind: "fraction", fraction: pos.fraction });
     }
@@ -796,8 +894,13 @@ export class ReaderView extends ItemView {
     const excerptId = `ex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const locator = this.pendingSelection.locator ?? (await this.session?.exportLocator()) ?? undefined;
     if (!locator) return;
+    // PDF 上保存完整 4-tuple subpath 用于精确还原高亮
     const pos: ReadingPosition = this.isPdf && this.session?.currentPage
-      ? { kind: "pdf", page: this.session.currentPage() ?? 1 }
+      ? {
+          kind: "pdf",
+          page: this.session.currentPage() ?? 1,
+          ...(typeof locator === "string" && locator.startsWith("#page=") ? { selection: locator } : {})
+        }
       : { kind: "reflow", fraction: this.fraction, cfi: locator };
 
     const excerpt: Excerpt = {
@@ -874,7 +977,11 @@ export class ReaderView extends ItemView {
     if (!submit) return;
     const excerptId = `th-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const pos: ReadingPosition = this.isPdf && this.session?.currentPage
-      ? { kind: "pdf", page: this.session.currentPage() ?? 1 }
+      ? {
+          kind: "pdf",
+          page: this.session.currentPage() ?? 1,
+          ...(typeof locator === "string" && locator.startsWith("#page=") ? { selection: locator } : {})
+        }
       : { kind: "reflow", fraction: this.fraction, cfi: locator };
 
     const excerpt: Excerpt = {

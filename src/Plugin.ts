@@ -164,13 +164,12 @@ export default class EzReaderPlugin extends Plugin {
     await this.reading.openBook(entry.book.id);
     await this.openReader(entry);
     if (excerptId) {
-      // 等 reader session 创建完毕再跳
-      globalThis.setTimeout(() => {
-        const leaf = this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
-        if (leaf?.view instanceof ReaderView) {
-          void leaf.view.openExcerptById(excerptId);
-        }
-      }, 250);
+      // openExcerptById 内部 whenReady() 会等 session 就绪(最多 30s),
+      // 不再用固定 setTimeout,避免大 PDF 时序竞争
+      const leaf = this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
+      if (leaf?.view instanceof ReaderView) {
+        await leaf.view.openExcerptById(excerptId);
+      }
     }
   }
 

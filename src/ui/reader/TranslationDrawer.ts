@@ -102,14 +102,28 @@ export class TranslationDrawer {
     body.createDiv({ cls: "ez-reader__translation-drawer__translation", text: translated });
     const meta = body.createDiv({ cls: "ez-reader__translation-drawer__meta" });
     meta.createEl("span", {
-      text: `${detected ? `检测到 ${detected}` : ""} · ${providerId}`,
+      text: `${detected ? `检测到 ${detected}` : ""} · ${providerId} · → ${this.currentTarget}`,
       cls: "ez-reader__translation-drawer__provider"
     });
-    const saveBtn = body.createEl("button", {
+    const actionsRow = body.createDiv({ cls: "ez-reader__translation-drawer__actions" });
+    const saveBtn = actionsRow.createEl("button", {
       text: "保存为笔记",
       attr: { type: "button", title: "把翻译连同原文一起存到笔记" }
     });
     saveBtn.onclick = () => this.handlers.onSaveAsNote(sourceText, translated);
+    const retryBtn = actionsRow.createEl("button", {
+      text: "换语言重译",
+      attr: { type: "button", title: "切换目标语言后重新翻译" }
+    });
+    retryBtn.onclick = () => this.cycleTargetAndTranslate(sourceText);
+  }
+
+  private async cycleTargetAndTranslate(text: string): Promise<void> {
+    const cycle: Locale[] = ["zh-CN", "en", "ja", "ko", "fr", "de"];
+    const currentIdx = cycle.indexOf(this.currentTarget);
+    const next = cycle[(currentIdx + 1) % cycle.length] ?? "zh-CN";
+    this.currentTarget = next;
+    await this.translate(text);
   }
 
   private renderError(sourceText: string, message: string): void {

@@ -60,6 +60,11 @@ export class ObsidianNoteWriter implements NoteWriter {
   async appendExcerpt(ref: BookNoteRef, input: ExcerptInput): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(ref.path);
     if (!(file instanceof TFile)) return;
+    // Idempotent: if a block with this excerptId already exists in the
+    // note, skip the append. This protects against editExcerpt flows
+    // and other places where the same excerpt could be written twice.
+    const existing = await this.app.vault.read(file);
+    if (existing.includes(`^${input.excerptId}`)) return;
     const block = renderExcerptBlock(input, ref.title, ref.bookId, PROTOCOL);
     await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
   }
@@ -67,19 +72,28 @@ export class ObsidianNoteWriter implements NoteWriter {
   async appendThought(ref: BookNoteRef, input: ThoughtInput): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(ref.path);
     if (!(file instanceof TFile)) return;
+    // 想法的 block id 基于 createdAt 戳; 同样去重
+    const blockId = `thought-${input.createdAt}`;
+    const existing = await this.app.vault.read(file);
+    if (existing.includes(`^${blockId}`)) return;
     const block = renderThoughtBlock(input, PROTOCOL);
     await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
   }
 
   async resolveExcerptLink(excerptId: string): Promise<BookLocatorInfo | null> {
-    // Find the excerpt across all books. We scan the AnnotationStore's
-    // reading snapshot to locate the bookId.
     const snapshot = await this.annotations.load();
     const excerpt = snapshot.excerpts.find((e) => e.id === excerptId);
     if (!excerpt) return null;
+    // 根据 bookId 在 library 列表里查 format, 没找到就保持 unknown
+    const reading = snapshot.reading.find((r) => r.bookId === excerpt.bookId);
+    let format = "unknown";
+    if (reading) {
+      // ReadingState 不带 format, 我们从 reading.position 类型推断
+      format = reading.position?.kind === "pdf" ? "pdf" : "epub";
+    }
     return {
       bookId: excerpt.bookId,
-      format: "unknown",
+      format,
       locator: excerpt.locator
     };
   }

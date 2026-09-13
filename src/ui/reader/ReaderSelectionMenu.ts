@@ -36,6 +36,9 @@ export class ReaderSelectionMenu {
         event.preventDefault();
         event.stopPropagation();
         this.hide();
+        // 主动清掉选区,避免 modal 关闭后 selectionchange 又把菜单弹出来
+        const sel = document.getSelection();
+        if (sel && !sel.isCollapsed) sel.removeAllRanges();
         this.handlers[key]();
       });
       return btn;

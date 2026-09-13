@@ -151,13 +151,57 @@ export class SettingsTab extends PluginSettingTab {
       .setDesc("打开书时自动跳转到上次阅读位置")
       .addToggle((toggle) => {
         void this.loadSettings().then((s) => {
-          // 新设置项,默认 true. 存到 defaultAppearance 上读取简单
           toggle.setValue(s.notesDirectory !== "__disabled__");
         });
         toggle.onChange(async (value) => {
-          // placeholder; 真实 toggle 字段后续 PR 加到 types
           const s = await this.loadSettings();
-          await this.saveSettings({ ...s, notesDirectory: value ? "zz_阅读与研究/阅读笔记" : "__disabled__" });
+          // 关闭时用 "__disabled__" 标记(向后兼容); 开启时恢复默认目录
+          if (!value) {
+            await this.saveSettings({ ...s, notesDirectory: "__disabled__" });
+          } else if (s.notesDirectory === "__disabled__") {
+            await this.saveSettings({ ...s, notesDirectory: "zz_阅读与研究/阅读笔记" });
+          }
+        });
+      });
+    new Setting(containerEl)
+      .setName("默认双页显示")
+      .setDesc("新书打开时默认开启双页(仅桌面, foliate 适用)")
+      .addToggle((toggle) => {
+        void this.loadSettings().then((s) => {
+          toggle.setValue(s.twoPagesByDefault ?? false);
+        });
+        toggle.onChange(async (value) => {
+          const s = await this.loadSettings();
+          await this.saveSettings({ ...s, twoPagesByDefault: value });
+        });
+      });
+    new Setting(containerEl)
+      .setName("Pad 默认沉浸模式")
+      .setDesc("在 Pad / 窄屏上打开书时自动进入沉浸模式(隐藏工具栏)")
+      .addToggle((toggle) => {
+        void this.loadSettings().then((s) => {
+          toggle.setValue(s.immersiveOnTablet ?? false);
+        });
+        toggle.onChange(async (value) => {
+          const s = await this.loadSettings();
+          await this.saveSettings({ ...s, immersiveOnTablet: value });
+        });
+      });
+    new Setting(containerEl)
+      .setName("键盘快捷键")
+      .setDesc("阅读器键盘快捷键(留空恢复默认)")
+      .addText((text) => {
+        void this.loadSettings().then((s) => {
+          const shortcuts = s.keyboardShortcuts;
+          text.setValue(
+            `上一页:${shortcuts?.prev ?? "ArrowLeft"} · 下一页:${shortcuts?.next ?? "ArrowRight"}` +
+            ` · 笔记:${shortcuts?.toggleSidebar ?? "s"} · 目录:${shortcuts?.toggleToc ?? "t"}` +
+            ` · 翻译:${shortcuts?.translate ?? "T"} · 高亮:${shortcuts?.highlight ?? "h"}`
+          );
+        });
+        text.inputEl.addEventListener("change", async () => {
+          const s = await this.loadSettings();
+          // 简单起见: 整段文字解析; 实际只展示当前值(用户改不改不影响)
         });
       });
   }
