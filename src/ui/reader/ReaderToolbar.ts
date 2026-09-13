@@ -102,11 +102,11 @@ export class ReaderToolbar {
     // --- Right: actions + zoom ---
     const actionsGroup = this.root.createDiv({ cls: "ez-reader__reader-toolbar__group ez-reader__reader-toolbar__actions" });
 
-    const addBookmark = actionsGroup.createEl("button", { text: "+书签", attr: { type: "button", title: "添加书签" } });
+    const addBookmark = actionsGroup.createEl("button", { text: "+书签", attr: { type: "button", title: "添加书签", "aria-label": "添加书签" } });
     addBookmark.addClass("ez-reader__reader-toolbar__action");
     addBookmark.addEventListener("click", () => handlers.onAddBookmark());
 
-    this.fontButton = actionsGroup.createEl("button", { text: "Aa", attr: { type: "button", title: "字号 / 行距 / 主题" } });
+    this.fontButton = actionsGroup.createEl("button", { text: "Aa", attr: { type: "button", title: "字号 / 行距 / 主题", "aria-label": "字号 / 行距 / 主题" } });
     this.fontButton.addClass("ez-reader__reader-toolbar__action");
     this.fontButton.addEventListener("click", () => handlers.onShowFontSettings());
 

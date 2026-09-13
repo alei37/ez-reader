@@ -120,8 +120,17 @@ const extractAuthorFallback = (path: string): string => {
  * Generate a stable, deterministic gradient for the placeholder cover.
  * Two books with similar titles will have similar hues, but each book
  * still gets its own background — no two covers look identical.
+ *
+ * Cached so we don't recompute the hash for the same title on every
+ * re-render. The map is bounded to a few hundred entries to keep
+ * memory tight when the user has thousands of books.
  */
+const placeholderCache = new Map<string, Record<string, string>>();
+const PLACEHOLDER_CACHE_MAX = 500;
+
 const placeholderBackground = (title: string): Record<string, string> => {
+  const cached = placeholderCache.get(title);
+  if (cached) return cached;
   let hash = 0;
   for (let i = 0; i < title.length; i++) {
     hash = ((hash << 5) - hash) + title.charCodeAt(i);
@@ -129,8 +138,15 @@ const placeholderBackground = (title: string): Record<string, string> => {
   }
   const hue1 = Math.abs(hash) % 360;
   const hue2 = (hue1 + 28) % 360;
-  return {
+  const result = {
     background: `linear-gradient(135deg, hsl(${hue1}, 38%, 28%), hsl(${hue2}, 48%, 18%))`,
     color: "rgba(255, 255, 255, 0.92)"
   };
+  if (placeholderCache.size >= PLACEHOLDER_CACHE_MAX) {
+    // 简单 FIFO: 删除最早插入
+    const firstKey = placeholderCache.keys().next().value;
+    if (firstKey !== undefined) placeholderCache.delete(firstKey);
+  }
+  placeholderCache.set(title, result);
+  return result;
 };

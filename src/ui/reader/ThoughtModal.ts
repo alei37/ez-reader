@@ -23,7 +23,7 @@ export interface ThoughtSubmit {
  */
 export class ThoughtModal extends Modal {
   private readonly input: ThoughtInput;
-  private resolver!: (result: ThoughtSubmit | null) => void;
+  private resolver: ((result: ThoughtSubmit | null) => void) | null = null;
 
   constructor(app: App, input: ThoughtInput) {
     super(app);
@@ -35,6 +35,12 @@ export class ThoughtModal extends Modal {
       this.resolver = resolve;
       this.open();
     });
+  }
+
+  private settle(result: ThoughtSubmit | null): void {
+    const r = this.resolver;
+    this.resolver = null;
+    r?.(result);
   }
 
   onOpen(): void {
@@ -61,25 +67,31 @@ export class ThoughtModal extends Modal {
     const actions = contentEl.createDiv({ cls: "ez-reader__modal-actions" });
     const cancel = actions.createEl("button", { text: "取消", attr: { type: "button" } });
     cancel.onclick = () => {
-      this.resolver(null);
+      this.settle(null);
       this.close();
     };
     const submit = actions.createEl("button", { text: "保存想法", attr: { type: "button" } });
     submit.addClass("mod-cta");
     submit.onclick = () => {
-      this.resolver({
+      this.settle({
         note: noteInput.value.trim(),
         tags: parseTags(tagsInput.value)
       });
       this.close();
     };
 
-    window.setTimeout(() => noteInput.focus(), 0);
     noteInput.addEventListener("keydown", (event) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
         submit.click();
       }
     });
+
+    window.setTimeout(() => noteInput.focus(), 0);
+  }
+
+  onClose(): void {
+    if (this.resolver) this.settle(null);
   }
 }
 

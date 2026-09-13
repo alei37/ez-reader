@@ -3,11 +3,11 @@ import type { App } from "obsidian";
 
 /**
  * Simple Modal that asks the user for an optional bookmark label. The host
- * resolves with the entered string (possibly empty) on submit, and rejects
- * with an Error on cancel.
+ * resolves with the entered string (possibly empty) on submit, or
+ * with an empty string on cancel / Esc / overlay click.
  */
 export class BookmarkModal extends Modal {
-  private resolver!: (label: string) => void;
+  private resolver: ((label: string) => void) | null = null;
 
   constructor(app: App, private readonly initialLabel = "") {
     super(app);
@@ -18,6 +18,12 @@ export class BookmarkModal extends Modal {
       this.resolver = resolve;
       this.open();
     });
+  }
+
+  private settle(label: string): void {
+    const r = this.resolver;
+    this.resolver = null;
+    r?.(label);
   }
 
   onOpen(): void {
@@ -32,22 +38,28 @@ export class BookmarkModal extends Modal {
     const actions = contentEl.createDiv({ cls: "ez-reader__modal-actions" });
     const cancel = actions.createEl("button", { text: "取消", attr: { type: "button" } });
     cancel.onclick = () => {
-      this.resolver("");
+      this.settle("");
       this.close();
     };
     const submit = actions.createEl("button", { text: "添加", attr: { type: "button" } });
     submit.addClass("mod-cta");
     submit.onclick = () => {
-      this.resolver(input.value);
+      this.settle(input.value);
       this.close();
     };
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        this.resolver(input.value);
+        this.settle(input.value);
         this.close();
       }
     });
     window.setTimeout(() => input.focus(), 0);
+  }
+
+  onClose(): void {
+    // Esc / overlay click: 视为取消(空 label). 不调 resolver 会让
+    // openAndWait() 的 Promise 永远 pending.
+    if (this.resolver) this.settle("");
   }
 }

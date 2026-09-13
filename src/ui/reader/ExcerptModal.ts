@@ -12,7 +12,7 @@ export interface ExcerptSubmit {
 
 export class ExcerptModal extends Modal {
   private readonly input: ExcerptInput;
-  private resolver!: (result: ExcerptSubmit | null) => void;
+  private resolver: ((result: ExcerptSubmit | null) => void) | null = null;
 
   constructor(app: App, input: ExcerptInput) {
     super(app);
@@ -24,6 +24,12 @@ export class ExcerptModal extends Modal {
       this.resolver = resolve;
       this.open();
     });
+  }
+
+  private settle(result: ExcerptSubmit | null): void {
+    const r = this.resolver;
+    this.resolver = null;
+    r?.(result);
   }
 
   onOpen(): void {
@@ -41,19 +47,30 @@ export class ExcerptModal extends Modal {
     const actions = contentEl.createDiv({ cls: "ez-reader__modal-actions" });
     const cancel = actions.createEl("button", { text: "取消", attr: { type: "button" } });
     cancel.onclick = () => {
-      this.resolver(null);
+      this.settle(null);
       this.close();
     };
     const submit = actions.createEl("button", { text: "保存摘录", attr: { type: "button" } });
     submit.addClass("mod-cta");
     submit.onclick = () => {
-      this.resolver({
+      this.settle({
         note: noteInput.value.trim(),
         tags: parseTags(tagsInput.value)
       });
       this.close();
     };
+    noteInput.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        submit.click();
+      }
+    });
     window.setTimeout(() => noteInput.focus(), 0);
+  }
+
+  onClose(): void {
+    // Esc / overlay click 视为取消.
+    if (this.resolver) this.settle(null);
   }
 }
 

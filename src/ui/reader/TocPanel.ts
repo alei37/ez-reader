@@ -8,11 +8,15 @@ export interface TocPanelHandlers {
  * Top-of-page table of contents panel. Mirrors BookmarksPanel.ts style:
  * a collapsible section that toggles via a class. Items render with
  * per-depth indentation so the chapter hierarchy reads top-down.
+ *
+ * Includes a quick-filter input at the top for books with deep TOC
+ * hierarchies (a typical academic monograph has 30+ chapters).
  */
 export class TocPanel {
   readonly root: HTMLElement;
   private readonly handlers: TocPanelHandlers;
   private items: ReadonlyArray<TocItem> = [];
+  private query: string = "";
   private activeId: string | null = null;
 
   constructor(handlers: TocPanelHandlers, host: HTMLElement) {
@@ -23,6 +27,7 @@ export class TocPanel {
 
   setToc(items: ReadonlyArray<TocItem>): void {
     this.items = items;
+    this.query = "";
     this.render();
   }
 
@@ -49,7 +54,19 @@ export class TocPanel {
 
   private render(): void {
     this.root.empty();
-    this.root.createEl("h3", { text: "目录" });
+    const headerRow = this.root.createDiv({ cls: "ez-reader__toc-header" });
+    headerRow.createEl("h3", { text: "目录" });
+    if (this.items.length >= 8) {
+      const search = headerRow.createEl("input", {
+        attr: { type: "search", placeholder: "搜索章节...", "aria-label": "搜索章节" }
+      });
+      search.addClass("ez-reader__toc-search");
+      search.value = this.query;
+      search.addEventListener("input", () => {
+        this.query = search.value.trim().toLocaleLowerCase();
+        this.renderList();
+      });
+    }
     if (this.items.length === 0) {
       this.root.createDiv({
         cls: "ez-reader__reader-panel__empty",
@@ -57,11 +74,28 @@ export class TocPanel {
       });
       return;
     }
+    this.renderList();
+  }
+
+  private renderList(): void {
+    const old = this.root.querySelector(".ez-reader__toc-list");
+    if (old) old.remove();
+    const filtered = this.query
+      ? this.items.filter((it) => it.label.toLocaleLowerCase().includes(this.query))
+      : this.items;
+    if (filtered.length === 0) {
+      const empty = this.root.createDiv({
+        cls: "ez-reader__reader-panel__empty",
+        text: `没有匹配的章节 (${this.query}).`
+      });
+      empty.addClass("ez-reader__toc-list");
+      return;
+    }
     const list = this.root.createDiv({ cls: "ez-reader__toc-list" });
-    for (const item of this.items) {
+    for (const item of filtered) {
       const button = list.createEl("button", {
         text: item.label,
-        attr: { type: "button", "data-toc-id": item.id, title: item.label }
+        attr: { type: "button", "data-toc-id": item.id, title: item.label, "aria-label": `跳到 ${item.label}` }
       });
       button.addClass("ez-reader__toc-item");
       button.style.paddingInlineStart = `${0.5 + item.depth * 1}rem`;

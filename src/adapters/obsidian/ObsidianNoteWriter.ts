@@ -26,6 +26,12 @@ const PROTOCOL = "ez-reader";
  */
 export class ObsidianNoteWriter implements NoteWriter {
   private readonly cacheByPath = new Map<string, BookNoteRef>();
+  // Serialize concurrent appends to the same note file. vault.process
+  // is not atomic across calls — if two excerpts land at the same time,
+  // the second read() might see the pre-first content and the second
+  // process() would clobber the first. We chain writes per-file via a
+  // tail promise so two saves settle one after the other.
+  private readonly writeQueues = new Map<string, Promise<void>>();
 
   constructor(
     private readonly app: App,
@@ -58,26 +64,44 @@ export class ObsidianNoteWriter implements NoteWriter {
   }
 
   async appendExcerpt(ref: BookNoteRef, input: ExcerptInput): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(ref.path);
-    if (!(file instanceof TFile)) return;
-    // Idempotent: if a block with this excerptId already exists in the
-    // note, skip the append. This protects against editExcerpt flows
-    // and other places where the same excerpt could be written twice.
-    const existing = await this.app.vault.read(file);
-    if (existing.includes(`^${input.excerptId}`)) return;
-    const block = renderExcerptBlock(input, ref.title, ref.bookId, PROTOCOL);
-    await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
+    return this.enqueueWrite(ref.path, async () => {
+      const file = this.app.vault.getAbstractFileByPath(ref.path);
+      if (!(file instanceof TFile)) return;
+      // Idempotent: if a block with this excerptId already exists in the
+      // note, skip the append. This protects against editExcerpt flows
+      // and other places where the same excerpt could be written twice.
+      const existing = await this.app.vault.read(file);
+      if (existing.includes(`^${input.excerptId}`)) return;
+      const block = renderExcerptBlock(input, ref.title, ref.bookId, PROTOCOL);
+      await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
+    });
   }
 
   async appendThought(ref: BookNoteRef, input: ThoughtInput): Promise<void> {
-    const file = this.app.vault.getAbstractFileByPath(ref.path);
-    if (!(file instanceof TFile)) return;
-    // 想法的 block id 基于 createdAt 戳; 同样去重
-    const blockId = `thought-${input.createdAt}`;
-    const existing = await this.app.vault.read(file);
-    if (existing.includes(`^${blockId}`)) return;
-    const block = renderThoughtBlock(input, PROTOCOL);
-    await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
+    return this.enqueueWrite(ref.path, async () => {
+      const file = this.app.vault.getAbstractFileByPath(ref.path);
+      if (!(file instanceof TFile)) return;
+      // 想法的 block id 基于 createdAt 戳; 同样去重
+      const blockId = `thought-${input.createdAt}`;
+      const existing = await this.app.vault.read(file);
+      if (existing.includes(`^${blockId}`)) return;
+      const block = renderThoughtBlock(input, PROTOCOL);
+      await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
+    });
+  }
+
+  /**
+   * Serialize concurrent writes to the same path. Each call queues its
+   * async fn on the tail of the path's promise chain so two saves
+   * settle one after the other — no clobber, no lost block.
+   */
+  private enqueueWrite(path: string, fn: () => Promise<void>): Promise<void> {
+    const prev = this.writeQueues.get(path) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    // Keep the chain alive even if a step throws — the next caller
+    // should still get to run.
+    this.writeQueues.set(path, next.catch(() => undefined));
+    return next;
   }
 
   async resolveExcerptLink(excerptId: string): Promise<BookLocatorInfo | null> {

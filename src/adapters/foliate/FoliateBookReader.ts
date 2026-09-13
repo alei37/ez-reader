@@ -75,6 +75,25 @@ export class FoliateBookReader implements BookReader {
     });
     const parsed = await makeBook(file);
 
+    // Content-safety hook: EPUB sections can contain <script>, javascript:
+    // links, and meta-refresh redirects that abuse the iframe. foliate
+    // streams raw HTML through `transformTarget` as 'text/html' or
+    // 'text/xhtml' events; we intercept and sanitize before foliate's
+    // paginator gets a chance to inject it. (Algorithm borrowed from
+    // obsidian-pdf-plus; license: MIT, see LICENSES/.)
+    const transformTarget = (parsed as { transformTarget?: EventTarget | null }).transformTarget;
+    if (transformTarget) {
+      transformTarget.addEventListener("data", ((event: Event) => {
+        const detail = (event as CustomEvent<{ data?: unknown; type?: string }>).detail;
+        if (!detail) return;
+        if (!/text\/(x?html)/i.test(detail.type ?? "")) return;
+        detail.data = Promise.resolve(detail.data).then(async (data) => {
+          const source = data instanceof Blob ? await data.text() : String(data);
+          return sanitizeBookContent(source);
+        });
+      }) as EventListener);
+    }
+
     const view = document.createElement("foliate-view") as FoliateViewElement;
     view.setAttribute("data-ez-reader-flow", appearance.flow);
     host.append(view);
@@ -423,3 +442,22 @@ const countTocLeaves = (tree: ReadonlyArray<unknown>): number => {
   walk(tree);
   return count;
 };
+/**
+ * Content safety: EPUB sections can include `<script>` tags, JS
+ * `href` URLs, `<meta http-equiv="refresh">` redirects, and other
+ * payloads that abuse the renderer. foliate streams the section's
+ * raw HTML through `transformTarget` so we sanitize it before the
+ * paginator's CSS pass.
+ *
+ * Algorithm adapted from obsidian-pdf-plus (MIT license, see
+ * LICENSES/obsidian-pdf-plus-MIT.txt).
+ */
+const sanitizeBookContent = (source: string): string =>
+  source
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<script\b[^>]*\/?>/gi, "")
+    .replace(/<(?:iframe|object|embed)\b[^>]*>[\s\S]*?<\/(?:iframe|object|embed)\s*>/gi, "")
+    .replace(/<(?:iframe|object|embed)\b[^>]*\/?>/gi, "")
+    .replace(/<meta\b[^>]*http-equiv\s*=\s*(?:"refresh"|'refresh'|refresh)[^>]*\/?>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s(?:src|poster|data)\s*=\s*(?:"(?:https?:|file:|javascript:)[^"]*"|'(?:https?:|file:|javascript:)[^']*'|(?:https?:|file:|javascript:)[^\s>]+)/gi, "");

@@ -176,14 +176,65 @@ export class ShelfView extends ItemView {
       })
     );
     menu.addSeparator();
+    // 状态切换 — 让用户标记"想重读"或"已完成"
+    const currentStatus = entry.reading.status;
+    menu.addItem((item) =>
+      item
+        .setTitle(currentStatus === "reading" ? "✓ 在读" : "标记为在读")
+        .setIcon("play")
+        .onClick(() => void this.setStatus(entry, "reading"))
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle(currentStatus === "finished" ? "✓ 已读完" : "标记为已读完")
+        .setIcon("check")
+        .onClick(() => void this.setStatus(entry, "finished"))
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle(currentStatus === "abandoned" ? "✓ 暂弃" : "标记为暂弃")
+        .setIcon("x")
+        .onClick(() => void this.setStatus(entry, "abandoned"))
+    );
+    menu.addItem((item) =>
+      item.setTitle("收藏").setIcon("star").onClick(() => void this.toggleFavorite(entry))
+    );
+    menu.addSeparator();
     menu.addItem((item) =>
       item.setTitle("从图书馆移除").setIcon("trash").setWarning(true).onClick(() => void this.removeFromLibrary(entry))
     );
     menu.showAtMouseEvent(event);
   }
 
+  private async setStatus(entry: LibraryEntry, status: "reading" | "finished" | "abandoned"): Promise<void> {
+    await this.deps.reading.setStatus(entry.book.id, status);
+  }
+
+  private async toggleFavorite(entry: LibraryEntry): Promise<void> {
+    await this.deps.reading.toggleFavorite(entry.book.id);
+  }
+
   private async removeFromLibrary(entry: LibraryEntry): Promise<void> {
-    await this.deps.library.removeFromLibrary(entry.book.id);
+    const title = entry.book.metadata?.title ?? entry.book.locator.path;
+    const { Modal, Notice } = await import("obsidian");
+    // 二次确认: 删除不可逆(读书进度、书签、摘录都不会删除, 但书从书架消失)
+    const confirm = new Modal(this.deps.app);
+    confirm.contentEl.createEl("h3", { text: `从图书馆移除《${title}》?` });
+    confirm.contentEl.createEl("p", {
+      text: "书将从个人图书馆消失。原始文件、阅读进度、书签、摘录都不会删除 — 重新加入即可恢复。"
+    });
+    const actions = confirm.contentEl.createDiv({ cls: "ez-reader__modal-actions" });
+    const cancelBtn = actions.createEl("button", { text: "取消", attr: { type: "button" } });
+    cancelBtn.onclick = () => confirm.close();
+    const removeBtn = actions.createEl("button", { text: "移除", attr: { type: "button" } });
+    removeBtn.addClass("mod-warning");
+    removeBtn.onclick = () => {
+      confirm.close();
+      void this.deps.library.removeFromLibrary(entry.book.id).then(() => {
+        new Notice(`已从图书馆移除《${title}》`);
+      });
+    };
+    confirm.open();
   }
 
   private openFilters(): void {

@@ -30,7 +30,10 @@ export class ReaderSelectionMenu {
     this.root.setAttribute("aria-label", "选中文本操作");
 
     const make = (label: string, title: string, key: keyof SelectionMenuHandlers, primary = false): HTMLButtonElement => {
-      const btn = this.root.createEl("button", { text: label, attr: { type: "button", title } });
+      const btn = this.root.createEl("button", {
+        text: label,
+        attr: { type: "button", title, "aria-label": title, "aria-keyshortcuts": key }
+      });
       if (primary) btn.addClass("is-primary");
       btn.addEventListener("click", (event) => {
         event.preventDefault();

@@ -626,6 +626,25 @@ export class ReaderView extends ItemView {
       const expanded = maybeExpandChineseSelection(detail.text);
       const text = expanded.text;
       this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter };
+      // 同步扩展 DOM Selection, 让用户视觉上看到选词扩展了
+      if (text !== detail.text) {
+        const sel = globalThis.document.getSelection();
+        if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+          // 把 selection 替换成整段 expanded text — 通过设置 Range
+          const range = sel.getRangeAt(0);
+          const node = range.startContainer.parentNode;
+          if (node && node.textContent?.includes(text)) {
+            const newRange = document.createRange();
+            const startOffset = (node.textContent ?? "").indexOf(text);
+            if (startOffset >= 0) {
+              newRange.setStart(node, startOffset);
+              newRange.setEnd(node, startOffset + text.length);
+              sel.removeAllRanges();
+              sel.addRange(newRange);
+            }
+          }
+        }
+      }
       if (selectionDebounce !== undefined) globalThis.clearTimeout(selectionDebounce);
       selectionDebounce = globalThis.setTimeout(() => {
         selectionDebounce = undefined;
@@ -701,7 +720,8 @@ export class ReaderView extends ItemView {
   private async restoreHighlights(): Promise<void> {
     if (!this.entry || !this.session?.highlight) return;
     const excerpts = await this.deps.reading.listExcerpts(this.entry.book.id);
-    for (const ex of excerpts) {
+    // 并发触发, 错一条不影响其他 (foliate / pdfjs 高亮各自是 fire-and-forget)
+    await Promise.all(excerpts.map(async (ex) => {
       let locator: string | undefined;
       if (ex.locator.position.kind === "reflow") {
         locator = ex.locator.position.cfi;
@@ -709,9 +729,9 @@ export class ReaderView extends ItemView {
         // 优先 subpath(精确 4-tuple), 否则只到页
         locator = ex.locator.position.selection ?? `page=${ex.locator.position.page}`;
       }
-      if (!locator) continue;
+      if (!locator) return;
       try {
-        await this.session.highlight({
+        await this.session!.highlight!({
           id: ex.id,
           text: ex.text,
           locator,
@@ -721,7 +741,7 @@ export class ReaderView extends ItemView {
       } catch (error) {
         console.warn("[ez-reader] failed to restore highlight", ex.id, error);
       }
-    }
+    }));
   }
 
   private toolbarState(): Parameters<NonNullable<typeof this.toolbar>["update"]>[0] {

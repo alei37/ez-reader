@@ -23,16 +23,62 @@ export class ObsidianAnnotationStore implements AnnotationStore {
     if (this.cache) return this.cache;
     const raw = (await this.plugin.loadData()) as Partial<AnnotationSnapshot> | null;
     const settings = this.normalizeSettings(raw?.settings);
+    // 容错: 旧版本或损坏的 data 可能让 array 包含非数组元素,
+    // 或者 reading 数组里元素缺字段. 过滤无效条目避免下游 crash.
     this.cache = {
       version: 1,
       settings,
-      library: raw?.library ?? [],
-      reading: raw?.reading ?? [],
-      bookmarks: raw?.bookmarks ?? [],
-      excerpts: raw?.excerpts ?? [],
-      coverPaths: raw?.coverPaths ?? {}
+      library: this.sanitizeStringArray(raw?.library),
+      reading: this.sanitizeReadingArray(raw?.reading),
+      bookmarks: this.sanitizeBookmarkArray(raw?.bookmarks),
+      excerpts: this.sanitizeExcerptArray(raw?.excerpts),
+      coverPaths: this.sanitizeRecord(raw?.coverPaths)
     };
     return this.cache;
+  }
+
+  private sanitizeStringArray(input: unknown): string[] {
+    return Array.isArray(input) ? input.filter((x): x is string => typeof x === "string") : [];
+  }
+
+  private sanitizeReadingArray(input: unknown): import("../../core/entities/ReadingState").ReadingState[] {
+    if (!Array.isArray(input)) return [];
+    return input.filter((x) => {
+      if (!x || typeof x !== "object") return false;
+      const r = x as { bookId?: unknown; status?: unknown };
+      return typeof r.bookId === "string" && (
+        r.status === "unread" || r.status === "reading" ||
+        r.status === "finished" || r.status === "abandoned"
+      );
+    }) as import("../../core/entities/ReadingState").ReadingState[];
+  }
+
+  private sanitizeBookmarkArray(input: unknown): import("../../core/entities/Bookmark").Bookmark[] {
+    if (!Array.isArray(input)) return [];
+    return input.filter((x) => {
+      if (!x || typeof x !== "object") return false;
+      const b = x as { id?: unknown; bookId?: unknown; label?: unknown };
+      return typeof b.id === "string" && typeof b.bookId === "string" && typeof b.label === "string";
+    }) as import("../../core/entities/Bookmark").Bookmark[];
+  }
+
+  private sanitizeExcerptArray(input: unknown): import("../../core/entities/Excerpt").Excerpt[] {
+    if (!Array.isArray(input)) return [];
+    return input.filter((x) => {
+      if (!x || typeof x !== "object") return false;
+      const e = x as { id?: unknown; bookId?: unknown; text?: unknown; locator?: unknown };
+      return typeof e.id === "string" && typeof e.bookId === "string" &&
+        typeof e.text === "string" && e.locator !== null && typeof e.locator === "object";
+    }) as import("../../core/entities/Excerpt").Excerpt[];
+  }
+
+  private sanitizeRecord(input: unknown): Record<string, string> {
+    if (!input || typeof input !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(input)) {
+      if (typeof v === "string") out[k] = v;
+    }
+    return out;
   }
 
   async save(snapshot: AnnotationSnapshot): Promise<void> {

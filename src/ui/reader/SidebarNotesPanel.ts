@@ -16,11 +16,15 @@ export interface SidebarNotesHandlers {
  * quote block, the user's note underneath (if any), and a small action
  * row. Newest entries are prepended so the most recent idea is at the
  * top — typical notebook behaviour.
+ *
+ * A search field at the top filters by quote / note / tag / chapter
+ * substring. Useful when a single book accumulates dozens of entries.
  */
 export class SidebarNotesPanel {
   readonly root: HTMLElement;
   private readonly handlers: SidebarNotesHandlers;
   private entries: ReadonlyArray<Excerpt> = [];
+  private query: string = "";
   private flashId: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -75,7 +79,7 @@ export class SidebarNotesPanel {
     });
     const add = header.createEl("button", {
       text: "+ 想法",
-      attr: { type: "button", title: "添加自由想法(不需选中文字)" }
+      attr: { type: "button", title: "添加自由想法(不需选中文字)", "aria-label": "添加自由想法" }
     });
     add.addClass("ez-reader__notes-panel__add");
     add.onclick = () => this.handlers.onAddThought();
@@ -88,10 +92,41 @@ export class SidebarNotesPanel {
       return;
     }
 
+    // 搜索框: 超过 5 条笔记才显示,避免噪音
+    if (this.entries.length >= 5) {
+      const searchWrap = this.root.createDiv({ cls: "ez-reader__notes-panel__search" });
+      const search = searchWrap.createEl("input", {
+        attr: { type: "search", placeholder: "搜索笔记内容、标签、章节……", "aria-label": "搜索笔记" }
+      });
+      search.value = this.query;
+      search.addEventListener("input", () => {
+        this.query = search.value.trim().toLocaleLowerCase();
+        this.renderList();
+      });
+      this.renderList();
+    } else {
+      this.renderList();
+    }
+  }
+
+  private renderList(): void {
+    // 移除旧的 list 节点
+    const oldList = this.root.querySelector(".ez-reader__notes-panel__list");
+    if (oldList) oldList.remove();
+
+    const filtered = this.filteredEntries();
+    const list = this.root.createDiv({ cls: "ez-reader__notes-panel__list" });
+    if (filtered.length === 0) {
+      list.createDiv({
+        cls: "ez-reader__notes-panel__empty",
+        text: `没有匹配的笔记 (${this.query}).`
+      });
+      return;
+    }
     // newest first
-    const ordered = [...this.entries].sort((a, b) => b.createdAt - a.createdAt);
+    const ordered = [...filtered].sort((a, b) => b.createdAt - a.createdAt);
     for (const entry of ordered) {
-      const card = this.root.createDiv({ cls: "ez-reader__notes-panel__entry" });
+      const card = list.createDiv({ cls: "ez-reader__notes-panel__entry" });
       card.setAttribute("data-excerpt-id", entry.id);
       const quote = card.createEl("blockquote", { text: entry.text });
       quote.addClass("ez-reader__notes-panel__quote");
@@ -110,14 +145,37 @@ export class SidebarNotesPanel {
         note.addClass("ez-reader__notes-panel__note");
       }
       const actions = card.createDiv({ cls: "ez-reader__notes-panel__actions" });
-      const jump = actions.createEl("button", { text: "↩", attr: { type: "button", title: "跳到原文位置" } });
+      const jump = actions.createEl("button", {
+        text: "↩",
+        attr: { type: "button", title: "跳到原文位置", "aria-label": "跳到原文位置" }
+      });
       jump.onclick = () => this.handlers.onJump(entry);
-      const edit = actions.createEl("button", { text: "✎", attr: { type: "button", title: "编辑想法" } });
+      const edit = actions.createEl("button", {
+        text: "✎",
+        attr: { type: "button", title: "编辑想法", "aria-label": "编辑想法" }
+      });
       edit.onclick = () => this.handlers.onEdit(entry);
-      const remove = actions.createEl("button", { text: "×", attr: { type: "button", title: "删除" } });
+      const remove = actions.createEl("button", {
+        text: "×",
+        attr: { type: "button", title: "删除", "aria-label": "删除" }
+      });
       remove.onclick = () => this.handlers.onRemove(entry);
     }
     this.refreshFlashStyles();
+  }
+
+  private filteredEntries(): ReadonlyArray<Excerpt> {
+    if (!this.query) return this.entries;
+    const needle = this.query;
+    return this.entries.filter((ex) => {
+      const haystack = [
+        ex.text,
+        ex.note,
+        ex.tags.join(" "),
+        ex.locator.chapter ?? ""
+      ].join("\n").toLocaleLowerCase();
+      return haystack.includes(needle);
+    });
   }
 
   private refreshFlashStyles(): void {
