@@ -344,21 +344,35 @@
   height: 100%;
   overflow: auto;
   position: relative;
+  background: #f4f4f5;
+  padding: 24px 16px 48px;
+  box-sizing: border-box;
 }
 
 .ez-reader__pdf-stage__canvas {
   display: block;
   margin: 0 auto;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+  background: #ffffff;
+  /* The canvas pixel buffer is sized to devicePixelRatio × viewport; CSS
+     dimensions must remain at the logical viewport size so HiDPI rendering
+     stays crisp. */
+  image-rendering: -webkit-optimize-contrast;
 }
 
 .ez-reader__pdf-stage__text-layer {
   position: absolute;
-  top: 0;
+  top: 24px;
   left: 50%;
   transform: translateX(-50%);
   pointer-events: auto;
-  user-select: text;
+  user-select: none;
   z-index: 1;
+}
+
+.ez-reader__pdf-stage__text-layer > span {
+  pointer-events: auto;
+  user-select: text;
 }
 
 .ez-reader__pdf-stage__text-layer span {
@@ -369,16 +383,65 @@
 .ez-reader__reader-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  padding: 6px 10px;
   border-bottom: 1px solid var(--background-modifier-border);
   background: var(--background-primary);
+  flex: 0 0 auto;
+}
+
+.ez-reader__reader-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ez-reader__reader-toolbar__nav-group {
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: center;
+}
+
+.ez-reader__reader-toolbar__actions {
+  flex: 0 0 auto;
+}
+
+.ez-reader__reader-toolbar__zoom {
+  flex: 0 0 auto;
+}
+
+.ez-reader__reader-toolbar__meta {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 80%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ez-reader__reader-toolbar.is-meta-visible .ez-reader__reader-toolbar__meta {
+  display: flex;
 }
 
 .ez-reader__reader-toolbar__close,
 .ez-reader__reader-toolbar__nav,
-.ez-reader__reader-toolbar__action {
+.ez-reader__reader-toolbar__action,
+.ez-reader__reader-toolbar__zoom-btn {
   padding: 4px 10px;
   border-radius: 6px;
   border: 1px solid var(--background-modifier-border);
@@ -386,6 +449,28 @@
   color: var(--text-normal);
   cursor: pointer;
   font: inherit;
+  line-height: 1.4;
+}
+
+.ez-reader__reader-toolbar__close {
+  font-size: 18px;
+  padding: 0 10px;
+  line-height: 1;
+}
+
+.ez-reader__reader-toolbar__nav {
+  font-size: 12px;
+  padding: 4px 8px;
+  min-width: 32px;
+}
+
+.ez-reader__reader-toolbar__action {
+  font-size: 12px;
+}
+
+.ez-reader__reader-toolbar__action.is-hidden,
+.ez-reader__reader-toolbar__zoom.is-hidden {
+  display: none;
 }
 
 .ez-reader__reader-toolbar__action.is-active {
@@ -394,22 +479,24 @@
   border-color: var(--interactive-accent);
 }
 
-.ez-reader__reader-toolbar__zoom {
-  min-width: 28px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-  color: var(--text-normal);
-  cursor: pointer;
-  font: inherit;
+.ez-reader__reader-toolbar__zoom-btn {
+  min-width: 36px;
+  text-align: center;
   font-size: 13px;
   font-weight: 600;
 }
 
+.ez-reader__reader-toolbar__zoom-btn--reset {
+  min-width: 56px;
+  font-weight: 500;
+  font-size: 12px;
+}
+
 .ez-reader__reader-toolbar__progress {
-  flex: 1 1 200px;
-  min-width: 160px;
+  flex: 1 1 140px;
+  min-width: 100px;
+  max-width: 320px;
+  accent-color: var(--interactive-accent);
 }
 
 .ez-reader__reader-toolbar__progress-value {
@@ -417,12 +504,15 @@
   color: var(--text-muted);
   min-width: 4ch;
   text-align: right;
+  font-size: 12px;
 }
 
 .ez-reader__reader-toolbar__chapter {
   font-size: 12px;
-  color: var(--text-muted);
-  margin-left: 8px;
+  color: var(--text-normal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ez-reader__reader-panel {
@@ -557,6 +647,59 @@
 
 .ez-reader__shelf-toolbar__add:hover {
   background: var(--interactive-accent-hover);
+}
+
+/* Appearance modal */
+.ez-reader__appearance-modal__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.ez-reader__appearance-modal__row label {
+  flex: 0 0 64px;
+  color: var(--text-muted);
+}
+
+.ez-reader__appearance-modal__row input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--interactive-accent);
+}
+
+.ez-reader__appearance-modal__row > span {
+  flex: 0 0 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.ez-reader__appearance-modal__themes {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 auto;
+}
+
+.ez-reader__appearance-modal__themes button {
+  flex: 1 1 0;
+}
+
+/* Reader themes — light/dark/sepia tint the stage background. */
+.ez-reader__theme-light .ez-reader__pdf-stage {
+  background: #f4f4f5;
+}
+.ez-reader__theme-dark .ez-reader__pdf-stage {
+  background: #1f1f22;
+}
+.ez-reader__theme-sepia .ez-reader__pdf-stage {
+  background: #f1e8d6;
+}
+.ez-reader__theme-dark .ez-reader__reader__stage {
+  background: #1f1f22;
+}
+.ez-reader__theme-sepia .ez-reader__reader__stage {
+  background: #f1e8d6;
 }
 
 .ez-reader__add-modal__hint {

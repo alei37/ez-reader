@@ -8,10 +8,10 @@ export interface ReaderToolbarHandlers {
   onToggleBookmarks: () => void;
   onToggleExcerpts: () => void;
   onClose: () => void;
-  onZoomIn?: () => void;
-  onZoomOut?: () => void;
-  onZoomReset?: () => void;
-  onShowFontSettings?: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomReset: () => void;
+  onShowFontSettings: () => void;
 }
 
 export interface ReaderToolbarState {
@@ -20,12 +20,22 @@ export interface ReaderToolbarState {
   readonly status: ReadingState["status"];
   readonly showingBookmarks: boolean;
   readonly showingExcerpts: boolean;
+  /** Current zoom level (1.0 = fit-width). Only meaningful for PDFs. */
   readonly zoom?: number;
+  /** Whether to show zoom controls (true for PDFs, false otherwise). */
   readonly showZoomControls?: boolean;
   readonly showFontSettings?: boolean;
 }
 
-/** Header strip that lives above the reader stage. */
+/**
+ * Compact reader header. Layout (single row, no wrap):
+ *
+ *   [×] [◀ ▶ ▬▬▬▬ 42%] [Aa · 摘 · 标] [− + 适宽]
+ *
+ * Designed for both desktop and tablet: progress bar is fixed-width so the
+ * page always lines up, zoom controls cluster together on the right, and
+ * actions stay visible without overflow on a 700px-wide column.
+ */
 export class ReaderToolbar {
   readonly root: HTMLElement;
   private readonly handlers: ReaderToolbarHandlers;
@@ -35,25 +45,30 @@ export class ReaderToolbar {
   private readonly statusPill: HTMLElement;
   private readonly bookmarkToggle: HTMLButtonElement;
   private readonly excerptToggle: HTMLButtonElement;
+  private readonly zoomOut: HTMLButtonElement;
+  private readonly zoomIn: HTMLButtonElement;
+  private readonly zoomReset: HTMLButtonElement;
+  private readonly zoomGroup: HTMLElement;
+  private readonly fontButton: HTMLButtonElement;
 
   constructor(handlers: ReaderToolbarHandlers, initial: ReaderToolbarState) {
     this.handlers = handlers;
     this.root = createDiv({ cls: "ez-reader__reader-toolbar" });
 
-    const close = this.root.createEl("button", { text: "关闭", attr: { type: "button", title: "关闭阅读器" } });
+    // --- Left: close ---
+    const close = this.root.createEl("button", { text: "×", attr: { type: "button", title: "关闭阅读器", "aria-label": "关闭" } });
     close.addClass("ez-reader__reader-toolbar__close");
     close.addEventListener("click", () => handlers.onClose());
 
-    const prev = this.root.createEl("button", { text: "上一页", attr: { type: "button" } });
+    // --- Middle: navigation + compact progress ---
+    const navGroup = this.root.createDiv({ cls: "ez-reader__reader-toolbar__group ez-reader__reader-toolbar__nav-group" });
+
+    const prev = navGroup.createEl("button", { text: "◀", attr: { type: "button", title: "上一页", "aria-label": "上一页" } });
     prev.addClass("ez-reader__reader-toolbar__nav");
     prev.addEventListener("click", () => handlers.onPrev());
 
-    const next = this.root.createEl("button", { text: "下一页", attr: { type: "button" } });
-    next.addClass("ez-reader__reader-toolbar__nav");
-    next.addEventListener("click", () => handlers.onNext());
-
-    this.fractionInput = this.root.createEl("input", {
-      attr: { type: "range", min: "0", max: "1000", step: "1", title: "跳转阅读进度" }
+    this.fractionInput = navGroup.createEl("input", {
+      attr: { type: "range", min: "0", max: "1000", step: "1", title: "跳转阅读进度", "aria-label": "进度" }
     });
     this.fractionInput.addClass("ez-reader__reader-toolbar__progress");
     this.fractionInput.addEventListener("change", () => {
@@ -61,26 +76,53 @@ export class ReaderToolbar {
       handlers.onProgressChange(clampFraction(fraction));
     });
 
-    this.fractionValue = this.root.createEl("span", { text: "0%" });
+    const next = navGroup.createEl("button", { text: "▶", attr: { type: "button", title: "下一页", "aria-label": "下一页" } });
+    next.addClass("ez-reader__reader-toolbar__nav");
+    next.addEventListener("click", () => handlers.onNext());
+
+    this.fractionValue = navGroup.createEl("span", { text: "0%" });
     this.fractionValue.addClass("ez-reader__reader-toolbar__progress-value");
 
-    this.chapterLabel = this.root.createEl("span", { text: "" });
+    // Chapter label + status pill — share a small subtitle row above nav.
+    const meta = this.root.createDiv({ cls: "ez-reader__reader-toolbar__meta" });
+    this.chapterLabel = meta.createEl("span", { text: "" });
     this.chapterLabel.addClass("ez-reader__reader-toolbar__chapter");
-
-    this.statusPill = this.root.createEl("span", { text: "在读" });
+    this.statusPill = meta.createEl("span", { text: "在读" });
     this.statusPill.addClass("ez-reader__status-pill");
 
-    const addBookmark = this.root.createEl("button", { text: "+ 书签", attr: { type: "button" } });
+    // --- Right: actions + zoom ---
+    const actionsGroup = this.root.createDiv({ cls: "ez-reader__reader-toolbar__group ez-reader__reader-toolbar__actions" });
+
+    const addBookmark = actionsGroup.createEl("button", { text: "+书签", attr: { type: "button", title: "添加书签" } });
     addBookmark.addClass("ez-reader__reader-toolbar__action");
     addBookmark.addEventListener("click", () => handlers.onAddBookmark());
 
-    this.bookmarkToggle = this.root.createEl("button", { text: "书签", attr: { type: "button", title: "显示书签" } });
+    this.fontButton = actionsGroup.createEl("button", { text: "Aa", attr: { type: "button", title: "字号 / 行距 / 主题" } });
+    this.fontButton.addClass("ez-reader__reader-toolbar__action");
+    this.fontButton.addEventListener("click", () => handlers.onShowFontSettings());
+
+    this.excerptToggle = actionsGroup.createEl("button", { text: "摘录", attr: { type: "button", title: "显示摘录", "aria-label": "摘录" } });
+    this.excerptToggle.addClass("ez-reader__reader-toolbar__action");
+    this.excerptToggle.addEventListener("click", () => handlers.onToggleExcerpts());
+
+    this.bookmarkToggle = actionsGroup.createEl("button", { text: "书签", attr: { type: "button", title: "显示书签", "aria-label": "书签" } });
     this.bookmarkToggle.addClass("ez-reader__reader-toolbar__action");
     this.bookmarkToggle.addEventListener("click", () => handlers.onToggleBookmarks());
 
-    this.excerptToggle = this.root.createEl("button", { text: "摘录", attr: { type: "button", title: "显示摘录" } });
-    this.excerptToggle.addClass("ez-reader__reader-toolbar__action");
-    this.excerptToggle.addEventListener("click", () => handlers.onToggleExcerpts());
+    // Zoom cluster — only shown when the session supports it (PDFs).
+    this.zoomGroup = this.root.createDiv({ cls: "ez-reader__reader-toolbar__group ez-reader__reader-toolbar__zoom" });
+
+    this.zoomOut = this.zoomGroup.createEl("button", { text: "−", attr: { type: "button", title: "缩小", "aria-label": "缩小" } });
+    this.zoomOut.addClass("ez-reader__reader-toolbar__zoom-btn");
+    this.zoomOut.addEventListener("click", () => handlers.onZoomOut());
+
+    this.zoomReset = this.zoomGroup.createEl("button", { text: "适宽", attr: { type: "button", title: "适宽(还原)", "aria-label": "适宽" } });
+    this.zoomReset.addClass("ez-reader__reader-toolbar__zoom-btn ez-reader__reader-toolbar__zoom-btn--reset");
+    this.zoomReset.addEventListener("click", () => handlers.onZoomReset());
+
+    this.zoomIn = this.zoomGroup.createEl("button", { text: "+", attr: { type: "button", title: "放大", "aria-label": "放大" } });
+    this.zoomIn.addClass("ez-reader__reader-toolbar__zoom-btn");
+    this.zoomIn.addEventListener("click", () => handlers.onZoomIn());
 
     this.update(initial);
   }
@@ -94,6 +136,13 @@ export class ReaderToolbar {
     this.statusPill.addClass(`is-${state.status}`);
     this.bookmarkToggle.toggleClass("is-active", state.showingBookmarks);
     this.excerptToggle.toggleClass("is-active", state.showingExcerpts);
+    this.zoomGroup.toggleClass("is-hidden", state.showZoomControls !== true);
+    this.fontButton.toggleClass("is-hidden", state.showFontSettings !== true);
+    if (typeof state.zoom === "number") {
+      this.zoomReset.setText(state.zoom >= 0.95 && state.zoom <= 1.05 ? "适宽" : `${Math.round(state.zoom * 100)}%`);
+    } else {
+      this.zoomReset.setText("适宽");
+    }
   }
 }
 

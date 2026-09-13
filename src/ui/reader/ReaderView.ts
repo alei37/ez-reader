@@ -7,6 +7,7 @@ import type { ReadingPosition } from "../../core/entities/ReadingState";
 import type { BookReader, ReaderSession } from "../../core/ports/BookReader";
 import type { LibraryEntry } from "../../core/services/LibraryService";
 import type { ReadingService } from "../../core/services/ReadingService";
+import { AppearanceModal } from "./AppearanceModal";
 import { BookmarkModal } from "./BookmarkModal";
 import { BookmarksPanel } from "./BookmarksPanel";
 import { ExcerptModal } from "./ExcerptModal";
@@ -15,6 +16,7 @@ import { ReaderSelectionMenu } from "./ReaderSelectionMenu";
 import { ReaderToolbar } from "./ReaderToolbar";
 import { TranslationModal } from "./TranslationModal";
 import { DEFAULT_READER_APPEARANCE } from "../../core/types/ReaderSettings";
+import type { ReaderAppearance, ReaderTheme } from "../../core/types/ReaderSettings";
 import type { BookBytesLoader } from "../../core/ports/BookReader";
 import type { TranslationService } from "../../core/ports/TranslationProvider";
 
@@ -44,6 +46,7 @@ export class ReaderView extends ItemView {
   private readonly deps: ReaderViewDeps;
   private entry: LibraryEntry | undefined;
   private session: ReaderSession | undefined;
+  private appearance: ReaderAppearance = { ...DEFAULT_READER_APPEARANCE };
   private host: HTMLElement | undefined;
   private toolbar: ReaderToolbar | undefined;
   private bookmarksPanel: BookmarksPanel | undefined;
@@ -88,14 +91,17 @@ export class ReaderView extends ItemView {
         onClose: () => this.leaf.detach(),
         onZoomIn: () => void this.zoomIn(),
         onZoomOut: () => void this.zoomOut(),
-        onZoomReset: () => void this.zoomReset()
+        onZoomReset: () => void this.zoomReset(),
+        onShowFontSettings: () => void this.showFontSettings()
       },
       {
         fraction: 0,
         chapter: "",
         status: this.entry?.reading.status ?? "unread",
         showingBookmarks: false,
-        showingExcerpts: false
+        showingExcerpts: false,
+        showZoomControls: false,
+        showFontSettings: true
       }
     );
     container.append(this.toolbar.root);
@@ -192,24 +198,44 @@ export class ReaderView extends ItemView {
     if (!this.session?.setScale) return;
     const current = this.session.currentScale?.() ?? 1.5;
     await this.session.setScale(current * 1.25);
+    this.toolbar?.update(this.toolbarState());
   }
 
   private async zoomOut(): Promise<void> {
     if (!this.session?.setScale) return;
     const current = this.session.currentScale?.() ?? 1.5;
     await this.session.setScale(current / 1.25);
+    this.toolbar?.update(this.toolbarState());
   }
 
   private async zoomReset(): Promise<void> {
     if (!this.session?.setFitWidth) return;
     await this.session.setFitWidth();
+    this.toolbar?.update(this.toolbarState());
+  }
+
+  private async showFontSettings(): Promise<void> {
+    if (!this.session) return;
+    const modal = new AppearanceModal(this.deps.app, this.appearance);
+    const next = await modal.openAndWait();
+    if (!next) return;
+    this.appearance = next;
+    await this.session.applyAppearance(next);
+    this.applyTheme(next.theme);
+    this.toolbar?.update(this.toolbarState());
+  }
+
+  private applyTheme(theme: ReaderTheme): void {
+    const root = this.host?.closest(".ez-reader__reader") ?? this.containerEl;
+    root.removeClass("ez-reader__theme-system", "ez-reader__theme-light", "ez-reader__theme-dark", "ez-reader__theme-sepia");
+    root.addClass(`ez-reader__theme-${theme}`);
   }
 
   private async openSession(): Promise<void> {
     if (!this.entry || !this.host) return;
     const book = this.entry.book;
     const engine = this.bookReaderFor(book);
-    this.session = await engine.open(book, this.host, DEFAULT_READER_APPEARANCE, this.deps.bookBytesLoader);
+    this.session = await engine.open(book, this.host, this.appearance, this.deps.bookBytesLoader);
     this.deps.onBookOpened?.(this.entry);
 
     const fraction = await this.session.currentFraction();
@@ -252,7 +278,10 @@ export class ReaderView extends ItemView {
       chapter: this.chapter,
       status: this.entry?.reading.status ?? "unread",
       showingBookmarks: this.showingBookmarks,
-      showingExcerpts: this.showingExcerpts
+      showingExcerpts: this.showingExcerpts,
+      zoom: this.session?.currentScale?.(),
+      showZoomControls: this.session?.setScale !== undefined,
+      showFontSettings: true
     };
   }
 

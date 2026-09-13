@@ -252,16 +252,30 @@ class PdfjsSession implements ReaderSession {
       scale = hostWidth / baseViewport.width;
     }
     const viewport = pdfPage.getViewport({ scale });
+    const dpr = Math.max(1, Math.floor(globalThis.devicePixelRatio ?? 1));
+    const displayWidth = viewport.width;
+    const displayHeight = viewport.height;
+    const pixelWidth = Math.round(displayWidth * dpr);
+    const pixelHeight = Math.round(displayHeight * dpr);
     const context = this.canvas.getContext("2d");
     if (!context) throw new Error("PDF canvas 2D context unavailable.");
-    this.canvas.width = viewport.width;
-    this.canvas.height = viewport.height;
+    // Render at device pixel resolution for crisp output on HiDPI screens.
+    this.canvas.width = pixelWidth;
+    this.canvas.height = pixelHeight;
+    this.canvas.style.width = `${displayWidth}px`;
+    this.canvas.style.height = `${displayHeight}px`;
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Clear any previous frame so transparent PDFs don't ghost.
+    context.clearRect(0, 0, displayWidth, displayHeight);
+    // Fill with white so dark-themed PDFs are still legible.
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, displayWidth, displayHeight);
     await pdfPage.render({ canvasContext: context, canvas: this.canvas, viewport }).promise;
-    await this.renderTextLayer(pdfPage, viewport, scale);
+    await this.renderTextLayer(pdfPage, viewport, displayWidth, displayHeight);
     this.currentPage = target;
   }
 
-  private async renderTextLayer(page: PdfPage, viewport: PdfViewport, scale: number): Promise<void> {
+  private async renderTextLayer(page: PdfPage, viewport: PdfViewport, displayWidth: number, displayHeight: number): Promise<void> {
     this.textLayer.empty();
     this.textLayerContent = [];
     let content: { items: Array<{ str: string; transform: number[]; width: number; height: number; hasEOL?: boolean }> };
@@ -270,15 +284,16 @@ class PdfjsSession implements ReaderSession {
     } catch {
       return;
     }
+    const scale = viewport.scale;
     const fontSizeMultiplier = this.appearance.fontSize / 100;
     for (const item of content.items) {
       if (!item.str || !item.str.trim()) continue;
       const tx = (pdfjsLib as unknown as { Util: { transform: (a: number[], b: number[]) => number[] } }).Util.transform(viewport.transform, item.transform);
       const x = tx[4];
-      const y = tx[5] - item.height * viewport.scale;
-      const width = item.width * viewport.scale;
-      const height = item.height * viewport.scale;
-      const fontSize = Math.max(item.height * viewport.scale * fontSizeMultiplier, 8);
+      const y = tx[5] - item.height * scale;
+      const width = item.width * scale;
+      const height = item.height * scale;
+      const fontSize = Math.max(item.height * scale * fontSizeMultiplier, 8);
       const span = this.textLayer.createEl("span", { text: item.str + (item.hasEOL ? "\n" : " ") });
       span.setCssStyles({
         position: "absolute",
@@ -295,10 +310,10 @@ class PdfjsSession implements ReaderSession {
       });
       this.textLayerContent.push({ text: item.str, x, y, width, height, fontSize });
     }
-    // Size the layer container to match the canvas.
+    // Size the layer container to match the canvas display size.
     this.textLayer.setCssStyles({
-      width: `${viewport.width}px`,
-      height: `${viewport.height}px`
+      width: `${displayWidth}px`,
+      height: `${displayHeight}px`
     });
   }
 }
