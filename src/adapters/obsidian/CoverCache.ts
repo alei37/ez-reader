@@ -62,6 +62,23 @@ export class CoverCache {
     }
   }
 
+  /**
+   * Extract covers for a batch of books in parallel. Concurrency is
+   * capped at 3 to avoid saturating the render thread when the user
+   * imports a large library.
+   */
+  async ensureCoversBatch(books: ReadonlyArray<Book>, loader: (path: string) => Promise<ArrayBuffer>): Promise<void> {
+    const queue = books.filter((b) => !b.coverPath);
+    let index = 0;
+    const workers = Array.from({ length: 3 }, async () => {
+      while (index < queue.length) {
+        const book = queue[index++];
+        await this.ensureCoverFor(book, loader);
+      }
+    });
+    await Promise.all(workers);
+  }
+
   private async writeCover(book: Book, bytes: ArrayBuffer, mimeType: string): Promise<string> {
     if (!(await this.app.vault.adapter.exists(this.coversDir))) {
       await this.app.vault.adapter.mkdir(this.coversDir);

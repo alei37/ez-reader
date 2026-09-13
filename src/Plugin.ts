@@ -85,7 +85,9 @@ export default class EzReaderPlugin extends Plugin {
       reading: this.reading,
       foliate: this.foliate,
       pdfjs: this.pdfjs,
-      openReader: (entry: LibraryEntry) => this.openReader(entry)
+      openReader: (entry: LibraryEntry) => this.openReader(entry),
+      covers: this.covers,
+      bookBytesLoader: this.makeBookBytesLoader()
     };
   }
 

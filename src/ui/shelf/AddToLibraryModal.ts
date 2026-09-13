@@ -1,6 +1,9 @@
 import { Modal } from "obsidian";
 import type { App } from "obsidian";
+import type { Book } from "../../core/entities/Book";
 import type { LibraryEntry, LibraryService } from "../../core/services/LibraryService";
+import type { BookBytesLoader } from "../../core/ports/BookReader";
+import type { CoverCache } from "../../adapters/obsidian/CoverCache";
 
 export interface AddToLibraryResult {
   readonly added: ReadonlyArray<string>;
@@ -14,13 +17,17 @@ export interface AddToLibraryResult {
  */
 export class AddToLibraryModal extends Modal {
   private readonly service: LibraryService;
+  private readonly covers: CoverCache | undefined;
+  private readonly loader: BookBytesLoader | undefined;
   private candidates: LibraryEntry[] = [];
   private readonly selected = new Set<string>();
   private readonly searchInput: HTMLInputElement;
 
-  constructor(app: App, service: LibraryService) {
+  constructor(app: App, service: LibraryService, options?: { covers?: CoverCache; loader?: BookBytesLoader }) {
     super(app);
     this.service = service;
+    this.covers = options?.covers;
+    this.loader = options?.loader;
     this.searchInput = document.createElement("input");
     this.searchInput.type = "search";
     this.searchInput.placeholder = "按路径筛选…";
@@ -115,14 +122,30 @@ export class AddToLibraryModal extends Modal {
   }
 
   private async confirmSelection(): Promise<void> {
-    for (const id of this.selected) {
+    const ids = [...this.selected];
+    for (const id of ids) {
       await this.service.addToLibrary(id);
     }
+    const books = ids
+      .map((id) => this.service.get(id)?.book)
+      .filter((b): b is Book => Boolean(b));
+    await this.extractCoversFor(books);
     this.close();
   }
 
   private async confirmAddAll(): Promise<void> {
+    const before = new Set(this.service.list({}, "titleAsc", true).map((entry) => entry.book.id));
     await this.service.addAllToLibrary();
+    const newlyAdded = this.service
+      .list({}, "titleAsc", true)
+      .filter((entry) => !before.has(entry.book.id))
+      .map((entry) => entry.book);
+    await this.extractCoversFor(newlyAdded);
     this.close();
+  }
+
+  private async extractCoversFor(books: ReadonlyArray<Book>): Promise<void> {
+    if (!this.covers || !this.loader || books.length === 0) return;
+    await this.covers.ensureCoversBatch(books, this.loader);
   }
 }

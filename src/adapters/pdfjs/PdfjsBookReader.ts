@@ -85,15 +85,43 @@ export class PdfjsBookReader implements BookReader {
       const canvas = globalThis.document.createElement("canvas");
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-      await page.render({ canvasContext: ctx, canvas, viewport }).promise;
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-      if (!blob) return null;
-      const arrayBuffer = await blob.arrayBuffer();
-      return { bytes: arrayBuffer, mimeType: "image/png" };
+      // The canvas must be in the document for `toBlob` to work reliably
+      // across browsers; append it temporarily, then detach immediately.
+      const host = globalThis.document.body ?? globalThis.document.documentElement;
+      const previousDisplay = canvas.style.display;
+      canvas.style.display = "none";
+      host.appendChild(canvas);
+      try {
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        // Fill with white so PDFs without backgrounds don't come out
+        // transparent and produce an all-black cover.
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, viewport.width, viewport.height);
+        await page.render({ canvasContext: ctx, canvas, viewport }).promise;
+        const blob = await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob((result) => resolve(result), "image/png");
+        });
+        if (!blob) {
+          console.warn(`[ez-reader] PDF cover: toBlob returned null for ${book.locator.path}`);
+          return null;
+        }
+        const arrayBuffer = await blob.arrayBuffer();
+        console.info(`[ez-reader] PDF cover extracted: ${book.locator.path} (${arrayBuffer.byteLength} bytes)`);
+        return { bytes: arrayBuffer, mimeType: "image/png" };
+      } finally {
+        canvas.style.display = previousDisplay;
+        canvas.remove();
+      }
+    } catch (error) {
+      console.warn(`[ez-reader] PDF cover extraction failed for ${book.locator.path}`, error);
+      return null;
     } finally {
-      await document.destroy();
+      try {
+        await document.destroy();
+      } catch {
+        // ignore double-destroy
+      }
     }
   }
 }

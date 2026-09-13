@@ -3,6 +3,7 @@ import type { App } from "obsidian";
 import type { LibraryEntry, LibraryService } from "../../core/services/LibraryService";
 import type { ReadingService } from "../../core/services/ReadingService";
 import type { BookReader, ReaderSession } from "../../core/ports/BookReader";
+import type { CoverCache } from "../../adapters/obsidian/CoverCache";
 import { DEFAULT_SORT, emptyFilter, type ShelfFilter, type SortCriterion } from "../../core/types/ShelfFilter";
 import { AddToLibraryModal } from "./AddToLibraryModal";
 import { ShelfFiltersModal } from "./ShelfFilters";
@@ -19,6 +20,8 @@ interface ShelfViewDeps {
   readonly foliate: BookReader;
   readonly pdfjs: BookReader;
   readonly openReader: (entry: LibraryEntry) => Promise<void>;
+  readonly covers?: CoverCache;
+  readonly bookBytesLoader?: (path: string) => Promise<ArrayBuffer>;
 }
 
 export class ShelfView extends ItemView {
@@ -192,7 +195,10 @@ export class ShelfView extends ItemView {
   }
 
   private openAddToLibrary(): void {
-    new AddToLibraryModal(this.deps.app, this.deps.library).open();
+    new AddToLibraryModal(this.deps.app, this.deps.library, {
+      covers: this.deps.covers,
+      loader: this.deps.bookBytesLoader
+    }).open();
   }
 
   /**
