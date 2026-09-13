@@ -20,16 +20,25 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
     img.addEventListener("error", () => img.remove());
   } else {
     cover.addClass("is-placeholder");
-    cover.setText(entry.book.metadata?.title ?? entry.book.locator.path);
+    const title = entry.book.metadata?.title ?? entry.book.locator.path;
+    cover.createEl("span", {
+      text: title.charAt(0).toLocaleUpperCase(),
+      cls: "ez-reader__shelf-grid__cover-glyph"
+    });
+    cover.createEl("span", {
+      text: title,
+      cls: "ez-reader__shelf-grid__cover-title"
+    });
   }
 
   const meta = card.createDiv({ cls: "ez-reader__shelf-grid__meta" });
   meta.createEl("span", {
     text: entry.book.metadata?.title ?? entry.book.locator.path,
-    cls: "ez-reader__shelf-grid__title"
+    cls: "ez-reader__shelf-grid__title",
+    attr: { title: entry.book.metadata?.title ?? entry.book.locator.path }
   });
   meta.createEl("span", {
-    text: entry.book.metadata?.authors[0] ?? "未知作者",
+    text: entry.book.metadata?.authors[0] ?? extractAuthorFallback(entry.book.locator.path),
     cls: "ez-reader__shelf-grid__author"
   });
 
@@ -62,4 +71,15 @@ const statusLabel = (status: string): string => {
     default:
       return "未开始";
   }
+};
+
+/**
+ * Best-effort author guess from the path when we haven't parsed metadata
+ * yet (covers PDF files we haven't opened). Falls back to the parent
+ * directory name so the card shows something more useful than "未知作者".
+ */
+const extractAuthorFallback = (path: string): string => {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length >= 2) return parts.slice(0, -1).join(" / ");
+  return "未知作者";
 };
