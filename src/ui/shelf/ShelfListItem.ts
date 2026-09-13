@@ -28,7 +28,7 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
     cls: "ez-reader__shelf-list__title"
   });
   info.createEl("span", {
-    text: entry.book.metadata?.authors.join("、") || "未知作者",
+    text: entry.book.metadata?.authors.join("、") || extractAuthorFallback(entry.book.locator.path),
     cls: "ez-reader__shelf-list__author"
   });
 
@@ -61,4 +61,10 @@ const statusLabel = (status: string): string => {
     default:
       return "未开始";
   }
+};
+
+const extractAuthorFallback = (path: string): string => {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length >= 2) return parts.slice(0, -1).join(" / ");
+  return "未知作者";
 };
