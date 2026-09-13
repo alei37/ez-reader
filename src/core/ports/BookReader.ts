@@ -35,6 +35,16 @@ export interface ReaderSession {
 
   /** Returns a locator string the host can persist to resume later. */
   exportLocator(): Promise<string | null>;
+
+  /**
+   * Optional zoom controls. Implementations that don't support a zoom
+   * dimension (e.g. reflowable engines) can leave these as no-ops; the
+   * toolbar will hide the controls when the handlers aren't supplied.
+   */
+  setScale?(scale: number): Promise<void>;
+  setFitWidth?(): Promise<void>;
+  currentScale?(): number;
+  isFitWidth?(): boolean;
 }
 
 /**

@@ -343,11 +343,27 @@
   width: 100%;
   height: 100%;
   overflow: auto;
+  position: relative;
 }
 
 .ez-reader__pdf-stage__canvas {
   display: block;
   margin: 0 auto;
+}
+
+.ez-reader__pdf-stage__text-layer {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  user-select: text;
+  z-index: 1;
+}
+
+.ez-reader__pdf-stage__text-layer span {
+  pointer-events: auto;
+  user-select: text;
 }
 
 .ez-reader__reader-toolbar {
@@ -376,6 +392,19 @@
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
+}
+
+.ez-reader__reader-toolbar__zoom {
+  min-width: 28px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .ez-reader__reader-toolbar__progress {

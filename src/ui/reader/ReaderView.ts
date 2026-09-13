@@ -85,7 +85,10 @@ export class ReaderView extends ItemView {
         onAddBookmark: () => void this.addBookmarkAtCurrentPosition(),
         onToggleBookmarks: () => void this.toggleBookmarks(),
         onToggleExcerpts: () => void this.toggleExcerpts(),
-        onClose: () => this.leaf.detach()
+        onClose: () => this.leaf.detach(),
+        onZoomIn: () => void this.zoomIn(),
+        onZoomOut: () => void this.zoomOut(),
+        onZoomReset: () => void this.zoomReset()
       },
       {
         fraction: 0,
@@ -179,6 +182,27 @@ export class ReaderView extends ItemView {
     if (this.host) {
       void this.openSession();
     }
+  }
+
+  private get isPdf(): boolean {
+    return this.entry?.book.locator.format === "pdf";
+  }
+
+  private async zoomIn(): Promise<void> {
+    if (!this.session?.setScale) return;
+    const current = this.session.currentScale?.() ?? 1.5;
+    await this.session.setScale(current * 1.25);
+  }
+
+  private async zoomOut(): Promise<void> {
+    if (!this.session?.setScale) return;
+    const current = this.session.currentScale?.() ?? 1.5;
+    await this.session.setScale(current / 1.25);
+  }
+
+  private async zoomReset(): Promise<void> {
+    if (!this.session?.setFitWidth) return;
+    await this.session.setFitWidth();
   }
 
   private async openSession(): Promise<void> {

@@ -8,6 +8,10 @@ export interface ReaderToolbarHandlers {
   onToggleBookmarks: () => void;
   onToggleExcerpts: () => void;
   onClose: () => void;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onZoomReset?: () => void;
+  onShowFontSettings?: () => void;
 }
 
 export interface ReaderToolbarState {
@@ -16,6 +20,9 @@ export interface ReaderToolbarState {
   readonly status: ReadingState["status"];
   readonly showingBookmarks: boolean;
   readonly showingExcerpts: boolean;
+  readonly zoom?: number;
+  readonly showZoomControls?: boolean;
+  readonly showFontSettings?: boolean;
 }
 
 /** Header strip that lives above the reader stage. */

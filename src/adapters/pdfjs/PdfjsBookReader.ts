@@ -31,6 +31,8 @@ interface PdfPage {
 interface PdfViewport {
   width: number;
   height: number;
+  scale: number;
+  transform: number[];
 }
 
 interface PdfjsModule {
@@ -51,7 +53,7 @@ export class PdfjsBookReader implements BookReader {
   async open(
     book: Book,
     host: HTMLElement,
-    _appearance: ReaderAppearance,
+    appearance: ReaderAppearance,
     loader: BookBytesLoader
   ): Promise<ReaderSession> {
     const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs" as string)) as unknown as PdfjsModule;
@@ -61,7 +63,7 @@ export class PdfjsBookReader implements BookReader {
     const loadingTask = pdfjs.getDocument({ data: bytes });
     const document = await loadingTask.promise;
 
-    const session = new PdfjsSession(document, host);
+    const session = new PdfjsSession(document, host, appearance);
     await session.gotoPage(1);
     return session;
   }
@@ -129,21 +131,33 @@ export class PdfjsBookReader implements BookReader {
 class PdfjsSession implements ReaderSession {
   readonly element: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
+  private readonly textLayer: HTMLElement;
   private readonly doc: PdfDocument;
+  private readonly host: HTMLElement;
+  private readonly appearance: ReaderAppearance;
   private currentPage = 1;
-  private scale = 1.2;
+  private scale = 1.5;
+  private fitWidth = true;
+  private textLayerContent: { text: string; x: number; y: number; width: number; height: number; fontSize: number }[] = [];
+  private textLayerHandlers: Array<() => void> = [];
 
-  constructor(doc: PdfDocument, host: HTMLElement) {
+  constructor(doc: PdfDocument, host: HTMLElement, appearance: ReaderAppearance) {
     this.doc = doc;
     this.element = host;
+    this.host = host;
+    this.appearance = appearance;
     host.empty();
     host.addClass("ez-reader__pdf-stage");
     this.canvas = host.createEl("canvas");
     this.canvas.addClass("ez-reader__pdf-stage__canvas");
+    this.textLayer = host.createDiv({ cls: "ez-reader__pdf-stage__text-layer" });
   }
 
   async close(): Promise<void> {
+    for (const off of this.textLayerHandlers) off();
+    this.textLayerHandlers = [];
     this.canvas.remove();
+    this.textLayer.remove();
     try {
       await this.doc.destroy?.();
     } catch (error) {
@@ -151,8 +165,15 @@ class PdfjsSession implements ReaderSession {
     }
   }
 
-  async applyAppearance(_appearance: ReaderAppearance): Promise<void> {
-    // Visual tweaks for PDF are limited to scale; the shell handles theme.
+  async applyAppearance(appearance: ReaderAppearance): Promise<void> {
+    Object.assign(this.appearance, appearance);
+    // Re-render with the new font size; the host width may not have
+    // changed, so we force fit-width off and back on to recompute.
+    const previousFit = this.fitWidth;
+    this.fitWidth = false;
+    await this.gotoPage(this.currentPage);
+    this.fitWidth = previousFit;
+    if (previousFit) await this.gotoPage(this.currentPage);
   }
 
   async goTo(target: ReaderTarget): Promise<void> {
@@ -181,7 +202,20 @@ class PdfjsSession implements ReaderSession {
     return (this.currentPage - 1) / (this.doc.numPages - 1);
   }
 
-  on<K extends keyof ReaderEventMap>(_event: K, _handler: (event: ReaderEventMap[K]) => void): () => void {
+  on<K extends keyof ReaderEventMap>(event: K, handler: (event: ReaderEventMap[K]) => void): () => void {
+    if (event === "selection-change") {
+      const wrapped = () => {
+        const selection = globalThis.document.getSelection();
+        if (!selection || selection.isCollapsed) return;
+        const text = selection.toString().trim();
+        if (!text) return;
+        handler({ text, locator: `page=${this.currentPage}` } as unknown as ReaderEventMap[K]);
+      };
+      this.textLayer.addEventListener("selectionchange", wrapped);
+      const off = () => this.textLayer.removeEventListener("selectionchange", wrapped);
+      this.textLayerHandlers.push(off);
+      return off;
+    }
     return () => undefined;
   }
 
@@ -189,15 +223,85 @@ class PdfjsSession implements ReaderSession {
     return `page=${this.currentPage}`;
   }
 
+  async setScale(scale: number): Promise<void> {
+    this.fitWidth = false;
+    this.scale = Math.max(0.4, Math.min(4, scale));
+    await this.gotoPage(this.currentPage);
+  }
+
+  async setFitWidth(): Promise<void> {
+    this.fitWidth = true;
+    await this.gotoPage(this.currentPage);
+  }
+
+  currentScale(): number {
+    return this.scale;
+  }
+
+  isFitWidth(): boolean {
+    return this.fitWidth;
+  }
+
   async gotoPage(page: number): Promise<void> {
     const target = Math.max(1, Math.min(this.doc.numPages, Math.trunc(page)));
     const pdfPage = await this.doc.getPage(target);
-    const viewport = pdfPage.getViewport({ scale: this.scale });
+    const baseViewport = pdfPage.getViewport({ scale: 1 });
+    let scale = this.scale;
+    if (this.fitWidth) {
+      const hostWidth = Math.max(this.host.clientWidth - 24, 100);
+      scale = hostWidth / baseViewport.width;
+    }
+    const viewport = pdfPage.getViewport({ scale });
     const context = this.canvas.getContext("2d");
     if (!context) throw new Error("PDF canvas 2D context unavailable.");
     this.canvas.width = viewport.width;
     this.canvas.height = viewport.height;
     await pdfPage.render({ canvasContext: context, canvas: this.canvas, viewport }).promise;
+    await this.renderTextLayer(pdfPage, viewport, scale);
     this.currentPage = target;
   }
+
+  private async renderTextLayer(page: PdfPage, viewport: PdfViewport, scale: number): Promise<void> {
+    this.textLayer.empty();
+    this.textLayerContent = [];
+    let content: { items: Array<{ str: string; transform: number[]; width: number; height: number; hasEOL?: boolean }> };
+    try {
+      content = await page.getTextContent() as typeof content;
+    } catch {
+      return;
+    }
+    const fontSizeMultiplier = this.appearance.fontSize / 100;
+    for (const item of content.items) {
+      if (!item.str || !item.str.trim()) continue;
+      const tx = (pdfjsLib as unknown as { Util: { transform: (a: number[], b: number[]) => number[] } }).Util.transform(viewport.transform, item.transform);
+      const x = tx[4];
+      const y = tx[5] - item.height * viewport.scale;
+      const width = item.width * viewport.scale;
+      const height = item.height * viewport.scale;
+      const fontSize = Math.max(item.height * viewport.scale * fontSizeMultiplier, 8);
+      const span = this.textLayer.createEl("span", { text: item.str + (item.hasEOL ? "\n" : " ") });
+      span.setCssStyles({
+        position: "absolute",
+        left: `${x}px`,
+        top: `${y}px`,
+        width: `${width}px`,
+        height: `${height}px`,
+        fontSize: `${fontSize}px`,
+        lineHeight: "1",
+        color: "transparent",
+        whiteSpace: "pre",
+        cursor: "text",
+        userSelect: "text"
+      });
+      this.textLayerContent.push({ text: item.str, x, y, width, height, fontSize });
+    }
+    // Size the layer container to match the canvas.
+    this.textLayer.setCssStyles({
+      width: `${viewport.width}px`,
+      height: `${viewport.height}px`
+    });
+  }
 }
+
+// PDF.js utility for transforming coordinates.
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
