@@ -7,9 +7,10 @@ export interface ShelfItemHandlers {
 }
 
 export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers, coverResourcePath?: string): HTMLElement => {
-  const card = document.createElement("button");
+  const card = document.createElement("div");
   card.addClass("ez-reader__shelf-grid__item");
-  card.type = "button";
+  card.setAttribute("role", "button");
+  card.setAttribute("tabindex", "0");
   card.title = entry.book.metadata?.title ?? entry.book.locator.path;
 
   const cover = card.createDiv({ cls: "ez-reader__shelf-grid__cover" });
@@ -53,6 +54,12 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   }
 
   card.addEventListener("click", () => handlers.onOpen(entry));
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handlers.onOpen(entry);
+    }
+  });
   card.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     handlers.onContextMenu(entry, event);

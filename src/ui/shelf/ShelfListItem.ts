@@ -7,9 +7,10 @@ export interface ShelfListHandlers {
 }
 
 export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers, coverResourcePath?: string): HTMLElement => {
-  const row = document.createElement("button");
+  const row = document.createElement("div");
   row.addClass("ez-reader__shelf-list__item");
-  row.type = "button";
+  row.setAttribute("role", "button");
+  row.setAttribute("tabindex", "0");
 
   if (coverResourcePath) {
     const cover = row.createEl("img", {
@@ -43,6 +44,12 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
   });
 
   row.addEventListener("click", () => handlers.onOpen(entry));
+  row.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handlers.onOpen(entry);
+    }
+  });
   row.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     handlers.onContextMenu(entry, event);
