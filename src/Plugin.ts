@@ -256,6 +256,12 @@ export default class EzReaderPlugin extends Plugin {
   }
 
   private async openReader(entry: LibraryEntry): Promise<void> {
+    // PDF 走 Obsidian 自带 PDFViewer — 自己写 PDF.js 渲染搞不定排版/分页/字体 hinting
+    // 等问题, 反正 Obsidian 自己的 PDFViewer 已经在 Electron 里调通了
+    if (entry.book.locator.format === "pdf") {
+      await this.openInBuiltInViewer(entry);
+      return;
+    }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({
       type: READER_VIEW_TYPE,
@@ -268,6 +274,27 @@ export default class EzReaderPlugin extends Plugin {
     }
     // 把焦点切到 reader — 让键盘快捷键和划词立即可用
     this.app.workspace.setActiveLeaf(leaf);
+  }
+
+  /**
+   * 用 Obsidian 自带 PDFViewer 打开 PDF — 通过 openLinkText 触发 Obsidian
+   * 内置的 markdown/pdf 渲染器。这是 Obsidian 自己处理 PDF 的方式, 稳定可靠。
+   *
+   * 代价: 失去我们自定义的 PDF 阅读功能 (高亮/批注/翻译/侧栏笔记)。
+   * 但 PDF 自带 viewer 在 Obsidian 内部已经调通, 远比我们重写一个稳定。
+   * 后续如果需要 PDF 上的批注, 可以参考 PDF++ 的做法: hook Obsidian 的
+   * MarkdownPostProcessor "pdf" 类型, 在 PDFViewer 上叠 layer。
+   */
+  private async openInBuiltInViewer(entry: LibraryEntry): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(entry.book.locator.path);
+    if (!(file instanceof TFile)) {
+      const { Notice } = await import("obsidian");
+      new Notice(`找不到文件: ${entry.book.locator.path}`);
+      return;
+    }
+    // openLinkText 第三个参数 newLeaf 决定是否开新 leaf — 传 false 复用当前激活的,
+    // 传 true 强制新 tab。我们传 false 让 Obsidian 自己判断 (通常新 tab)。
+    await this.app.workspace.openLinkText(file.path, "", false);
   }
 
   private async openPicker(): Promise<void> {
