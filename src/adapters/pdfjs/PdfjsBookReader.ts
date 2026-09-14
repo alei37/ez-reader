@@ -414,7 +414,11 @@ class PdfjsSession implements ReaderSession {
       // If the stage isn't laid out yet, fall back to a sensible width so
       // the page renders at a usable size even on the very first frame.
       const measured = this.host.clientWidth;
-      const hostWidth = measured > 100 ? measured - 32 : 600;
+      // 桌面宽屏下 host 可能 1500+ px,fit-width 把 canvas 撑满会显得"巨大"
+      // (一行几百字没法读)。封顶 960 px(微信读书阅读宽度),不够宽就
+      // 用 host 实际宽度。
+      const MAX_FIT_WIDTH = 960;
+      const hostWidth = measured > 100 ? Math.min(measured - 32, MAX_FIT_WIDTH) : 600;
       scale = hostWidth / baseViewport.width;
     }
     const viewport = pdfPage.getViewport({ scale });
