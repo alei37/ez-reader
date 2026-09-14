@@ -138,7 +138,8 @@ export class ReaderToolbar {
     this.zoomOut.addEventListener("click", () => handlers.onZoomOut());
 
     this.zoomReset = this.zoomGroup.createEl("button", { text: "适宽", attr: { type: "button", title: "适宽(还原)", "aria-label": "适宽" } });
-    this.zoomReset.addClass("ez-reader__reader-toolbar__zoom-btn ez-reader__reader-toolbar__zoom-btn--reset");
+    // Obsidian 的 addClass 是 variadic, 不能传空格分隔字符串
+    this.zoomReset.addClass("ez-reader__reader-toolbar__zoom-btn", "ez-reader__reader-toolbar__zoom-btn--reset");
     this.zoomReset.addEventListener("click", () => handlers.onZoomReset());
 
     this.zoomIn = this.zoomGroup.createEl("button", { text: "+", attr: { type: "button", title: "放大", "aria-label": "放大" } });
