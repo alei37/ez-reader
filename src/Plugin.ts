@@ -162,16 +162,38 @@ export default class EzReaderPlugin extends Plugin {
       new Notice(`找不到书: ${bookId}`);
       return;
     }
-    // 同步 ShelfView.openBook 的行为: 先标记"在读"
-    await this.reading.openBook(entry.book.id);
-    await this.openReader(entry);
-    if (excerptId) {
-      // openExcerptById 内部 whenReady() 会等 session 就绪(最多 30s),
-      // 不再用固定 setTimeout,避免大 PDF 时序竞争
-      const leaf = this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
-      if (leaf?.view instanceof ReaderView) {
-        await leaf.view.openExcerptById(excerptId);
+    try {
+      // 同步 ShelfView.openBook 的行为: 先标记"在读"
+      await this.withTimeout(this.reading.openBook(entry.book.id), 5000, "reading.openBook");
+      await this.withTimeout(this.openReader(entry), 8000, "openReader");
+      if (excerptId) {
+        // openExcerptById 内部 whenReady() 会等 session 就绪(最多 30s),
+        // 不再用固定 setTimeout,避免大 PDF 时序竞争
+        const leaf = this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
+        if (leaf?.view instanceof ReaderView) {
+          await this.withTimeout(leaf.view.openExcerptById(excerptId), 30000, "openExcerptById");
+        }
       }
+    } catch (error) {
+      const { Notice } = await import("obsidian");
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`无法打开笔记链接: ${message}`);
+      console.error("[ez-reader] handleProtocol failed", { bookId, excerptId, error });
+    }
+  }
+
+  /** Race a promise against a deadline. Rejects with a friendly message on timeout. */
+  private async withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = globalThis.setTimeout(() => reject(new Error(`${label} 超时 (${ms}ms)`)), ms);
+        })
+      ]);
+    } finally {
+      if (timer !== undefined) globalThis.clearTimeout(timer);
     }
   }
 
