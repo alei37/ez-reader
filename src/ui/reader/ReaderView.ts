@@ -421,11 +421,12 @@ export class ReaderView extends ItemView {
 
     this.host.addEventListener("touchstart", onTouchStart, { passive: true });
     this.host.addEventListener("touchend", onTouchEnd, { passive: false });
-    this.host.addEventListener("mousemove", onMouseMove);
+    // mousemove passive 避免阻塞滚动; 60Hz 触发但 setTimeout 重置足够轻量
+    this.host.addEventListener("mousemove", onMouseMove, { passive: true });
     this.register(() => {
       this.host?.removeEventListener("touchstart", onTouchStart);
       this.host?.removeEventListener("touchend", onTouchEnd);
-      this.host?.removeEventListener("mousemove", onMouseMove);
+      this.host?.removeEventListener("mousemove", onMouseMove, { passive: true } as AddEventListenerOptions);
       if (visibleTimer !== undefined) globalThis.clearTimeout(visibleTimer);
     });
   }
