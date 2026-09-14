@@ -615,8 +615,12 @@ class PdfjsSession implements ReaderSession {
       // 缩放时同时改 wrapper 尺寸, 让 layout 跟着变 (不会因为 transform 留下空白)
       const scaledW = page.nativeWidth * this.zoom;
       const scaledH = page.nativeHeight * this.zoom;
+      // 用 inline style 强制居中, 排除任何 CSS 优先级 / 主题覆盖 / 缓存问题
       page.wrapper.style.width = `${scaledW}px`;
       page.wrapper.style.height = `${scaledH}px`;
+      page.wrapper.style.display = "block";
+      page.wrapper.style.marginLeft = "auto";
+      page.wrapper.style.marginRight = "auto";
       const applyTransform = (el: HTMLElement): void => {
         el.style.transformOrigin = "top left";
         el.style.transform = `scale(${this.zoom})`;
