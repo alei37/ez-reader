@@ -109,6 +109,8 @@ const resolveEndpoint = (key: string): string =>
 export class DeeplTranslationProvider implements TranslationProvider {
   readonly id = "deepl";
   readonly displayName = "DeepL";
+  readonly signupUrl = "https://www.deepl.com/pro-api";
+  readonly signupHint = "DeepL Pro API 有免费层(每月 50 万字符);注册后从账户页获取 Authentication Key";
 
   /**
    * The DeepL key is opaque; we only sanity-check length and trim. DeepL

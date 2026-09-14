@@ -52,6 +52,8 @@ const SAFETY_WINDOW_MS = 5 * 60 * 1000;
 export class GoogleTranslationProvider implements TranslationProvider {
   readonly id = "google-translation-v3";
   readonly displayName = "Google Translate (Cloud v3)";
+  readonly signupUrl = "https://console.cloud.google.com/apis/credentials";
+  readonly signupHint = "Google Cloud 控制台 → 创建项目 → 启用 Cloud Translation API → 创建 Service Account → 下载 JSON 密钥文件,整段 JSON 粘贴到 key 字段。Translation API 按字符量计费,有 500K 字符/月免费额度";
 
   async validateKey(apiKey: string): Promise<{ ok: true } | { ok: false; reason: string }> {
     try {

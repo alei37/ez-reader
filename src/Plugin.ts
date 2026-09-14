@@ -76,7 +76,7 @@ export default class EzReaderPlugin extends Plugin {
       await this.covers.hydrateCovers();
     });
 
-    this.addSettingTab(new SettingsTab(this.app, this, this.annotationStore));
+    this.addSettingTab(new SettingsTab(this.app, this, this.annotationStore, this.translation.listProviders()));
 
     this.registerView(
       SHELF_VIEW_TYPE,

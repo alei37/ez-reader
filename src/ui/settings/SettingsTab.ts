@@ -1,6 +1,7 @@
 import { PluginSettingTab, Setting } from "obsidian";
 import type { App, Plugin } from "obsidian";
 import type { AnnotationStore } from "../../core/ports/AnnotationStore";
+import type { TranslationProvider } from "../../core/ports/TranslationProvider";
 import { isUiLocale, UI_LOCALES, type UiLocale } from "../../core/types/Locale";
 import {
   DEFAULT_READER_APPEARANCE,
@@ -25,8 +26,21 @@ const themeLabel = (theme: ReaderTheme): string => {
 };
 
 export class SettingsTab extends PluginSettingTab {
-  constructor(app: App, plugin: Plugin, private readonly annotations: AnnotationStore) {
+  private readonly providerMap: Map<string, TranslationProvider>;
+
+  constructor(app: App, plugin: Plugin, private readonly annotations: AnnotationStore, providers: ReadonlyArray<TranslationProvider> = []) {
     super(app, plugin);
+    this.providerMap = new Map(providers.map((p) => [p.id, p]));
+  }
+
+  private findProviderMeta(providerId: string): { signupUrl?: string; signupHint?: string } | null {
+    if (providerId === "none") return null;
+    const provider = this.providerMap.get(providerId);
+    if (!provider) return null;
+    return {
+      signupUrl: provider.signupUrl,
+      signupHint: provider.signupHint
+    };
   }
 
   display(): void {
@@ -245,14 +259,16 @@ export class SettingsTab extends PluginSettingTab {
   // ---- 翻译 ----
   private renderTranslationSection(containerEl: HTMLElement): void {
     new Setting(containerEl).setName("翻译").setHeading();
-    new Setting(containerEl)
+    // 选完翻译服务后, 在原 setting 下面追加一行 hint + 跳转链接
+    // (Obsidian Setting 没原生支持内嵌 <a>, 我们手动追加 .ez-reader__settings-hint)
+    const providerSetting = new Setting(containerEl)
       .setName("翻译服务")
       .setDesc("选择在线翻译 API;留空 = 不联网。")
       .addDropdown((dropdown) => {
         dropdown.addOption("none", "关闭");
         dropdown.addOption("youdao", "有道智云 · 文本翻译");
         dropdown.addOption("deepl", "DeepL");
-        dropdown.addOption("google-translation-v3", "Google Translation v3");
+        dropdown.addOption("google-translation-v3", "Google Translate (Cloud v3)");
         void this.loadSettings().then((s) => {
           dropdown.setValue(s.translation?.providerId ?? "none");
         });
@@ -271,6 +287,33 @@ export class SettingsTab extends PluginSettingTab {
           }
         });
       });
+    const hint = providerSetting.settingEl.createDiv({ cls: "ez-reader__settings-hint is-hidden" });
+    const refreshHint = (providerId: string): void => {
+      const meta = this.findProviderMeta(providerId);
+      hint.empty();
+      hint.removeClass("is-hidden");
+      if (!meta) {
+        hint.addClass("is-hidden");
+        return;
+      }
+      if (meta.signupHint) {
+        hint.createEl("span", { text: meta.signupHint, cls: "ez-reader__settings-hint__text" });
+      }
+      if (meta.signupUrl) {
+        const link = hint.createEl("a", {
+          text: meta.signupUrl,
+          attr: { href: meta.signupUrl, target: "_blank", rel: "noopener noreferrer" }
+        });
+        link.addClass("ez-reader__settings-hint__link");
+      }
+    };
+    // 初次显示当前选中的 provider
+    void this.loadSettings().then((s) => refreshHint(s.translation?.providerId ?? "none"));
+    // dropdown 变化时刷新 hint
+    providerSetting.controlEl.querySelector("select")?.addEventListener("change", (event) => {
+      const value = (event.target as HTMLSelectElement).value;
+      refreshHint(value);
+    });
     new Setting(containerEl)
       .setName("翻译 API key")
       .setDesc("翻译是本插件唯一会访问网络的特性。留空 = 不联网。")

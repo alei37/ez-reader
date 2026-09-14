@@ -31,6 +31,10 @@ export type TranslationError =
 export interface TranslationProvider {
   readonly id: string;
   readonly displayName: string;
+  /** Webpage where the user can sign up and obtain an API key. */
+  readonly signupUrl?: string;
+  /** Short hint shown next to the signup link (e.g. "免费 100 万字符/月"). */
+  readonly signupHint?: string;
 
   /** Validate an API key without performing a translation. */
   validateKey(apiKey: string): Promise<{ ok: true } | { ok: false; reason: string }>;

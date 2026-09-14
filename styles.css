@@ -1421,6 +1421,39 @@
 }
 
 /* === Settings === */
+.ez-reader__settings-hint {
+  margin: -4px 0 12px 0;
+  padding: 10px 12px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ez-reader__settings-hint.is-hidden {
+  display: none;
+}
+
+.ez-reader__settings-hint__text {
+  display: block;
+}
+
+.ez-reader__settings-hint__link {
+  color: var(--interactive-accent);
+  text-decoration: none;
+  word-break: break-all;
+  display: inline-block;
+}
+
+.ez-reader__settings-hint__link:hover {
+  text-decoration: underline;
+}
+
 .ez-reader__settings-about {
   padding: 8px 0;
   color: var(--text-muted);

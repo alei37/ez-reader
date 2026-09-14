@@ -89,6 +89,8 @@ const parseDetectedSource = (l: string | undefined, requestedFrom: string): Loca
 export class YoudaoTranslationProvider implements TranslationProvider {
   readonly id = "youdao";
   readonly displayName = "有道智云 · 文本翻译";
+  readonly signupUrl = "https://ai.youdao.com/console/#/service-singleton/text";
+  readonly signupHint = "注册有道智云账号 → 创建应用 → 选「文本翻译」 → 拿到 appKey + appSecret,JSON 格式粘贴到 key 字段";
 
   /**
    * Youdao expects the key as JSON `{"appKey": "...", "appSecret": "..."}` so
