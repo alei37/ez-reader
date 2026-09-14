@@ -418,6 +418,50 @@
   user-select: text;
 }
 
+/* === PDF 上下滚动模式 (默认) === */
+.ez-reader__pdf-scroll-host {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: auto;
+  background: var(--background-secondary);
+  padding: 24px 0 48px;
+  box-sizing: border-box;
+}
+
+.ez-reader__pdf-scroll {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  min-width: min-content;
+  padding: 0 16px;
+}
+
+.ez-reader__pdf-page {
+  position: relative;
+  background: #ffffff;
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.18);
+  flex-shrink: 0;
+}
+
+.ez-reader__pdf-page canvas {
+  display: block;
+}
+
+.ez-reader__pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  user-select: none;
+  z-index: 1;
+}
+
+.ez-reader__pdf-text-layer > span {
+  pointer-events: auto;
+  user-select: text;
+}
+
 .ez-reader__pdf-highlight {
   background: rgba(243, 201, 77, 0.45) !important;
   color: transparent !important;
@@ -1107,12 +1151,12 @@
   height: 100%;
 }
 
-/* 桌面端宽屏: notes panel 左侧常驻,占 ~280px,书 stage 拿到剩余宽度 */
+/* 桌面端宽屏: notes panel 右侧常驻(用户偏好右侧), 占 ~280px,书 stage 拿到剩余宽度 */
 .ez-reader__desktop-wide .ez-reader__notes-panel {
   flex: 0 0 300px;
   min-width: 240px;
   max-width: 360px;
-  border-right: 1px solid var(--background-modifier-border);
+  border-left: 1px solid var(--background-modifier-border);
   background: var(--background-primary);
   overflow-y: auto;
 }
@@ -1120,6 +1164,7 @@
 .ez-reader__desktop-wide .ez-reader__reader__stage {
   flex: 1 1 auto;
   min-width: 0;
+  order: -1; /* stage 在左, notes panel 在右 */
 }
 
 @media (max-width: 1024px) {

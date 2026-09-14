@@ -44,6 +44,21 @@ interface PdfjsModule {
   version: string;
 }
 
+interface PdfPageRender {
+  pageNumber: number;
+  wrapper: HTMLElement;
+  canvas: HTMLCanvasElement;
+  textLayer: HTMLElement;
+  textLayerContent: Array<{ text: string }>;
+}
+
+interface PdfPendingHighlight {
+  beginIndex: number;
+  beginOffset: number;
+  endIndex: number;
+  endOffset: number;
+}
+
 let workerConfigured = false;
 const configureWorker = (pdfjs: PdfjsModule): void => {
   if (workerConfigured) return;
@@ -91,11 +106,11 @@ export class PdfjsBookReader implements BookReader {
     };
     // 等一帧再渲染: host 刚被 append 到 DOM, 浏览器还没完成 layout pass,
     // host.clientWidth 可能是 0 导致首帧 canvas 塌成 1×1(看起来"空白")。
-    // 如果 clientWidth 已经有合理值(<100 视为未 layout),直接渲染。
     if (host.clientWidth < 100) {
       await new Promise<void>((resolve) => globalThis.requestAnimationFrame(() => resolve()));
     }
-    await session.gotoPage(1);
+    // 上下滚动模式: 一次渲染所有页面到滚动容器, 不再 gotoPage(1)
+    await session.renderAllPages();
     return session;
   }
 
@@ -105,7 +120,6 @@ export class PdfjsBookReader implements BookReader {
    * doesn't bloat the plugin data directory.
    */
   async extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null> {
-    // 复用已经在 open() 加载过的 doc — 避免重复 IO + PDF 解析
     let document = this.docCache.get(book.locator.path);
     if (!document) {
       const pdfjs = (await import("pdfjs-dist/legacy/build/pdf.mjs" as string)) as unknown as PdfjsModule;
@@ -129,8 +143,6 @@ export class PdfjsBookReader implements BookReader {
       const canvas = globalThis.document.createElement("canvas");
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      // The canvas must be in the document for `toBlob` to work reliably
-      // across browsers; append it temporarily, then detach immediately.
       const host = globalThis.document.body ?? globalThis.document.documentElement;
       const previousDisplay = canvas.style.display;
       canvas.style.display = "none";
@@ -138,8 +150,6 @@ export class PdfjsBookReader implements BookReader {
       try {
         const ctx = canvas.getContext("2d");
         if (!ctx) return null;
-        // Fill with white so PDFs without backgrounds don't come out
-        // transparent and produce an all-black cover.
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, viewport.width, viewport.height);
         await page.render({ canvasContext: ctx, canvas, viewport }).promise;
@@ -170,48 +180,90 @@ export class PdfjsBookReader implements BookReader {
   }
 }
 
+/**
+ * Continuous-scroll PDF reader. Every page renders into its own
+ * `<canvas>` + text-layer inside the host, stacked vertically. The user
+ * scrolls naturally; `next` / `previous` jump to the next / previous
+ * page boundary; `goTo({ kind: "fraction" })` maps to a scroll offset.
+ *
+ * Pages render at native 1.0 scale — "原本是什么样子就是什么样子".
+ * User-controlled `setScale` applies a CSS transform on top, so we never
+ * re-render at a different rasterization.
+ */
 class PdfjsSession implements ReaderSession {
   readonly element: HTMLElement;
-  private readonly canvas: HTMLCanvasElement;
-  private readonly textLayer: HTMLElement;
+  private readonly scrollContainer: HTMLElement;
   private readonly doc: PdfDocument;
   private readonly host: HTMLElement;
   private readonly appearance: ReaderAppearance;
+  private readonly pages: PdfPageRender[] = [];
   private currentPageNumber = 1;
-  private scale = 1.5;
-  private fitWidth = true;
-  private textLayerContent: { text: string; x: number; y: number; width: number; height: number; fontSize: number }[] = [];
+  /** User-controlled zoom multiplier on top of native 1.0 scale. */
+  private zoom = 1.0;
   private textLayerHandlers: Array<() => void> = [];
   private highlights: HighlightSpec[] = [];
   private currentChapterText: string | null = null;
-  private pendingHighlightSelection: { type: "selection"; page: number; beginIndex: number; beginOffset: number; endIndex: number; endOffset: number; color?: string } | null = null;
+  private readonly pendingHighlights: Map<number, PdfPendingHighlight[]> = new Map();
+  private relocateHandlers: Array<(detail: { fraction: number; locator?: string; page?: number }) => void> = [];
+  private relocateRafQueued = false;
 
   constructor(doc: PdfDocument, host: HTMLElement, appearance: ReaderAppearance) {
     this.doc = doc;
-    this.element = host;
     this.host = host;
     this.appearance = appearance;
     host.empty();
-    host.addClass("ez-reader__pdf-stage");
-    this.canvas = host.createEl("canvas");
-    this.canvas.addClass("ez-reader__pdf-stage__canvas");
-    this.textLayer = host.createDiv({ cls: "ez-reader__pdf-stage__text-layer" });
+    host.addClass("ez-reader__pdf-scroll-host");
+    this.scrollContainer = host.createDiv({ cls: "ez-reader__pdf-scroll" });
+    this.element = host;
+    host.addEventListener("scroll", this.handleScroll);
   }
+
+  private handleScroll = (): void => {
+    // 节流: requestAnimationFrame 合并多次 scroll 事件, 每帧最多 emit 一次
+    if (this.relocateRafQueued) return;
+    this.relocateRafQueued = true;
+    globalThis.requestAnimationFrame(() => {
+      this.relocateRafQueued = false;
+      const fraction = this.computeFraction();
+      const page = this.currentPage();
+      this.currentPageNumber = page;
+      const detail = { fraction, locator: `page=${page}`, page };
+      for (const h of this.relocateHandlers) h(detail);
+    });
+  };
 
   async close(): Promise<void> {
     for (const off of this.textLayerHandlers) off();
     this.textLayerHandlers = [];
-    this.canvas.remove();
-    this.textLayer.remove();
+    this.host.removeEventListener("scroll", this.handleScroll);
+    this.relocateHandlers = [];
     try {
       await this.doc.destroy?.();
     } catch (error) {
       console.warn("[ez-reader] pdf destroy failed", error);
     }
+    this.host.empty();
+  }
+
+  private computeFraction(): number {
+    const max = this.host.scrollHeight - this.host.clientHeight;
+    if (max <= 0) return 0;
+    return Math.max(0, Math.min(1, this.host.scrollTop / max));
   }
 
   currentPage(): number {
-    return this.currentPageNumber;
+    const viewportTop = this.host.scrollTop;
+    let bestPage = 1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const p of this.pages) {
+      const top = p.wrapper.offsetTop;
+      const distance = Math.abs(top - viewportTop);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPage = p.pageNumber;
+      }
+    }
+    return bestPage;
   }
 
   totalPages(): number {
@@ -229,7 +281,6 @@ class PdfjsSession implements ReaderSession {
           if (!item || typeof item !== "object") continue;
           const it = item as { title?: string; dest?: unknown; items?: unknown[] };
           if (it.title) {
-            // dest 通常是 [ref, name]; 我们简化使用索引顺序作为 page 估算
             flat.push({ id: `toc-${flat.length}`, label: it.title, depth });
           }
           if (Array.isArray(it.items)) walk(it.items, depth + 1);
@@ -246,9 +297,8 @@ class PdfjsSession implements ReaderSession {
   async goToToc(id: string): Promise<void> {
     const index = Number(id.replace(/^toc-/, ""));
     if (Number.isNaN(index)) return;
-    // outline 的页码需要再解析; 简化实现: 把 TOC index 映射到大致页码
     const page = Math.min(this.doc.numPages, Math.max(1, Math.floor((index + 1) * this.doc.numPages / 50)));
-    await this.gotoPage(page);
+    this.scrollToPage(page);
   }
 
   currentChapter(): string | null {
@@ -256,8 +306,7 @@ class PdfjsSession implements ReaderSession {
   }
 
   async highlight(_selection: HighlightSpec): Promise<void> {
-    // PDF 高亮依赖 pdfjs text layer 渲染 spans, 完整实现需要更多工作;
-    // 我们先记录到 data layer, 后续 UI 可基于 rects 渲染叠加层
+    // Full highlight rendering happens when gotoPage applies a subpath.
     this.highlights.push(_selection);
   }
 
@@ -270,54 +319,49 @@ class PdfjsSession implements ReaderSession {
   }
 
   async next(): Promise<void> {
-    await this.gotoPage(this.currentPageNumber + 1);
+    this.scrollToPage(this.currentPage() + 1);
   }
 
   async previous(): Promise<void> {
-    await this.gotoPage(this.currentPageNumber - 1);
+    this.scrollToPage(this.currentPage() - 1);
   }
 
   async applyAppearance(appearance: ReaderAppearance): Promise<void> {
     Object.assign(this.appearance, appearance);
-    // Re-render with the new font size; the host width may not have
-    // changed, so we force fit-width off and back on to recompute.
-    const previousFit = this.fitWidth;
-    this.fitWidth = false;
-    await this.gotoPage(this.currentPageNumber);
-    this.fitWidth = previousFit;
-    if (previousFit) await this.gotoPage(this.currentPageNumber);
+    // canvas 不随 appearance 变; 这里什么都不用做
   }
 
   async goTo(target: ReaderTarget): Promise<void> {
     switch (target.kind) {
       case "next":
-        await this.gotoPage(this.currentPageNumber + 1);
+        this.scrollToPage(this.currentPage() + 1);
         return;
       case "previous":
-        await this.gotoPage(this.currentPageNumber - 1);
+        this.scrollToPage(this.currentPage() - 1);
         return;
       case "fraction": {
-        const page = Math.max(1, Math.min(this.doc.numPages, Math.round(target.fraction * this.doc.numPages) + 1));
-        await this.gotoPage(page);
+        const max = this.host.scrollHeight - this.host.clientHeight;
+        if (max > 0) this.host.scrollTop = Math.max(0, Math.min(max, target.fraction * max));
         return;
       }
       case "identifier": {
-        // 支持 subpath 格式: #page=1&selection=4,0,5,20
         const parsed = parsePDFSubpath(target.value);
         if (!parsed) {
-          // 兼容旧的 page=N 格式
           const page = parseInt(target.value, 10);
-          if (!Number.isNaN(page)) await this.gotoPage(page);
+          if (!Number.isNaN(page)) this.scrollToPage(page);
           return;
         }
-        if (parsed.type === "page") {
-          await this.gotoPage(parsed.page);
-        } else if (parsed.type === "selection") {
-          await this.gotoPage(parsed.page);
-          // 跳转后渲染 highlight
-          this.pendingHighlightSelection = parsed;
-        } else if (parsed.type === "annotation") {
-          await this.gotoPage(parsed.page);
+        this.scrollToPage(parsed.page);
+        if (parsed.type === "selection") {
+          const list = this.pendingHighlights.get(parsed.page) ?? [];
+          list.push({
+            beginIndex: parsed.beginIndex,
+            beginOffset: parsed.beginOffset,
+            endIndex: parsed.endIndex,
+            endOffset: parsed.endOffset
+          });
+          this.pendingHighlights.set(parsed.page, list);
+          this.tryRenderPendingHighlight(parsed.page);
         }
         return;
       }
@@ -325,8 +369,9 @@ class PdfjsSession implements ReaderSession {
   }
 
   async currentFraction(): Promise<number> {
-    if (this.doc.numPages <= 1) return 0;
-    return (this.currentPageNumber - 1) / (this.doc.numPages - 1);
+    const max = this.host.scrollHeight - this.host.clientHeight;
+    if (max <= 0) return 0;
+    return this.host.scrollTop / max;
   }
 
   on<K extends keyof ReaderEventMap>(event: K, handler: (event: ReaderEventMap[K]) => void): () => void {
@@ -334,23 +379,40 @@ class PdfjsSession implements ReaderSession {
       const wrapped = () => {
         const selection = globalThis.document.getSelection();
         if (!selection || selection.isCollapsed) return;
-        if (!this.textLayer.contains(selection.anchorNode)) return; // ignore selections outside textLayer
+        const anchor = selection.anchorNode;
+        if (!anchor) return;
+        // 找到 selection 所在页面的 textLayer
+        const textLayerEl = (anchor.nodeType === 1
+          ? (anchor as Element)
+          : anchor.parentElement)?.closest<HTMLElement>(".ez-reader__pdf-text-layer");
+        if (!textLayerEl) return;
+        const pageWrapper = textLayerEl.closest<HTMLElement>(".ez-reader__pdf-page");
+        if (!pageWrapper) return;
+        const pageNumber = Number(pageWrapper.dataset.pageNumber);
+        if (!Number.isFinite(pageNumber)) return;
         const text = selection.toString().trim();
         if (!text) return;
         const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : undefined;
         const rect = range?.getBoundingClientRect();
-        // 解析 4-tuple: 通过 selection 落在哪个 span (data-idx) 上算 index + offset
         const sel = range ? this.parseSelection(range) : null;
         const locator = sel
-          ? selectionToSubpath(this.currentPageNumber, sel.beginIndex, sel.beginOffset, sel.endIndex, sel.endOffset)
-          : `page=${this.currentPageNumber}`;
+          ? selectionToSubpath(pageNumber, sel.beginIndex, sel.beginOffset, sel.endIndex, sel.endOffset)
+          : `page=${pageNumber}`;
+        this.currentPageNumber = pageNumber;
         handler({ text, locator, rect: rect ?? undefined } as unknown as ReaderEventMap[K]);
       };
-      // selectionchange 必须在 document 上监听(textLayer 上的 selectionchange 不可靠)
       globalThis.document.addEventListener("selectionchange", wrapped);
       const off = () => globalThis.document.removeEventListener("selectionchange", wrapped);
       this.textLayerHandlers.push(off);
       return off;
+    }
+    if (event === "relocate") {
+      const wrapped = handler as unknown as (detail: { fraction: number; locator?: string; page?: number }) => void;
+      this.relocateHandlers.push(wrapped);
+      return () => {
+        const idx = this.relocateHandlers.indexOf(wrapped);
+        if (idx >= 0) this.relocateHandlers.splice(idx, 1);
+      };
     }
     return () => undefined;
   }
@@ -374,86 +436,109 @@ class PdfjsSession implements ReaderSession {
   }
 
   async exportLocator(): Promise<string | null> {
-    // 尝试返回带 4-tuple selection 的 subpath(若有活跃选区)
     const selection = globalThis.document.getSelection();
     if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
       const range = selection.getRangeAt(0);
-      if (this.textLayer.contains(range.commonAncestorContainer)) {
+      const textLayerEl = (range.commonAncestorContainer.nodeType === 1
+        ? range.commonAncestorContainer as Element
+        : range.commonAncestorContainer.parentElement)?.closest<HTMLElement>(".ez-reader__pdf-text-layer");
+      if (textLayerEl) {
+        const pageWrapper = textLayerEl.closest<HTMLElement>(".ez-reader__pdf-page");
+        const pageNumber = pageWrapper ? Number(pageWrapper.dataset.pageNumber) : this.currentPage();
         const sel = this.parseSelection(range);
-        if (sel) return selectionToSubpath(this.currentPageNumber, sel.beginIndex, sel.beginOffset, sel.endIndex, sel.endOffset);
+        if (sel) return selectionToSubpath(pageNumber, sel.beginIndex, sel.beginOffset, sel.endIndex, sel.endOffset);
       }
     }
-    return `page=${this.currentPageNumber}`;
+    return `page=${this.currentPage()}`;
   }
 
   async setScale(scale: number): Promise<void> {
-    this.fitWidth = false;
-    this.scale = Math.max(0.4, Math.min(4, scale));
-    await this.gotoPage(this.currentPageNumber);
+    this.zoom = Math.max(0.4, Math.min(4, scale));
+    this.applyZoom();
   }
 
   async setFitWidth(): Promise<void> {
-    this.fitWidth = true;
-    await this.gotoPage(this.currentPageNumber);
+    // 在 native 1.0 模式下, fit-width = zoom 1.0 (原本大小)
+    this.zoom = 1.0;
+    this.applyZoom();
   }
 
   currentScale(): number {
-    return this.scale;
+    return this.zoom;
   }
 
   isFitWidth(): boolean {
-    return this.fitWidth;
+    return this.zoom === 1.0;
   }
 
   async gotoPage(page: number): Promise<void> {
     const target = Math.max(1, Math.min(this.doc.numPages, Math.trunc(page)));
-    const pdfPage = await this.doc.getPage(target);
-    const baseViewport = pdfPage.getViewport({ scale: 1 });
-    let scale = this.scale;
-    if (this.fitWidth) {
-      // If the stage isn't laid out yet, fall back to a sensible width so
-      // the page renders at a usable size even on the very first frame.
-      const measured = this.host.clientWidth;
-      // 桌面宽屏下 host 可能 1500+ px,fit-width 把 canvas 撑满会显得"巨大"
-      // (一行几百字没法读)。封顶 960 px(微信读书阅读宽度),不够宽就
-      // 用 host 实际宽度。
-      const MAX_FIT_WIDTH = 960;
-      const hostWidth = measured > 100 ? Math.min(measured - 32, MAX_FIT_WIDTH) : 600;
-      scale = hostWidth / baseViewport.width;
+    this.scrollToPage(target);
+  }
+
+  /** 渲染所有页到滚动容器 — 上下滚动模式一次性全画出来 */
+  async renderAllPages(): Promise<void> {
+    for (let n = 1; n <= this.doc.numPages; n++) {
+      await this.renderPage(n);
     }
-    const viewport = pdfPage.getViewport({ scale });
+    this.applyZoom();
+  }
+
+  private async renderPage(pageNumber: number): Promise<void> {
+    const pdfPage = await this.doc.getPage(pageNumber);
+    const viewport = pdfPage.getViewport({ scale: 1.0 });
     const dpr = Math.max(1, Math.floor(globalThis.devicePixelRatio ?? 1));
     const displayWidth = viewport.width;
     const displayHeight = viewport.height;
     const pixelWidth = Math.max(1, Math.round(displayWidth * dpr));
     const pixelHeight = Math.max(1, Math.round(displayHeight * dpr));
-    const context = this.canvas.getContext("2d");
-    if (!context) throw new Error("PDF canvas 2D context unavailable.");
-    // Render at device pixel resolution for crisp output on HiDPI screens.
-    // Setting canvas.width/height clears the buffer and resets the
-    // context, so the new dimensions take effect immediately.
-    this.canvas.width = pixelWidth;
-    this.canvas.height = pixelHeight;
-    this.canvas.style.width = `${displayWidth}px`;
-    this.canvas.style.height = `${displayHeight}px`;
-    // pdfjs's page.render accepts a canvasContext + viewport pair. The
-    // render call ignores the context's current transform — it computes
-    // its own from canvas.width/height vs viewport.width/height — so we
-    // don't need to call setTransform here.
+
+    const wrapper = this.scrollContainer.createDiv({
+      cls: "ez-reader__pdf-page",
+      attr: { "data-page-number": String(pageNumber) }
+    });
+    const canvas = wrapper.createEl("canvas");
+    const textLayer = wrapper.createDiv({ cls: "ez-reader__pdf-text-layer" });
+
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+    canvas.style.width = `${displayWidth}px`;
+    canvas.style.height = `${displayHeight}px`;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      console.error("[ez-reader] PDF canvas 2D context unavailable", { page: pageNumber });
+      return;
+    }
+
     try {
-      await pdfPage.render({ canvasContext: context, canvas: this.canvas, viewport }).promise;
+      await pdfPage.render({ canvasContext: context, canvas, viewport }).promise;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error("[ez-reader] PDF page render failed", { page: target, message, error });
-      throw new Error(`PDF 页面渲染失败 (第 ${target} 页): ${message}`);
+      console.error("[ez-reader] PDF page render failed", { page: pageNumber, message, error });
+      throw new Error(`PDF 页面渲染失败 (第 ${pageNumber} 页): ${message}`);
     }
-    await this.renderTextLayer(pdfPage, viewport, displayWidth, displayHeight);
-    this.currentPageNumber = target;
+
+    const pageRender: PdfPageRender = {
+      pageNumber,
+      wrapper,
+      canvas,
+      textLayer,
+      textLayerContent: []
+    };
+    this.pages.push(pageRender);
+
+    await this.renderTextLayerForPage(pdfPage, viewport, textLayer, pageRender);
+
+    this.tryRenderPendingHighlight(pageNumber);
   }
 
-  private async renderTextLayer(page: PdfPage, viewport: PdfViewport, displayWidth: number, displayHeight: number): Promise<void> {
-    this.textLayer.empty();
-    this.textLayerContent = [];
+  private async renderTextLayerForPage(
+    page: PdfPage,
+    viewport: PdfViewport,
+    textLayer: HTMLElement,
+    pageRender: PdfPageRender
+  ): Promise<void> {
     let content: { items: Array<{ str: string; transform: number[]; width: number; height: number; hasEOL?: boolean }> };
     try {
       content = await page.getTextContent() as typeof content;
@@ -470,11 +555,8 @@ class PdfjsSession implements ReaderSession {
       const width = item.width * scale;
       const height = item.height * scale;
       const fontSize = Math.max(item.height * scale * fontSizeMultiplier, 8);
-      const span = this.textLayer.createEl("span", { text: item.str + (item.hasEOL ? "\n" : " ") });
-      // data-idx is the cornerstone of the 4-tuple selection algorithm
-      // borrowed from PDF++ (MIT). Without it we can't convert a DOM
-      // Selection back to (beginIndex, beginOffset, endIndex, endOffset).
-      span.setAttribute("data-idx", String(this.textLayerContent.length));
+      const span = textLayer.createEl("span", { text: item.str + (item.hasEOL ? "\n" : " ") });
+      span.setAttribute("data-idx", String(pageRender.textLayerContent.length));
       span.setCssStyles({
         position: "absolute",
         left: `${x}px`,
@@ -488,36 +570,51 @@ class PdfjsSession implements ReaderSession {
         cursor: "text",
         userSelect: "text"
       });
-      this.textLayerContent.push({ text: item.str, x, y, width, height, fontSize });
+      pageRender.textLayerContent.push({ text: item.str });
     }
-    // Size the layer container to match the canvas display size.
-    this.textLayer.setCssStyles({
-      width: `${displayWidth}px`,
-      height: `${displayHeight}px`
+    textLayer.setCssStyles({
+      width: `${viewport.width}px`,
+      height: `${viewport.height}px`
     });
+  }
 
-    // If a subpath jumped here, render its highlight after the text layer
-    // exists.
-    if (this.pendingHighlightSelection && this.pendingHighlightSelection.page === this.currentPageNumber) {
-      this.renderPendingHighlight();
+  private scrollToPage(pageNumber: number): void {
+    const target = Math.max(1, Math.min(this.doc.numPages, Math.trunc(pageNumber)));
+    const page = this.pages.find((p) => p.pageNumber === target);
+    if (!page) return;
+    this.host.scrollTo({ top: page.wrapper.offsetTop, behavior: "smooth" });
+    this.currentPageNumber = target;
+  }
+
+  private applyZoom(): void {
+    for (const page of this.pages) {
+      const applyTransform = (el: HTMLElement): void => {
+        el.style.transformOrigin = "top left";
+        el.style.transform = `scale(${this.zoom})`;
+      };
+      applyTransform(page.canvas);
+      applyTransform(page.textLayer);
     }
   }
 
-  /**
-   * Highlight the chars covered by `pendingHighlightSelection`. We
-   * span-wrap each character in the target range and apply a
-   * `ez-reader__pdf-highlight` class; the matching CSS sits in
-   * styles.css. Best-effort — if textLayerContent has fewer items than
-   * the selection expects, we just highlight what we can.
-   */
-  private renderPendingHighlight(): void {
-    const sel = this.pendingHighlightSelection;
-    if (!sel) return;
-    const spans = Array.from(this.textLayer.querySelectorAll<HTMLElement>("span[data-idx]"));
+  private tryRenderPendingHighlight(pageNumber: number): void {
+    const pending = this.pendingHighlights.get(pageNumber);
+    if (!pending || pending.length === 0) return;
+    const page = this.pages.find((p) => p.pageNumber === pageNumber);
+    if (!page) return;
+    if (page.textLayerContent.length === 0) return;
+    for (const sel of pending) {
+      this.applyHighlightToPage(page, sel);
+    }
+    this.pendingHighlights.delete(pageNumber);
+  }
+
+  private applyHighlightToPage(page: PdfPageRender, sel: PdfPendingHighlight): void {
+    const spans = Array.from(page.textLayer.querySelectorAll<HTMLElement>("span[data-idx]"));
     for (const span of spans) {
       const idx = Number(span.getAttribute("data-idx"));
       if (Number.isNaN(idx)) continue;
-      const text = this.textLayerContent[idx]?.text ?? "";
+      const text = page.textLayerContent[idx]?.text ?? "";
       let fromOffset = 0;
       let toOffset = text.length;
       if (idx === sel.beginIndex && idx === sel.endIndex) {
@@ -533,19 +630,16 @@ class PdfjsSession implements ReaderSession {
       if (fromOffset >= toOffset) continue;
       const segment = text.slice(fromOffset, toOffset);
       if (!segment) continue;
-      // Wrap the target characters with a highlight span.
       const before = text.slice(0, fromOffset);
       const after = text.slice(toOffset);
       const hl = document.createElement("span");
       hl.addClass("ez-reader__pdf-highlight");
       hl.textContent = segment;
-      // Replace the span's children with before + hl + after
       span.textContent = "";
       if (before) span.append(document.createTextNode(before));
       span.append(hl);
       if (after) span.append(document.createTextNode(after));
     }
-    this.pendingHighlightSelection = null;
   }
 }
 
