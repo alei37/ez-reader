@@ -195,7 +195,6 @@ export class PdfjsBookReader implements BookReader {
  */
 class PdfjsSession implements ReaderSession {
   readonly element: HTMLElement;
-  private readonly scrollContainer: HTMLElement;
   private readonly doc: PdfDocument;
   private readonly host: HTMLElement;
   private readonly appearance: ReaderAppearance;
@@ -215,8 +214,11 @@ class PdfjsSession implements ReaderSession {
     this.host = host;
     this.appearance = appearance;
     host.empty();
+    // host 自己就是滚动容器 + flex 容器 (styles.css 里 ez-reader__pdf-scroll-host
+    // 同时有 overflow:auto 和 display:flex flex-direction:column align-items:center),
+    // 这样 PDF 自然居中堆叠, 不会因为 inner container 撑爆 host 导致 PDF
+    // 视觉上贴到左边缘。
     host.addClass("ez-reader__pdf-scroll-host");
-    this.scrollContainer = host.createDiv({ cls: "ez-reader__pdf-scroll" });
     this.element = host;
     host.addEventListener("scroll", this.handleScroll);
   }
@@ -496,10 +498,10 @@ class PdfjsSession implements ReaderSession {
     const firstPage = this.pages[0];
     if (!firstPage) return 1.0;
     const measured = this.host.clientWidth;
-    const MAX_FIT_WIDTH = 1200;
-    // host 内部可用宽度 = clientWidth - 水平 padding (host 自身 padding: 0, 但有 gap/margin)
-    // scroll container padding 0 16px, pages 有 shadow
-    const available = Math.max(200, measured - 32); // 32 = 滚动条 + scroll container padding
+    // 1500 上限: 1920+ 宽屏上接近铺满但留 400+ 边距, 微信读书大约这个量级
+    // 32 减去是因为 host 可能有水平 scrollbar (16px) + 视觉边距 (16px)
+    const MAX_FIT_WIDTH = 1500;
+    const available = Math.max(200, measured - 32);
     const targetWidth = Math.min(available, MAX_FIT_WIDTH);
     return targetWidth / firstPage.nativeWidth;
   }
@@ -513,7 +515,7 @@ class PdfjsSession implements ReaderSession {
     const pixelWidth = Math.max(1, Math.round(displayWidth * dpr));
     const pixelHeight = Math.max(1, Math.round(displayHeight * dpr));
 
-    const wrapper = this.scrollContainer.createDiv({
+    const wrapper = this.host.createDiv({
       cls: "ez-reader__pdf-page",
       attr: { "data-page-number": String(pageNumber) }
     });

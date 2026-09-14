@@ -418,8 +418,12 @@
   user-select: text;
 }
 
-/* === PDF 上下滚动模式 (默认) === */
-/* 用更高特异性的选择器, 覆盖 .ez-reader__reader__stage 的 overflow: hidden */
+/* === PDF 上下滚动模式 (默认) ===
+   关键: host 本身是 flex 容器, 居中堆叠每页 — 不要 inner scrollContainer,
+   那样会让容器宽度 = canvas 宽度, 反而把 PDF 顶到左边缘。
+
+   参考 Obsidian 自带 PDFViewer 的视觉: 浅阴影, 无 border, 紧贴排列,
+   顶部 24px padding 给 toolbar 一点呼吸空间, 底部 48px 给最后一页留白。 */
 .ez-reader__reader__stage.ez-reader__pdf-scroll-host,
 .ez-reader__pdf-scroll-host {
   width: 100%;
@@ -429,23 +433,24 @@
   background: var(--background-secondary);
   padding: 24px 0 48px;
   box-sizing: border-box;
-}
-
-.ez-reader__pdf-scroll {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
-  min-width: min-content;
-  padding: 0 16px;
 }
 
 .ez-reader__pdf-page {
   position: relative;
   background: #ffffff;
-  /* 柔和的边线就够了 — 不要 box-shadow, 看起来像 PDF 原生页面而不是卡片 */
+  /* 浅阴影 + 1px 边框做 PDF 纸张效果 — 比纯阴影更接近实物 */
   border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1);
+  /* 紧贴排列: flex gap 控制间距, 这里给个 margin-bottom 兜底 */
+  margin-bottom: 8px;
   flex-shrink: 0;
+}
+
+.ez-reader__pdf-page:last-child {
+  margin-bottom: 0;
 }
 
 .ez-reader__pdf-page canvas {
