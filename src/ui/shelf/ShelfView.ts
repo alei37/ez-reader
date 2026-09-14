@@ -62,16 +62,16 @@ export class ShelfView extends ItemView {
       {
         onQueryChange: (query) => {
           this.filter = { ...this.filter, query };
-          this.refresh();
+          this.renderRefresh();
         },
         onFilterOpen: () => this.openFilters(),
         onViewModeChange: (mode) => {
           this.mode = mode;
-          this.refresh();
+          this.renderRefresh();
         },
         onSortChange: (sort) => {
           this.sort = sort;
-          this.refresh();
+          this.renderRefresh();
         },
         onAddToLibrary: () => this.openAddToLibrary()
       },
@@ -82,14 +82,25 @@ export class ShelfView extends ItemView {
     this.body = container.createDiv({ cls: "ez-reader__shelf__body" });
     this.emptyState = container.createDiv({ cls: "ez-reader__shelf__empty" });
 
-    this.unsubscribe = this.deps.library.subscribe(() => this.refresh());
-    this.refresh();
+    // library.subscribe 走 scheduleRefresh (100ms debounce), 防止一次性加 100 本书
+    // 导致 100 次 renderRefresh. 用户主动 search / sort 走 renderRefresh (即时).
+    this.unsubscribe = this.deps.library.subscribe(() => this.scheduleRefresh());
+    this.renderRefresh();
     this.maybePromptForFirstImport();
   }
 
+  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private scheduleRefresh(): void {
+    if (this.refreshTimer !== undefined) globalThis.clearTimeout(this.refreshTimer);
+    this.refreshTimer = globalThis.setTimeout(() => {
+      this.refreshTimer = undefined;
+      this.renderRefresh();
+    }, 100);
+  }
   async onClose(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    if (this.refreshTimer !== undefined) globalThis.clearTimeout(this.refreshTimer);
     if (this.activeSession) {
       await this.activeSession.close();
       this.activeSession = undefined;
@@ -109,7 +120,7 @@ export class ShelfView extends ItemView {
     };
   }
 
-  private refresh(): void {
+  private renderRefresh(): void {
     const entries = this.deps.library.list(this.filter, this.sort);
     this.body.empty();
     this.body.removeClass("is-grid", "is-list");
@@ -252,7 +263,7 @@ export class ShelfView extends ItemView {
     const modal = new ShelfFiltersModal(this.deps.app, this.filter);
     void modal.openAndGetResult().then((next) => {
       this.filter = next;
-      this.refresh();
+      this.renderRefresh();
     });
   }
 
