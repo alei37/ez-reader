@@ -165,8 +165,16 @@ export class ShelfView extends ItemView {
   }
 
   private async openBook(entry: LibraryEntry): Promise<void> {
-    await this.deps.reading.openBook(entry.book.id);
-    await this.deps.openReader(entry);
+    try {
+      await this.deps.reading.openBook(entry.book.id);
+      await this.deps.openReader(entry);
+    } catch (error) {
+      // 错误展示 — 之前 silent fail 用户不知道为什么点书没反应
+      const { Notice } = await import("obsidian");
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`打开《${entry.book.metadata?.title ?? entry.book.locator.path}》失败: ${message}`);
+      console.error("[ez-reader] openBook failed", entry.book.locator.path, error);
+    }
   }
 
   private openItemMenu(entry: LibraryEntry, event: MouseEvent): void {

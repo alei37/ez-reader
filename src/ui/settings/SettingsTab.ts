@@ -374,10 +374,28 @@ export class SettingsTab extends PluginSettingTab {
       const text = await file.text();
       try {
         const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== "object") {
+          throw new Error("文件不是合法 JSON 对象");
+        }
+        // 必备字段校验 — 缺失则拒绝 (避免把空数据写入 plugin data)
+        const required = ["version", "settings", "library", "reading", "bookmarks", "excerpts"];
+        for (const key of required) {
+          if (!(key in parsed)) {
+            throw new Error(`缺失字段: ${key} (这可能不是 ez-reader 导出文件)`);
+          }
+        }
+        if (!Array.isArray(parsed.library) || !Array.isArray(parsed.reading) ||
+            !Array.isArray(parsed.bookmarks) || !Array.isArray(parsed.excerpts)) {
+          throw new Error("library/reading/bookmarks/excerpts 必须是数组");
+        }
         await this.annotations.save(parsed);
-        new (await import("obsidian")).Notice("数据已导入");
+        const { Notice } = await import("obsidian");
+        new Notice(`数据已导入 (${parsed.excerpts.length} 摘录, ${parsed.bookmarks.length} 书签, ${parsed.library.length} 书)`);
       } catch (error) {
-        new (await import("obsidian")).Notice(`导入失败: ${error}`);
+        const { Notice } = await import("obsidian");
+        const message = error instanceof Error ? error.message : String(error);
+        new Notice(`导入失败: ${message}`);
+        console.error("[ez-reader] importData failed", error);
       }
     };
     input.click();

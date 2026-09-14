@@ -1,0 +1,123 @@
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
+import { ReadingService } from "../../src/core/services/ReadingService";
+import type {
+  AnnotationSnapshot,
+  AnnotationStore
+} from "../../src/core/ports/AnnotationStore";
+import type { BookId } from "../../src/core/entities/Book";
+import type { ReadingState } from "../../src/core/entities/ReadingState";
+
+/**
+ * Unit tests for ReadingService state transitions. We don't drive the
+ * service through plugin onload — that requires an obsidian runtime —
+ * instead we substitute the AnnotationStore with an in-memory map.
+ *
+ * The previous tests exercised happy-path CRUD. These cover the
+ * openBook / setStatus / toggleFavorite state machine, which is the
+ * surface the ShelfView and reader UI rely on.
+ */
+class InMemoryStore implements AnnotationStore {
+  private snapshot: AnnotationSnapshot = {
+    version: 1,
+    settings: undefined as never,
+    library: [],
+    reading: [],
+    bookmarks: [],
+    excerpts: [],
+    coverPaths: {}
+  };
+
+  async load(): Promise<AnnotationSnapshot> {
+    return this.snapshot;
+  }
+  async save(snapshot: AnnotationSnapshot): Promise<void> {
+    this.snapshot = snapshot;
+  }
+  async listLibrary(): Promise<ReadonlyArray<BookId>> {
+    return this.snapshot.library;
+  }
+  async addToLibrary(bookId: BookId): Promise<void> {
+    if (!this.snapshot.library.includes(bookId)) {
+      this.snapshot = { ...this.snapshot, library: [...this.snapshot.library, bookId] };
+    }
+  }
+  async removeFromLibrary(bookId: BookId): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      library: this.snapshot.library.filter((id) => id !== bookId)
+    };
+  }
+  async listReading(): Promise<ReadonlyArray<ReadingState>> {
+    return this.snapshot.reading;
+  }
+  async upsertReading(state: ReadingState): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      reading: [...this.snapshot.reading.filter((r) => r.bookId !== state.bookId), state]
+    };
+  }
+  async listBookmarks(): Promise<ReadonlyArray<unknown>> { return []; }
+  async addBookmark(): Promise<void> {}
+  async removeBookmark(): Promise<void> {}
+  async listExcerpts(): Promise<ReadonlyArray<unknown>> { return []; }
+  async addExcerpt(): Promise<void> {}
+  async removeExcerpt(): Promise<void> {}
+  async listSettings(): Promise<unknown> { return undefined; }
+  async saveSettings(): Promise<void> {}
+  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> { return {}; }
+  async saveCoverPaths(): Promise<void> {}
+}
+
+const newService = async (): Promise<ReadingService> => {
+  const store = new InMemoryStore();
+  return new ReadingService(store);
+};
+
+test("openBook: unread → reading + lastOpenedAt set", async () => {
+  const svc = await newService();
+  const result = await svc.openBook("book-1");
+  assert.equal(result.status, "reading");
+  assert.ok(result.lastOpenedAt !== null && result.lastOpenedAt > 0);
+});
+
+test("openBook: reading → reading (idempotent, lastOpenedAt advances)", async () => {
+  const svc = await newService();
+  const first = await svc.openBook("book-1");
+  // wait 10ms so timestamps differ
+  await new Promise((r) => globalThis.setTimeout(r, 10));
+  const second = await svc.openBook("book-1");
+  assert.equal(second.status, "reading");
+  assert.ok((second.lastOpenedAt ?? 0) > (first.lastOpenedAt ?? 0));
+});
+
+test("openBook: finished is preserved (NOT auto-reset to reading)", async () => {
+  const svc = await newService();
+  await svc.setStatus("book-1", "finished");
+  await svc.openBook("book-1");
+  const state = await svc.getState("book-1");
+  assert.equal(state.status, "finished", "finished books should not silently flip back to reading");
+});
+
+test("openBook: abandoned is preserved", async () => {
+  const svc = await newService();
+  await svc.setStatus("book-1", "abandoned");
+  await svc.openBook("book-1");
+  const state = await svc.getState("book-1");
+  assert.equal(state.status, "abandoned");
+});
+
+test("setStatus: explicit transitions update status field", async () => {
+  const svc = await newService();
+  await svc.setStatus("book-1", "finished");
+  assert.equal((await svc.getState("book-1")).status, "finished");
+  await svc.setStatus("book-1", "abandoned");
+  assert.equal((await svc.getState("book-1")).status, "abandoned");
+});
+
+test("toggleFavorite: flips state on each call", async () => {
+  const svc = await newService();
+  assert.equal((await svc.toggleFavorite("book-1")).favorite, true);
+  assert.equal((await svc.toggleFavorite("book-1")).favorite, false);
+  assert.equal((await svc.toggleFavorite("book-1")).favorite, true);
+});

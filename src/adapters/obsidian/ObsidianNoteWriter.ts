@@ -67,11 +67,13 @@ export class ObsidianNoteWriter implements NoteWriter {
     return this.enqueueWrite(ref.path, async () => {
       const file = this.app.vault.getAbstractFileByPath(ref.path);
       if (!(file instanceof TFile)) return;
-      // Idempotent: if a block with this excerptId already exists in the
-      // note, skip the append. This protects against editExcerpt flows
-      // and other places where the same excerpt could be written twice.
+      // Idempotent: block IDs always sit on their own line. We use a
+      // regex anchor so a substring match inside a normal paragraph
+      // doesn't trigger a false positive (e.g. a user typing "^abc-123"
+      // in their notes).
+      const blockIdRegex = new RegExp(`(^|\\n)\\^${escapeRegExp(input.excerptId)}\\s*$`, "m");
       const existing = await this.app.vault.read(file);
-      if (existing.includes(`^${input.excerptId}`)) return;
+      if (blockIdRegex.test(existing)) return;
       const block = renderExcerptBlock(input, ref.title, ref.bookId, PROTOCOL);
       await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
     });
@@ -81,10 +83,11 @@ export class ObsidianNoteWriter implements NoteWriter {
     return this.enqueueWrite(ref.path, async () => {
       const file = this.app.vault.getAbstractFileByPath(ref.path);
       if (!(file instanceof TFile)) return;
-      // 想法的 block id 基于 createdAt 戳; 同样去重
+      // 想法的 block id 基于 createdAt 戳; 同样用行匹配去重
       const blockId = `thought-${input.createdAt}`;
+      const blockIdRegex = new RegExp(`(^|\\n)\\^${escapeRegExp(blockId)}\\s*$`, "m");
       const existing = await this.app.vault.read(file);
-      if (existing.includes(`^${blockId}`)) return;
+      if (blockIdRegex.test(existing)) return;
       const block = renderThoughtBlock(input, PROTOCOL);
       await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}\n\n${block}`);
     });
@@ -224,3 +227,7 @@ const renderThoughtBlock = (input: ThoughtInput, protocol: string): string => {
   ];
   return lines.join("\n");
 };
+
+/** Escape regex meta-characters in a block id before embedding in a regex. */
+const escapeRegExp = (s: string): string =>
+  s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
