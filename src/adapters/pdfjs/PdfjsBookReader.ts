@@ -50,6 +50,9 @@ interface PdfPageRender {
   canvas: HTMLCanvasElement;
   textLayer: HTMLElement;
   textLayerContent: Array<{ text: string }>;
+  /** Native display dimensions (scale 1.0). */
+  nativeWidth: number;
+  nativeHeight: number;
 }
 
 interface PdfPendingHighlight {
@@ -458,8 +461,7 @@ class PdfjsSession implements ReaderSession {
   }
 
   async setFitWidth(): Promise<void> {
-    // 在 native 1.0 模式下, fit-width = zoom 1.0 (原本大小)
-    this.zoom = 1.0;
+    this.zoom = this.computeFitWidthZoom();
     this.applyZoom();
   }
 
@@ -468,7 +470,11 @@ class PdfjsSession implements ReaderSession {
   }
 
   isFitWidth(): boolean {
-    return this.zoom === 1.0;
+    // "fit-width" means zoom matches the host's actual usable width.
+    // Treat values close to computeFitWidthZoom() as fit-width.
+    if (this.pages.length === 0) return false;
+    const fit = this.computeFitWidthZoom();
+    return Math.abs(this.zoom - fit) < 0.01;
   }
 
   async gotoPage(page: number): Promise<void> {
@@ -481,7 +487,21 @@ class PdfjsSession implements ReaderSession {
     for (let n = 1; n <= this.doc.numPages; n++) {
       await this.renderPage(n);
     }
+    // 默认 fit-width, 但不撑爆宽屏 — 封顶 1200px (微信读书阅读宽度上限)
+    this.zoom = this.computeFitWidthZoom();
     this.applyZoom();
+  }
+
+  private computeFitWidthZoom(): number {
+    const firstPage = this.pages[0];
+    if (!firstPage) return 1.0;
+    const measured = this.host.clientWidth;
+    const MAX_FIT_WIDTH = 1200;
+    // host 内部可用宽度 = clientWidth - 水平 padding (host 自身 padding: 0, 但有 gap/margin)
+    // scroll container padding 0 16px, pages 有 shadow
+    const available = Math.max(200, measured - 32); // 32 = 滚动条 + scroll container padding
+    const targetWidth = Math.min(available, MAX_FIT_WIDTH);
+    return targetWidth / firstPage.nativeWidth;
   }
 
   private async renderPage(pageNumber: number): Promise<void> {
@@ -524,7 +544,9 @@ class PdfjsSession implements ReaderSession {
       wrapper,
       canvas,
       textLayer,
-      textLayerContent: []
+      textLayerContent: [],
+      nativeWidth: displayWidth,
+      nativeHeight: displayHeight
     };
     this.pages.push(pageRender);
 
@@ -588,6 +610,11 @@ class PdfjsSession implements ReaderSession {
 
   private applyZoom(): void {
     for (const page of this.pages) {
+      // 缩放时同时改 wrapper 尺寸, 让 layout 跟着变 (不会因为 transform 留下空白)
+      const scaledW = page.nativeWidth * this.zoom;
+      const scaledH = page.nativeHeight * this.zoom;
+      page.wrapper.style.width = `${scaledW}px`;
+      page.wrapper.style.height = `${scaledH}px`;
       const applyTransform = (el: HTMLElement): void => {
         el.style.transformOrigin = "top left";
         el.style.transform = `scale(${this.zoom})`;
