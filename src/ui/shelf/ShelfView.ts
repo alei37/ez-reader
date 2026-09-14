@@ -262,6 +262,8 @@ export class ShelfView extends ItemView {
   private openFilters(): void {
     const modal = new ShelfFiltersModal(this.deps.app, this.filter);
     void modal.openAndGetResult().then((next) => {
+      // Esc / overlay click resolves null — leave filter unchanged
+      if (next === null) return;
       this.filter = next;
       this.renderRefresh();
     });

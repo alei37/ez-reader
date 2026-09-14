@@ -26,12 +26,35 @@ const RECENCY_LABELS: Record<RecencyBucket, string> = {
   never: "从未"
 };
 
+const FORMAT_LABELS: Record<"epub" | "pdf" | "mobi" | "txt", string> = {
+  epub: "EPUB",
+  pdf: "PDF",
+  mobi: "MOBI",
+  txt: "TXT"
+};
+
+const COMMON_LANGUAGES = ["zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de"] as const;
+
 export class ShelfFiltersModal extends Modal {
   private result: ShelfFilter;
+  private resolver: ((filter: ShelfFilter | null) => void) | null = null;
 
   constructor(app: App, initial: ShelfFilter) {
     super(app);
     this.result = clone(initial);
+  }
+
+  openAndGetResult(): Promise<ShelfFilter | null> {
+    return new Promise<ShelfFilter | null>((resolve) => {
+      this.resolver = resolve;
+      this.open();
+    });
+  }
+
+  private settle(filter: ShelfFilter | null): void {
+    const r = this.resolver;
+    this.resolver = null;
+    r?.(filter);
   }
 
   onOpen(): void {
@@ -39,20 +62,24 @@ export class ShelfFiltersModal extends Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "筛选" });
     this.renderStatusSection(contentEl);
+    this.renderFormatSection(contentEl);
+    this.renderLanguageSection(contentEl);
     this.renderProgressSection(contentEl);
     this.renderRecencySection(contentEl);
     this.renderActions(contentEl);
   }
 
-  openAndGetResult(): Promise<ShelfFilter> {
-    return new Promise<ShelfFilter>((resolve) => {
-      const originalClose = this.close.bind(this);
-      this.close = () => {
-        originalClose();
-        resolve(this.result);
-      };
-      this.open();
-    });
+  onClose(): void {
+    // Esc / overlay click 视为取消 — 防止 openAndGetResult 永久 pending
+    if (this.resolver) this.settle(null);
+  }
+
+  private toggleSetValue<T>(current: ReadonlyArray<T> | undefined, value: T): T[] | undefined {
+    const arr = current ? [...current] : [];
+    const next = arr.includes(value)
+      ? arr.filter((x) => x !== value)
+      : [...arr, value];
+    return next.length > 0 ? next : undefined;
   }
 
   private renderStatusSection(host: HTMLElement): void {
@@ -63,12 +90,42 @@ export class ShelfFiltersModal extends Modal {
       button.addClass("ez-reader__pill");
       button.toggleClass("is-active", this.result.statuses?.includes(status) ?? false);
       button.addEventListener("click", () => {
-        const current = this.result.statuses ?? [];
-        const next = current.includes(status)
-          ? current.filter((value) => value !== status)
-          : [...current, status];
-        this.result = { ...this.result, statuses: next.length > 0 ? next : undefined };
-        button.toggleClass("is-active", !current.includes(status));
+        const next = this.toggleSetValue(this.result.statuses, status);
+        this.result = { ...this.result, statuses: next };
+        button.toggleClass("is-active", next?.includes(status) ?? false);
+      });
+    }
+  }
+
+  private renderFormatSection(host: HTMLElement): void {
+    host.createEl("h3", { text: "文件格式" });
+    const wrap = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
+    for (const format of Object.keys(FORMAT_LABELS) as Array<keyof typeof FORMAT_LABELS>) {
+      const button = wrap.createEl("button", {
+        text: FORMAT_LABELS[format],
+        attr: { type: "button" }
+      });
+      button.addClass("ez-reader__pill");
+      button.toggleClass("is-active", this.result.formats?.includes(format) ?? false);
+      button.addEventListener("click", () => {
+        const next = this.toggleSetValue(this.result.formats, format);
+        this.result = { ...this.result, formats: next };
+        button.toggleClass("is-active", next?.includes(format) ?? false);
+      });
+    }
+  }
+
+  private renderLanguageSection(host: HTMLElement): void {
+    host.createEl("h3", { text: "语言" });
+    const wrap = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
+    for (const lang of COMMON_LANGUAGES) {
+      const button = wrap.createEl("button", { text: lang, attr: { type: "button" } });
+      button.addClass("ez-reader__pill");
+      button.toggleClass("is-active", this.result.languages?.includes(lang) ?? false);
+      button.addEventListener("click", () => {
+        const next = this.toggleSetValue(this.result.languages, lang);
+        this.result = { ...this.result, languages: next };
+        button.toggleClass("is-active", next?.includes(lang) ?? false);
       });
     }
   }
@@ -81,12 +138,9 @@ export class ShelfFiltersModal extends Modal {
       button.addClass("ez-reader__pill");
       button.toggleClass("is-active", this.result.progressBuckets?.includes(bucket) ?? false);
       button.addEventListener("click", () => {
-        const current = this.result.progressBuckets ?? [];
-        const next = current.includes(bucket)
-          ? current.filter((value) => value !== bucket)
-          : [...current, bucket];
-        this.result = { ...this.result, progressBuckets: next.length > 0 ? next : undefined };
-        button.toggleClass("is-active", !current.includes(bucket));
+        const next = this.toggleSetValue(this.result.progressBuckets, bucket);
+        this.result = { ...this.result, progressBuckets: next };
+        button.toggleClass("is-active", next?.includes(bucket) ?? false);
       });
     }
   }
@@ -115,7 +169,10 @@ export class ShelfFiltersModal extends Modal {
     };
     const apply = row.createEl("button", { text: "应用", attr: { type: "button" } });
     apply.addClass("mod-cta");
-    apply.onclick = () => this.close();
+    apply.onclick = () => {
+      this.settle(clone(this.result));
+      this.close();
+    };
   }
 }
 
