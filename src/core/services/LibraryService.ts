@@ -1,4 +1,4 @@
-import type { Book, BookFormat } from "../entities/Book";
+import type { Book, BookFormat, BookId, BookLocator, BookMetadata } from "../entities/Book";
 import type { ReadingState, ReadingStatus } from "../entities/ReadingState";
 import type { AnnotationStore } from "../ports/AnnotationStore";
 import type { BookSource } from "../ports/BookSource";
@@ -152,22 +152,78 @@ export class LibraryService {
     this.emit();
   }
 
-  /** Re-read a single book from the source, e.g. after a modify event. */
+  /** Re-read a single book from the source, e.g. after a modify event.
+   *  If the book is not yet in `entries` (a freshly-added file the user
+   *  dragged in mid-session) we synthesise a fresh entry from the
+   *  source's metadata. Watch 'added' events previously got dropped
+   *  here when entries.size > 0. */
   async refreshBook(path: string): Promise<void> {
     const existing = [...this.entries.values()].find((entry) => entry.book.locator.path === path);
-    if (!existing) return;
-    const locator = existing.book.locator;
-    let metadata = existing.book.metadata;
+    if (existing) {
+      const locator = existing.book.locator;
+      let metadata = existing.book.metadata;
+      try {
+        metadata = await this.source.readMetadata(locator);
+      } catch {
+        metadata = null;
+      }
+      this.entries.set(existing.book.id, {
+        book: { ...existing.book, metadata, sourceModifiedAt: locator.modifiedAt },
+        reading: existing.reading
+      });
+      this.emit();
+      return;
+    }
+    // Book not yet known — synthesize a locator and pull metadata from source.
+    const newFile = await this.locateByPath(path);
+    if (!newFile) {
+      // Source can't find the file; drop the event silently. The next
+      // initialize() will pick it up if it's still around.
+      return;
+    }
+    let metadata: BookMetadata | null = null;
     try {
-      metadata = await this.source.readMetadata(locator);
+      metadata = await this.source.readMetadata(newFile);
     } catch {
       metadata = null;
     }
-    this.entries.set(existing.book.id, {
-      book: { ...existing.book, metadata, sourceModifiedAt: locator.modifiedAt },
-      reading: existing.reading
+    const id = this.source.resolveId(newFile);
+    const reading = await this.getStoredReading(id);
+    this.entries.set(id, {
+      book: {
+        id,
+        locator: newFile,
+        metadata,
+        sourceModifiedAt: newFile.modifiedAt,
+        addedToLibraryAt: null,
+        coverPath: null
+      },
+      reading: reading ?? {
+        bookId: id,
+        position: null,
+        status: "unread",
+        favorite: false,
+        lastOpenedAt: null,
+        totalReadingMs: 0
+      }
     });
     this.emit();
+  }
+
+  private async getStoredReading(bookId: BookId): Promise<ReadingState | undefined> {
+    const all = await this.annotations.listReading();
+    return all.find((r) => r.bookId === bookId);
+  }
+
+  /** Find a locator in the source by path. The BookSource interface doesn't
+   *  expose this directly, so we walk the scan iterator (cheap for small
+   *  vaults; for huge vaults the host can keep a side index). */
+  private async locateByPath(path: string): Promise<BookLocator | null> {
+    const wanted = new Set<BookFormat>(["epub", "pdf"]);
+    for await (const locator of this.source.scan(wanted)) {
+      if (locator.path === path) return locator;
+    }
+    return null;
   }
 
   /** Persist a reading state change. */
