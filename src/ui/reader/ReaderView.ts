@@ -313,6 +313,17 @@ export class ReaderView extends ItemView {
     this.readyResolve = undefined;
     if (this.host) {
       void this.openSession();
+    } else {
+      // host 还没就绪(onOpen 仍在跑,例如 leaf.setViewState 在 onOpen 完成前 resolve)
+      // 等下一帧再试。openSession 内部有 if (!this.host) return 保护。
+      const tryOpen = () => {
+        if (this.host && this.entry && !this.session) {
+          void this.openSession();
+        }
+      };
+      globalThis.requestAnimationFrame(tryOpen);
+      // 兜底: 100ms 后再试一次
+      globalThis.setTimeout(tryOpen, 100);
     }
   }
 

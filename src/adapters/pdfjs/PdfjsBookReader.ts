@@ -89,6 +89,12 @@ export class PdfjsBookReader implements BookReader {
       this.docCache.delete(book.locator.path);
       return originalClose();
     };
+    // 等一帧再渲染: host 刚被 append 到 DOM, 浏览器还没完成 layout pass,
+    // host.clientWidth 可能是 0 导致首帧 canvas 塌成 1×1(看起来"空白")。
+    // 如果 clientWidth 已经有合理值(<100 视为未 layout),直接渲染。
+    if (host.clientWidth < 100) {
+      await new Promise<void>((resolve) => globalThis.requestAnimationFrame(() => resolve()));
+    }
     await session.gotoPage(1);
     return session;
   }

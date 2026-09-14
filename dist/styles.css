@@ -1097,6 +1097,31 @@
   min-width: 0;
 }
 
+/* foliate-view 是一个无默认尺寸的 custom element。foliate-paginator 在
+   自己的 shadow root 里设了 :host { width: 100%; height: 100% }, 但
+   foliate-view 本身是 display:inline + 无显式尺寸,会塌成 0×0。需要显式
+   让它填满父容器,不然 EPUB 一片空白。 */
+.ez-reader__reader__stage > foliate-view {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 桌面端宽屏: notes panel 左侧常驻,占 ~280px,书 stage 拿到剩余宽度 */
+.ez-reader__desktop-wide .ez-reader__notes-panel {
+  flex: 0 0 300px;
+  min-width: 240px;
+  max-width: 360px;
+  border-right: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  overflow-y: auto;
+}
+
+.ez-reader__desktop-wide .ez-reader__reader__stage {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 @media (max-width: 1024px) {
   .ez-reader__notes-panel {
     position: absolute;

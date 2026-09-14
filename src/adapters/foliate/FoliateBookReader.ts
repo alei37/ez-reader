@@ -97,6 +97,12 @@ export class FoliateBookReader implements BookReader {
     const view = document.createElement("foliate-view") as FoliateViewElement;
     view.setAttribute("data-ez-reader-flow", appearance.flow);
     host.append(view);
+    // 等一帧让 host 的 flex layout 生效(避免 host.clientWidth 还是 0 时
+    // view.open 触发 paginator 用 0 宽度初始化),这样 foliate-view 能拿到
+    // 真实尺寸, paginator 内部 :host { width:100%; height:100% } 才有用。
+    if (host.clientWidth < 100 || host.clientHeight < 100) {
+      await new Promise<void>((resolve) => globalThis.requestAnimationFrame(() => resolve()));
+    }
     try {
       await view.open(parsed);
     } catch (error) {
