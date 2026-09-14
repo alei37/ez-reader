@@ -97,7 +97,13 @@ export class FoliateBookReader implements BookReader {
     const view = document.createElement("foliate-view") as FoliateViewElement;
     view.setAttribute("data-ez-reader-flow", appearance.flow);
     host.append(view);
-    await view.open(parsed);
+    try {
+      await view.open(parsed);
+    } catch (error) {
+      // view.open 失败: 清掉 host 上的空 view (transformTarget listener 跟着 GC)
+      view.remove();
+      throw error;
+    }
 
     const session = new FoliateSession(view, appearance);
     // Apply appearance now (the paginator may already be showing content)
