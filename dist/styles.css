@@ -433,20 +433,19 @@
   background: var(--background-secondary);
   padding: 24px 0 48px;
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  /* 用 block 布局 + 子元素 margin: 0 auto 居中, 比 flex + align-items 可靠:
+     flex column + align-items: center 在子元素比容器宽时, 子元素会向两边溢出
+     且滚动到 0 时看不到完整居中效果 (因为 overflow 区域被剪掉了一半) */
+  text-align: center; /* 让 textLayer 的文字也居中 (虽然 textLayer 是 absolute) */
 }
 
 .ez-reader__pdf-page {
   position: relative;
+  display: inline-block; /* 关键: 改成 inline-block 才能 margin: 0 auto 居中 */
   background: #ffffff;
-  /* 浅阴影 + 1px 边框做 PDF 纸张效果 — 比纯阴影更接近实物 */
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1);
-  /* 紧贴排列: flex gap 控制间距, 这里给个 margin-bottom 兜底 */
-  margin-bottom: 8px;
-  flex-shrink: 0;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
+  margin: 0 auto 12px auto; /* auto 横向 margin 在 block 父容器下居中 */
+  vertical-align: top; /* 防止 inline-block 基线对齐导致的微小偏移 */
 }
 
 .ez-reader__pdf-page:last-child {

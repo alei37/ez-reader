@@ -498,11 +498,11 @@ class PdfjsSession implements ReaderSession {
     const firstPage = this.pages[0];
     if (!firstPage) return 1.0;
     const measured = this.host.clientWidth;
-    // 1500 上限: 1920+ 宽屏上接近铺满但留 400+ 边距, 微信读书大约这个量级
-    // 32 减去是因为 host 可能有水平 scrollbar (16px) + 视觉边距 (16px)
-    const MAX_FIT_WIDTH = 1500;
-    const available = Math.max(200, measured - 32);
-    const targetWidth = Math.min(available, MAX_FIT_WIDTH);
+    // 不再 cap: 直接 fit host 宽度。host 自己有 padding 24px (左右加起来 48px),
+    // 减掉 48 让 PDF 周围留点视觉呼吸空间。如果 host < 612 (native PDF width),
+    // 退到 native 1.0, 配合 overflow-x: auto 可以水平滚动查看。
+    const padding = 48;
+    const targetWidth = Math.max(firstPage.nativeWidth, measured - padding);
     return targetWidth / firstPage.nativeWidth;
   }
 
