@@ -62,6 +62,15 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
     text: statusLabel(entry.reading.status),
     cls: `ez-reader__status-pill is-${entry.reading.status}`
   });
+  // 与 ShelfGridItem 保持一致: 平台标签 + 语种
+  row.createEl("span", {
+    text: entry.book.locator.format.toUpperCase(),
+    cls: "ez-reader__shelf-list__format"
+  });
+  const lang = entry.book.metadata?.languages?.[0];
+  if (lang) {
+    row.createEl("span", { text: lang, cls: "ez-reader__shelf-list__lang" });
+  }
 
   row.addEventListener("click", () => handlers.onOpen(entry));
   row.addEventListener("keydown", (event) => {
