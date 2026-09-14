@@ -238,7 +238,11 @@ class FoliateSession implements ReaderSession {
     }
     const wrapped = ((e: Event) => handler(e as ReaderEventMap[K])) as EventListener;
     this.view.addEventListener(event, wrapped);
-    return () => this.view.removeEventListener(event, wrapped);
+    // 跟踪到 disposers 里, close() 时统一清理 (view.remove() 之后 listener 还
+    // 在内存里飘着, 直到 view GC — 长期持有 handler 可能闭包泄漏)
+    const off = () => this.view.removeEventListener(event, wrapped);
+    this.disposers.add(off);
+    return off;
   }
 
   async exportLocator(): Promise<string | null> {
@@ -372,6 +376,10 @@ class FoliateSession implements ReaderSession {
    * iframe document. Each event carries `{ doc, index }` — `doc` is the
    * iframe contentDocument and `index` is the section index. We use both
    * to compute a precise CFI from any user selection.
+   *
+   * 注意: `docListeners` 只跟踪 selectionchange 监听器, 不要把 load 事件
+   * 的 disposer 放进去 — onLoad 内部会遍历 docListeners 调 dispose, 会把
+   * load 监听器一起清掉, 导致后续翻页不再触发 selectionchange 处理。
    */
   private bindSelectionChange(handler: (event: ReaderEventMap["selection-change"]) => void): () => void {
     const off = () => {
@@ -380,11 +388,9 @@ class FoliateSession implements ReaderSession {
     };
 
     const attach = (doc: Document, index: number): void => {
-      // Same doc already attached? Skip.
-      if (this.docListeners.size > 0) {
-        // We don't track doc identity directly; this is a best-effort dedupe.
-        return;
-      }
+      // 清旧 selectionchange 监听器 (再绑一次就重了, 同一 doc 不会重复)
+      for (const dispose of this.docListeners) dispose();
+      this.docListeners.clear();
       const onChange = () => {
         const selection = doc.getSelection();
         if (!selection || selection.isCollapsed) return;
@@ -411,13 +417,11 @@ class FoliateSession implements ReaderSession {
     const onLoad = (event: Event) => {
       const detail = (event as CustomEvent<{ doc?: Document; index?: number }>).detail;
       if (!detail || !detail.doc || typeof detail.index !== "number") return;
-      // 清旧 listener,绑新的
-      for (const dispose of this.docListeners) dispose();
-      this.docListeners.clear();
       attach(detail.doc, detail.index);
     };
     this.view.addEventListener("load", onLoad);
-    this.docListeners.add(() => this.view.removeEventListener("load", onLoad));
+    // load 监听器单独跟踪, 不和 selectionchange 混在一起
+    this.disposers.add(() => this.view.removeEventListener("load", onLoad));
 
     return off;
   }

@@ -16,6 +16,11 @@ import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from "../../core/types/R
  */
 export class ObsidianAnnotationStore implements AnnotationStore {
   private cache: AnnotationSnapshot | null = null;
+  // Serialize all writes through this chain. loadData/saveData use the
+  // file system; two concurrent addBookmark/addExcerpt calls would
+  // otherwise each read the same base snapshot, both build a delta on
+  // top, and the later save would clobber the earlier one.
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly plugin: Plugin) {}
 
@@ -35,6 +40,20 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       coverPaths: this.sanitizeRecord(raw?.coverPaths)
     };
     return this.cache;
+  }
+
+  /** Wrap a mutation so it serializes through `writeChain`. */
+  private async mutate(fn: () => Promise<AnnotationSnapshot>): Promise<void> {
+    const next = this.writeChain.then(fn).then(async (snapshot) => {
+      this.cache = snapshot;
+      await this.plugin.saveData(snapshot as unknown as Record<string, unknown>);
+    });
+    // Keep the chain alive even on errors — next caller still runs.
+    this.writeChain = next.then(
+      () => undefined,
+      () => undefined
+    );
+    await next;
   }
 
   private sanitizeStringArray(input: unknown): string[] {
@@ -82,8 +101,9 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async save(snapshot: AnnotationSnapshot): Promise<void> {
-    this.cache = snapshot;
-    await this.plugin.saveData(snapshot as unknown as Record<string, unknown>);
+    // External callers can still bypass mutate(); serialize through the same
+    // chain so they don't race with internal mutations.
+    await this.mutate(async () => snapshot);
   }
 
   async listLibrary(): Promise<ReadonlyArray<BookId>> {
@@ -92,16 +112,20 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async addToLibrary(bookId: BookId): Promise<void> {
-    const snapshot = await this.load();
-    if (snapshot.library.includes(bookId)) return;
-    await this.save({ ...snapshot, library: [...snapshot.library, bookId] });
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.library.includes(bookId)) return snapshot;
+      return { ...snapshot, library: [...snapshot.library, bookId] };
+    });
   }
 
   async removeFromLibrary(bookId: BookId): Promise<void> {
-    const snapshot = await this.load();
-    await this.save({
-      ...snapshot,
-      library: snapshot.library.filter((id) => id !== bookId)
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return {
+        ...snapshot,
+        library: snapshot.library.filter((id) => id !== bookId)
+      };
     });
   }
 
@@ -111,9 +135,11 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async upsertReading(state: ReadingState): Promise<void> {
-    const snapshot = await this.load();
-    const next = [...snapshot.reading.filter((s) => s.bookId !== state.bookId), state];
-    await this.save({ ...snapshot, reading: next });
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const next = [...snapshot.reading.filter((s) => s.bookId !== state.bookId), state];
+      return { ...snapshot, reading: next };
+    });
   }
 
   async listBookmarks(bookId: BookId): Promise<ReadonlyArray<Bookmark>> {
@@ -122,15 +148,20 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async addBookmark(bookmark: Bookmark): Promise<void> {
-    const snapshot = await this.load();
-    await this.save({ ...snapshot, bookmarks: [...snapshot.bookmarks, bookmark] });
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.bookmarks.some((b) => b.id === bookmark.id)) return snapshot;
+      return { ...snapshot, bookmarks: [...snapshot.bookmarks, bookmark] };
+    });
   }
 
   async removeBookmark(bookId: BookId, bookmarkId: string): Promise<void> {
-    const snapshot = await this.load();
-    await this.save({
-      ...snapshot,
-      bookmarks: snapshot.bookmarks.filter((b) => !(b.bookId === bookId && b.id === bookmarkId))
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return {
+        ...snapshot,
+        bookmarks: snapshot.bookmarks.filter((b) => !(b.bookId === bookId && b.id === bookmarkId))
+      };
     });
   }
 
@@ -140,15 +171,20 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async addExcerpt(excerpt: Excerpt): Promise<void> {
-    const snapshot = await this.load();
-    await this.save({ ...snapshot, excerpts: [...snapshot.excerpts, excerpt] });
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.excerpts.some((e) => e.id === excerpt.id)) return snapshot;
+      return { ...snapshot, excerpts: [...snapshot.excerpts, excerpt] };
+    });
   }
 
   async removeExcerpt(bookId: BookId, excerptId: string): Promise<void> {
-    const snapshot = await this.load();
-    await this.save({
-      ...snapshot,
-      excerpts: snapshot.excerpts.filter((e) => !(e.bookId === bookId && e.id === excerptId))
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return {
+        ...snapshot,
+        excerpts: snapshot.excerpts.filter((e) => !(e.bookId === bookId && e.id === excerptId))
+      };
     });
   }
 
@@ -158,8 +194,10 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async saveSettings(settings: PluginSettings): Promise<void> {
-    const snapshot = await this.load();
-    await this.save({ ...snapshot, settings });
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return { ...snapshot, settings };
+    });
   }
 
   async loadCoverPaths(): Promise<Readonly<Record<string, string>>> {
@@ -168,8 +206,10 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
-    const snapshot = await this.load();
-    await this.save({ ...snapshot, coverPaths });
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return { ...snapshot, coverPaths };
+    });
   }
 
   private normalizeSettings(input: PluginSettings | undefined): PluginSettings {

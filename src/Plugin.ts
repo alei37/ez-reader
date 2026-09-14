@@ -1,5 +1,5 @@
 import { Plugin, TFile } from "obsidian";
-import type { App } from "obsidian";
+import type { App, WorkspaceLeaf } from "obsidian";
 import { CoverCache } from "./adapters/obsidian/CoverCache";
 import { ObsidianAnnotationStore } from "./adapters/obsidian/ObsidianAnnotationStore";
 import { ObsidianBookSource } from "./adapters/obsidian/ObsidianBookSource";
@@ -104,6 +104,15 @@ export default class EzReaderPlugin extends Plugin {
 
   onunload(): void {
     this.library?.dispose();
+    // 还原用户原本的 "Detect all file extensions" 设置 — 我们只在
+    // 插件活跃期间打开它, 退出时恢复原值, 不污染用户的偏好。
+    const previous = (this as unknown as { __ezReaderPreviousShowUnsupported?: unknown }).__ezReaderPreviousShowUnsupported;
+    if (typeof previous === "boolean") {
+      const vault = this.app.vault as typeof this.app.vault & {
+        setConfig?: (key: string, value: boolean) => Promise<void> | void;
+      };
+      void vault.setConfig?.("showUnsupportedFiles", previous);
+    }
   }
 
   private deps(): ConstructorParameters<typeof ShelfView>[1] {
@@ -163,13 +172,25 @@ export default class EzReaderPlugin extends Plugin {
       return;
     }
     try {
+      // 找现有的 reader leaf 装同一本书 — 如果有就复用, 不开新 tab
+      const existingLeaf = this.findReaderLeafForBook(bookId);
+      if (existingLeaf && existingLeaf.view instanceof ReaderView) {
+        // 同步 ShelfView.openBook 的行为: 先标记"在读"
+        await this.withTimeout(this.reading.openBook(entry.book.id), 5000, "reading.openBook");
+        if (excerptId) {
+          await this.withTimeout(existingLeaf.view.openExcerptById(excerptId), 30000, "openExcerptById");
+        }
+        this.app.workspace.revealLeaf(existingLeaf);
+        this.app.workspace.setActiveLeaf(existingLeaf);
+        return;
+      }
       // 同步 ShelfView.openBook 的行为: 先标记"在读"
       await this.withTimeout(this.reading.openBook(entry.book.id), 5000, "reading.openBook");
       await this.withTimeout(this.openReader(entry), 8000, "openReader");
       if (excerptId) {
         // openExcerptById 内部 whenReady() 会等 session 就绪(最多 30s),
         // 不再用固定 setTimeout,避免大 PDF 时序竞争
-        const leaf = this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
+        const leaf = this.findReaderLeafForBook(bookId) ?? this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
         if (leaf?.view instanceof ReaderView) {
           await this.withTimeout(leaf.view.openExcerptById(excerptId), 30000, "openExcerptById");
         }
@@ -180,6 +201,16 @@ export default class EzReaderPlugin extends Plugin {
       new Notice(`无法打开笔记链接: ${message}`);
       console.error("[ez-reader] handleProtocol failed", { bookId, excerptId, error });
     }
+  }
+
+  private findReaderLeafForBook(bookId: string): WorkspaceLeaf | null {
+    for (const leaf of this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)) {
+      const state = leaf.getViewState();
+      if (state.state && (state.state as { file?: unknown }).file === bookId) {
+        return leaf;
+      }
+    }
+    return null;
   }
 
   /** Race a promise against a deadline. Rejects with a friendly message on timeout. */
@@ -257,7 +288,10 @@ export default class EzReaderPlugin extends Plugin {
       getConfig?: (key: string) => unknown;
       setConfig?: (key: string, value: boolean) => Promise<void> | void;
     };
-    if (vaultWithConfig.getConfig?.("showUnsupportedFiles") === true) return;
+    // 记下用户原本的值, onunload 时恢复
+    const previous = vaultWithConfig.getConfig?.("showUnsupportedFiles");
+    (this as unknown as { __ezReaderPreviousShowUnsupported?: unknown }).__ezReaderPreviousShowUnsupported = previous;
+    if (previous === true) return;
     try {
       await vaultWithConfig.setConfig?.("showUnsupportedFiles", true);
     } catch (error) {

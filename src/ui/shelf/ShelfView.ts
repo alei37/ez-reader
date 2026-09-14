@@ -2,7 +2,7 @@ import { ItemView, WorkspaceLeaf, TFile, Menu } from "obsidian";
 import type { App } from "obsidian";
 import type { LibraryEntry, LibraryService } from "../../core/services/LibraryService";
 import type { ReadingService } from "../../core/services/ReadingService";
-import type { BookReader, ReaderSession } from "../../core/ports/BookReader";
+import type { BookReader } from "../../core/ports/BookReader";
 import type { CoverCache } from "../../adapters/obsidian/CoverCache";
 import { DEFAULT_SORT, emptyFilter, type ShelfFilter, type SortCriterion } from "../../core/types/ShelfFilter";
 import { AddToLibraryModal } from "./AddToLibraryModal";
@@ -33,7 +33,6 @@ export class ShelfView extends ItemView {
   private filter: ShelfFilter = emptyFilter();
   private sort: SortCriterion = DEFAULT_SORT;
   private unsubscribe: (() => void) | undefined;
-  private activeSession: ReaderSession | undefined;
   private promptedForFirstImport = false;
 
   constructor(leaf: WorkspaceLeaf, deps: ShelfViewDeps) {
@@ -100,10 +99,9 @@ export class ShelfView extends ItemView {
   async onClose(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-    if (this.refreshTimer !== undefined) globalThis.clearTimeout(this.refreshTimer);
-    if (this.activeSession) {
-      await this.activeSession.close();
-      this.activeSession = undefined;
+    if (this.refreshTimer !== undefined) {
+      globalThis.clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
     }
   }
 

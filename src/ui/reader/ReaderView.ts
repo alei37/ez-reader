@@ -690,6 +690,13 @@ export class ReaderView extends ItemView {
     const disposeOn = () => {
       offRelocate();
       offSelect();
+      // 清理 selectionDebounce, 否则 session 关闭后定时器还会触发,
+      // 在已 detach 的 view 上调用 selectionMenu.show() (虽然 selectionMenu
+      // 还活着但 host 已经 undefined, 会出错)
+      if (selectionDebounce !== undefined) {
+        globalThis.clearTimeout(selectionDebounce);
+        selectionDebounce = undefined;
+      }
     };
     this.register(disposeOn);
 
