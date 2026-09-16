@@ -309,6 +309,7 @@ Obsidian 桌面版支持插件热重载(在设置里打开),改了代码后:
 - **PagedTextSession `disposers` Set 每次翻页增长** — 理论性能问题,实际未必可见
 - **`guessTitleFromText` 误判古文** — 第一行 ≤80 字符的启发式对古文失效
 - **跨页摘录不支持** — 选中跨页的文本只高亮第一页
+- **PDF selection-level jump 不精确** — `PdfOverlay.jumpToExcerpt` 只 scrollIntoView 到 page, 没真正跳到 4-tuple subpath (需要 PDFView 暴露内部 API; P2-5 TODO 在 `pdfOverlay.ts:445`)
 
 ### P2(代码质量)
 - **`LICENSES/` 缺 3 个 MIT notice**: `@lingo-reader/mobi-parser`, `@lingo-reader/shared`, `fflate`

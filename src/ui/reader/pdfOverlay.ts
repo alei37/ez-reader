@@ -57,8 +57,16 @@ const PDF_VIEW_TYPE = "pdf";
 
 /** Cryptographically random ID. Avoids the same-millisecond collision that
  *  plagued the old `Date.now() + Math.random()` scheme — two excerpts saved
- *  within the same JS tick would dedupe-collide on later appendExcerpt calls. */
-const generateExcerptId = (prefix: "ex"): string => `${prefix}-${crypto.randomUUID()}`;
+ *  within the same JS tick would dedupe-collide on later appendExcerpt calls.
+ *
+ *  P2-6: fallback 到 Math.random — Android 旧 WebView 没 randomUUID. */
+const generateExcerptId = (prefix: "ex"): string => {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (typeof uuid === "string" && uuid.length > 0) {
+    return `${prefix}-${uuid}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+};
 
 /** Module-level registry — 每 leaf 最多挂一个 overlay 实例. */
 const ATTACHED = new WeakMap<WorkspaceLeaf, PdfOverlay>();
@@ -286,8 +294,68 @@ export class PdfOverlay {
     this.opts.app.workspace.on("active-leaf-change", onLeafChange);
     this.disposers.push(() => this.opts.app.workspace.off("active-leaf-change", onLeafChange));
 
+    // P0-3: PDF 阅读进度追踪 — 用户翻页时 (scrollIntoView 触发 active page
+    // 切换) 调 reading.updatePosition 把 (page, totalPages) 写回 store.
+    // 之前 PdfOverlay 完全不存 PDF 进度, reading.position 永远是 null,
+    // progressFraction 一直返回 0, PDF 永远 "untouched". 现在 mutation
+    // observer 监听 .pdf-page.active 变化触发更新.
+    let persistTimer: ReturnType<typeof setTimeout> | undefined;
+    const schedulePositionPersist = (): void => {
+      if (persistTimer !== undefined) clearTimeout(persistTimer);
+      // 250ms debounce — 用户快速滚动时不会触发 10+ 次 IO
+      persistTimer = setTimeout(() => void this.persistCurrentPosition(), 250);
+    };
+    this.disposers.push(() => {
+      if (persistTimer !== undefined) {
+        clearTimeout(persistTimer);
+        persistTimer = undefined;
+      }
+    });
+    // 用 MutationObserver 监听 page active class 切换. PDF++ / Obsidian
+    // PDFView 翻页本质上是改 .active class + scrollIntoView, 这两个都
+    // 会触发 childList / attributes mutation.
+    const pageObserver = new MutationObserver(() => schedulePositionPersist());
+    pageObserver.observe(this.container, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class"]
+    });
+    this.disposers.push(() => pageObserver.disconnect());
+
     this.mounted = true;
+    // mount 后立即 persist 一次 — 用户第一次打开 PDF 时也要存 (status: unread → reading).
+    void this.persistCurrentPosition();
     void this.renderHighlights();
+  }
+
+  /**
+   * P0-3: 把当前 PDF 进度 (page + totalPages) 写到 reading store.
+   * No-op if:
+   *   - 没有 bookId (mount 时序 race, library.initialize 还没完)
+   *   - DOM 里找不到 active page (PDFView 还没渲染完, 等下一次 mutation)
+   *   - 上一次 persist 的 page 跟现在一样 (避免 relocate 风暴)
+   */
+  private lastPersistedPdfPage: number | null = null;
+  private lastPersistedPdfTotal: number | null = null;
+  private async persistCurrentPosition(): Promise<void> {
+    if (!this.bookId) return;
+    const page = findActivePageNumber(this.container);
+    if (page === null) return;
+    if (page === this.lastPersistedPdfPage) return;
+    const totalPages = findPdfTotalPages(this.container);
+    try {
+      await this.opts.reading.updatePosition(this.bookId, {
+        kind: "pdf",
+        page,
+        totalPages: totalPages ?? undefined,
+        // scale / fitWidth PDF overlay 不主动管, 让用户通过 PDFView 自己控制
+      });
+      this.lastPersistedPdfPage = page;
+      this.lastPersistedPdfTotal = totalPages;
+    } catch (error) {
+      console.warn("[ez-reader] persistCurrentPosition (PDF) failed", error);
+    }
   }
 
   /** Underlying PDFView leaf 还在且 view 类型还是 pdf. */
@@ -494,7 +562,6 @@ export class PdfOverlay {
         onRemoveBookmark: async (id) => {
           await this.opts.reading.removeBookmark(this.bookId!, id);
           await this.refreshNotesPanel();
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
           new Notice("书签已删除");
         },
         onRemoveExcerpt: async (id) => {
@@ -507,7 +574,6 @@ export class PdfOverlay {
             this.highlightsByExcerpt.delete(id);
           }
           await this.refreshNotesPanel();
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
           new Notice("摘录已删除");
         }
       });
@@ -528,11 +594,9 @@ export class PdfOverlay {
     this.hideMenu();
     try {
       const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       new Notice(`翻译 (${this.targetLocale}):\n${result.text}`, 10000);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       new Notice(`翻译失败: ${message}`);
     }
   }
@@ -560,7 +624,6 @@ export class PdfOverlay {
       await this.opts.reading.addExcerpt(excerpt);
     } catch (error) {
       console.warn("[ez-reader] handleExcerpt addExcerpt failed", error);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       new Notice("保存摘录失败");
       return;
     }
@@ -584,7 +647,6 @@ export class PdfOverlay {
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
         new Notice("写入笔记失败 (摘录已保存)");
       }
     }
@@ -607,7 +669,6 @@ export class PdfOverlay {
     if (this.notesPanel.classList.contains("is-open")) {
       await this.refreshNotesPanel();
     }
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
     new Notice("摘录已保存");
   }
 
@@ -643,7 +704,6 @@ export class PdfOverlay {
       await this.opts.reading.addExcerpt(excerpt);
     } catch (error) {
       console.warn("[ez-reader] handleThought addExcerpt failed", error);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       new Notice("保存想法失败");
       return;
     }
@@ -666,7 +726,6 @@ export class PdfOverlay {
         });
       } catch (error) {
         console.warn("[ez-reader] handleThought noteWriter.appendExcerpt failed", error);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
         new Notice("写入笔记失败 (想法已保存)");
       }
     }
@@ -687,14 +746,12 @@ export class PdfOverlay {
     if (this.notesPanel.classList.contains("is-open")) {
       await this.refreshNotesPanel();
     }
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
     new Notice(noteText.trim().length > 0 ? "想法已保存" : "想法 (空) 已保存");
   }
 
   private async handleCopy(): Promise<void> {
     if (!this.pendingSelection) return;
     const text = this.pendingSelection.text;
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
     try {
       await navigator.clipboard.writeText(text);
       new Notice(`已复制 (${text.length} 字符)`, 1500);
@@ -908,4 +965,25 @@ const drawHighlight = (
   hl.style.height = `${rect.height}px`;
   layer.appendChild(hl);
   return hl;
+};
+
+/**
+ * P0-3 配套: 找到 PDF 的总页数. PDFView DOM 一次性渲染所有 page 元素
+ * (lazy load 但都在 DOM 里), 找最大 data-page-number 即可. 没找到时
+ * 返回 null — caller 应该 fallback 到没有 totalPages 的 position.
+ */
+const findPdfTotalPages = (container: HTMLElement): number | null => {
+  const pages = Array.from(
+    container.querySelectorAll<HTMLElement>(".pdf-page[data-page-number], .page[data-page-number]")
+  );
+  if (pages.length === 0) return null;
+  let max = 0;
+  for (const el of pages) {
+    const n = el.getAttribute("data-page-number");
+    if (n && /^\d+$/.test(n)) {
+      const parsed = Number(n);
+      if (parsed > max) max = parsed;
+    }
+  }
+  return max > 0 ? max : null;
 };

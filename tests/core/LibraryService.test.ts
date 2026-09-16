@@ -153,12 +153,21 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async setPinnedAt(bookId: string, pinnedAt: number | null): Promise<void> {
     const current = this.snapshot.pinnedAtByBookId ?? {};
     const next = { ...current };
-    if (pinnedAt === null) {
-      delete next[bookId];
-    } else {
-      next[bookId] = pinnedAt;
-    }
+    if (pinnedAt === null) delete next[bookId];
+    else next[bookId] = pinnedAt;
     this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
+  // P0-2: 测试 mock 也实现 rich metadata 接口, 让 doInitialize 走
+  // filename-fallback (mock 默认没 rich metadata) 路径保持原行为.
+  async saveRichMetadata(bookId: string, metadata: BookMetadata): Promise<void> {
+    const current = this.snapshot.richMetadataByBookId ?? {};
+    this.snapshot = { ...this.snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };
+  }
+  async loadRichMetadata(bookId: string): Promise<BookMetadata | null> {
+    return this.snapshot.richMetadataByBookId?.[bookId] ?? null;
+  }
+  async getAddedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.addedAtByBookId?.[bookId] ?? null;
   }
   async addToLibraryBatchWithStamp(bookIds: ReadonlyArray<string>, addedAt: number): Promise<void> {
     const existingLibrary = new Set(this.snapshot.library);
@@ -498,4 +507,80 @@ test("LibraryService.togglePin flips pinnedAt and persists", async () => {
   // 持久化
   assert.equal(await store.getPinnedAt("a.epub"), null);
   assert.equal(await store.getPinnedAt("b.epub"), 3000);
+});
+
+// P0-2: 测试 refreshMetadata 用 reader 解析的真 metadata 升级 title / author,
+// 持久化到 store, 并 emit 触发 shelf 重渲染.
+test("LibraryService.refreshMetadata upgrades filename-derived title to reader-parsed title and persists", async () => {
+  const files = [
+    // 文件名 "Introduction to Seismology (Peter M. Shearer) (Z-Library).epub"
+    // → filename-derived metadata 是 "Introduction to Seismology (Peter M. Shearer) (Z-Library)"
+    { locator: makeLocator("intro.epub"), metadata: makeMetadata("Introduction to Seismology (Peter M. Shearer) (Z-Library)") },
+    { locator: makeLocator("gatsby.epub"), metadata: makeMetadata("gatsby") }
+  ];
+  const source = new FakeBookSource(files);
+  const store = new InMemoryAnnotationStore();
+  // mock reader: 对 intro.epub 返回 OPF 解析的真 metadata
+  const metadataReader: import("../../src/core/ports/BookReader").BookReader = {
+    open: async () => {
+      throw new Error("not used in refreshMetadata test");
+    },
+    extractCover: async () => null,
+    readMetadata: async (book) => {
+      if (book.locator.path === "intro.epub") {
+        return makeMetadata("Introduction to Seismology", ["Peter M. Shearer"], ["en"]);
+      }
+      return null;
+    }
+  };
+  const service = new LibraryService(source, store, metadataReader, async () => new ArrayBuffer(0));
+  let emitCount = 0;
+  service.subscribe(() => emitCount++);
+
+  await service.initialize();
+  assert.equal(emitCount, 1, "initialize emits once");
+  const before = service.get("intro.epub");
+  assert.equal(before?.book.metadata?.title, "Introduction to Seismology (Peter M. Shearer) (Z-Library)");
+
+  // refreshMetadata: 用真 metadata 替换 filename-derived
+  await service.refreshMetadata("intro.epub");
+  assert.ok(emitCount >= 2, "refreshMetadata emits when title changes");
+
+  const after = service.get("intro.epub");
+  assert.equal(after?.book.metadata?.title, "Introduction to Seismology");
+  assert.deepEqual(after?.book.metadata?.authors, ["Peter M. Shearer"]);
+  assert.deepEqual(after?.book.metadata?.languages, ["en"]);
+
+  // 持久化: 下一次 initialize 应该读到 rich metadata 而不是 filename
+  assert.ok(await store.loadRichMetadata("intro.epub"), "rich metadata persisted to store");
+
+  const freshService = new LibraryService(source, store, metadataReader, async () => new ArrayBuffer(0));
+  await freshService.initialize();
+  const reopened = freshService.get("intro.epub");
+  assert.equal(reopened?.book.metadata?.title, "Introduction to Seismology", "rich metadata survives initialize");
+});
+
+test("LibraryService.refreshMetadata is a no-op when reader returns null", async () => {
+  const files = [{ locator: makeLocator("broken.epub"), metadata: makeMetadata("fallback title") }];
+  const source = new FakeBookSource(files);
+  const store = new InMemoryAnnotationStore();
+  const metadataReader: import("../../src/core/ports/BookReader").BookReader = {
+    open: async () => {
+      throw new Error("not used");
+    },
+    extractCover: async () => null,
+    readMetadata: async () => null // reader parse 失败
+  };
+  const service = new LibraryService(source, store, metadataReader, async () => new ArrayBuffer(0));
+  let emitCount = 0;
+  service.subscribe(() => emitCount++);
+
+  await service.initialize();
+  const emitAfterInit = emitCount;
+  await service.refreshMetadata("broken.epub");
+  assert.equal(emitCount, emitAfterInit, "no emit when reader returns null");
+
+  const entry = service.get("broken.epub");
+  assert.equal(entry?.book.metadata?.title, "fallback title", "filename-derived metadata preserved");
+  assert.equal(await store.loadRichMetadata("broken.epub"), null, "no rich metadata persisted");
 });

@@ -7,6 +7,15 @@ export type ReadingPosition =
   | {
       readonly kind: "pdf";
       readonly page: number;
+      /**
+       * P0-3: total page count for the PDF, captured the first time we
+       * know it (PdfOverlay.mount sees Obsidian PDFView's per-file metadata).
+       * `progressFraction` divides `page / totalPages` so the shelf can sort
+       * / filter PDFs by reading progress like any other format. Optional
+       * for backward compatibility with positions persisted before this
+       * field existed.
+       */
+      readonly totalPages?: number;
       readonly scale?: number;
       readonly fitWidth?: boolean;
       /**
@@ -55,9 +64,13 @@ export const progressFraction = (state: ReadingState): number => {
     case "text":
       return clamp(state.position.fraction);
     case "pdf":
-      // PDF page alone is not enough for a fraction without page count; the
-      // adapter resolves this before handing it back to us. The default is
-      // 0 so unconfigured PDFs sort as "untouched".
+      // P0-3 修复: 之前永远返回 0, 意味着 PDF 永远 "untouched",
+      // progressDesc 排序里 PDF 永远垫底, 状态机无法自动进 finished.
+      // 现在如果有 totalPages, 计算 page / totalPages — 老 data.json
+      // (没 totalPages) 仍走 0 路径, 兼容.
+      if (typeof state.position.totalPages === "number" && state.position.totalPages > 0) {
+        return clamp((state.position.page - 1) / state.position.totalPages);
+      }
       return 0;
   }
 };

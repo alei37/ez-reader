@@ -62,7 +62,40 @@ export default class EzReaderPlugin extends Plugin {
     // extensions" setting so `vault.getFiles()` returns PDF/EPUB alongside
     // markdown. We do the same before initializing the library.
     await this.enableAllBookFormatsInFileExplorer();
-    this.library = new LibraryService(this.bookSource, this.annotationStore);
+    // P0-2: 在构造 LibraryService 之前先构造 readers, 这样 metadataReader
+    // 可以聚合 foliate + textReader 让 LibraryService.refreshMetadata 拿到
+    // EPUB OPF / MOBI EXTH 的真 title / author. 顺序不能反 — readers 必须
+    // 先 new 完才能聚合成 metadataReader.
+    this.foliate = new FoliateBookReader();
+    this.txtReader = new TxtBookReader();
+    this.mobiReader = new MobiBookReader();
+    const metadataReader: BookReader = {
+      // metadataReader 只用于 readMetadata, open/extractCover 永远不会被调用
+      // (它们走 textReader / foliate dispatcher). 这里保留接口实现避免
+      // 类型 widen, 但 throw 防止误用.
+      open: async () => {
+        throw new Error("metadataReader.open should never be called");
+      },
+      extractCover: async () => null,
+      readMetadata: async (book, loader) => {
+        if (book.locator.format === "mobi" || book.locator.format === "azw3") {
+          return this.mobiReader!.readMetadata(book, loader);
+        }
+        if (book.locator.format === "txt") {
+          return this.txtReader!.readMetadata(book, loader);
+        }
+        if (book.locator.format === "epub") {
+          return this.foliate!.readMetadata(book, loader);
+        }
+        return null;
+      }
+    };
+    this.library = new LibraryService(
+      this.bookSource,
+      this.annotationStore,
+      metadataReader,
+      this.makeBookBytesLoader()
+    );
     this.reading = new ReadingService(this.annotationStore);
     this.translation = new TranslationCoordinator(this.annotationStore, [
       new YoudaoTranslationProvider(),
@@ -71,9 +104,6 @@ export default class EzReaderPlugin extends Plugin {
     ]);
     // Settings 改完立即 bust translation 30s cache, 让下一次 translate 拿到新 provider / key.
     this.annotationStore.onSettingsChanged(() => this.translation.invalidate());
-    this.foliate = new FoliateBookReader();
-    this.txtReader = new TxtBookReader();
-    this.mobiReader = new MobiBookReader();
     // P1 之后: ez-reader 不再写 PDF 渲染。PDF 走 Obsidian 内置 viewer (PDF++ 接管)。
     // TXT 没封面 (返回 null), 不注册 — CoverCache 走占位封面。
     this.covers = new CoverCache(
@@ -167,7 +197,10 @@ export default class EzReaderPlugin extends Plugin {
       noteWriter: this.noteWriter,
       bookBytesLoader: this.makeBookBytesLoader(),
       settingsProvider: () => this.loadReaderSettings(),
-      onBookOpened: (entry) => void this.covers.ensureCoverFor(entry.book, this.makeBookBytesLoader())
+      onBookOpened: (entry) => void this.covers.ensureCoverFor(entry.book, this.makeBookBytesLoader()),
+      // P0-2: 透传 LibraryService, 让 ReaderView.openSession 完成后调
+      // refreshMetadata 把真 title / author 写回 store.
+      library: this.library
     };
   }
 
@@ -190,6 +223,12 @@ export default class EzReaderPlugin extends Plugin {
           return this.mobiReader.extractCover(book, loader);
         }
         return this.txtReader.extractCover(book, loader);
+      },
+      readMetadata: async (book, loader) => {
+        if (book.locator.format === "mobi" || book.locator.format === "azw3") {
+          return this.mobiReader.readMetadata(book, loader);
+        }
+        return this.txtReader.readMetadata(book, loader);
       }
     };
   }
@@ -219,7 +258,6 @@ export default class EzReaderPlugin extends Plugin {
     if (!bookId) return;
     const entry = this.library.get(bookId);
     if (!entry) {
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       new Notice(`找不到书: ${bookId}`);
       return;
     }
@@ -275,7 +313,6 @@ export default class EzReaderPlugin extends Plugin {
         }
       }
     } catch (error) {
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`无法打开笔记链接: ${message}`);
       console.error("[ez-reader] handleProtocol failed", { bookId, excerptId, error });
@@ -428,7 +465,6 @@ export default class EzReaderPlugin extends Plugin {
   private async openInBuiltInViewer(entry: LibraryEntry): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(entry.book.locator.path);
     if (!(file instanceof TFile)) {
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       new Notice(`找不到文件: ${entry.book.locator.path}`);
       return;
     }

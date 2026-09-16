@@ -1,4 +1,4 @@
-import type { Book } from "../../core/entities/Book";
+import type { Book, BookMetadata } from "../../core/entities/Book";
 import type {
   BookBytesLoader,
   BookReader,
@@ -165,6 +165,55 @@ export class FoliateBookReader implements BookReader {
     const coverBytes = await blob.arrayBuffer();
     // foliate 的 getCover() 经常返回空 blob.type — 用 sniffer 看实际 bytes.
     return { bytes: coverBytes, mimeType: sniffImageMime(coverBytes) ?? (blob.type || "image/jpeg") };
+  }
+
+  /**
+   * Extract EPUB OPF metadata (title / creator / language). foliate-js parses
+   * the package document inside `makeBook()`; we read it back here so the
+   * shelf shows the real book title instead of the filename.
+   *
+   * P0-2 修复: 之前书架永远显示 file.basename, 用户加入 `Introduction to
+   * Seismology (Peter M. Shearer) (Z.epub` 这种 Z-Library dump 文件名,
+   * 看不到 EPUB 内部 OPF 的真 title. 现在 reader open 后从 session 拿真实
+   * metadata, 通过 LibraryService.refreshMetadata 写回 store, shelf 重渲染.
+   */
+  async readMetadata(book: Book, loader: BookBytesLoader): Promise<BookMetadata | null> {
+    try {
+      const { makeBook } = await importFoliateModule();
+      const parsed = await loadEpubFile(book, loader, makeBook);
+      const bookObj = parsed as { metadata?: { title?: unknown; creator?: unknown; language?: unknown; publisher?: unknown; identifier?: unknown; description?: unknown } };
+      const raw = bookObj.metadata ?? {};
+      const title = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : undefined;
+      if (!title) return null; // 没真 title (罕见 — 没 OPF?), 让 caller fallback 到 filename.
+      const creator = raw.creator;
+      const authors: string[] = [];
+      if (typeof creator === "string" && creator.trim()) authors.push(creator.trim());
+      else if (Array.isArray(creator)) {
+        for (const c of creator) {
+          if (typeof c === "string" && c.trim()) authors.push(c.trim());
+        }
+      }
+      const lang = raw.language;
+      const languages: string[] = [];
+      if (typeof lang === "string" && lang.trim()) languages.push(lang.trim());
+      else if (Array.isArray(lang)) {
+        for (const l of lang) {
+          if (typeof l === "string" && l.trim()) languages.push(l.trim());
+        }
+      }
+      return {
+        title,
+        authors,
+        languages: languages as BookMetadata["languages"],
+        publisher: typeof raw.publisher === "string" && raw.publisher.trim() ? raw.publisher.trim() : undefined,
+        identifier: typeof raw.identifier === "string" && raw.identifier.trim() ? raw.identifier.trim() : undefined,
+        description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined,
+        cachedAt: Date.now()
+      };
+    } catch (error) {
+      console.warn("[ez-reader] foliate readMetadata failed", book.locator.path, error);
+      return null;
+    }
   }
 }
 

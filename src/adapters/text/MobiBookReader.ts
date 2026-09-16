@@ -1,4 +1,4 @@
-import type { Book, BookFormat } from "../../core/entities/Book";
+import type { Book, BookFormat, BookMetadata } from "../../core/entities/Book";
 import type {
   BookBytesLoader,
   BookReader,
@@ -181,6 +181,55 @@ export class MobiBookReader implements BookReader {
     }
   }
 
+  /**
+   * Extract MOBI/AZW3 metadata from the parser's EXTH record. Mirrors
+   * `FoliateBookReader.readMetadata` — called by `LibraryService.refreshMetadata`
+   * after a successful open so the shelf shows the real book title.
+   *
+   * P0-2 修复: 之前书架显示 file.basename; MOBI 的 EXTH record 经常含
+   * 干净的 title / author ("The Great Gatsby", "F. Scott Fitzgerald"),
+   * 不解析就是浪费.
+   */
+  async readMetadata(book: Book, loader: BookBytesLoader): Promise<BookMetadata | null> {
+    try {
+      const bytes = await loader(book.locator.path);
+      const parser = await this.createParser(book.locator.format, bytes);
+      try {
+        const raw = parser.getMetadata();
+        const title = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : undefined;
+        if (!title) return null;
+        const authors: string[] = [];
+        if (Array.isArray(raw.author)) {
+          for (const a of raw.author) {
+            if (typeof a === "string" && a.trim()) authors.push(a.trim());
+          }
+        }
+        const lang = raw.language;
+        const languages: string[] = [];
+        if (typeof lang === "string" && lang.trim()) languages.push(lang.trim());
+        else if (Array.isArray(lang)) {
+          for (const l of lang) {
+            if (typeof l === "string" && l.trim()) languages.push(l.trim());
+          }
+        }
+        return {
+          title,
+          authors,
+          languages: languages as BookMetadata["languages"],
+          publisher: typeof raw.publisher === "string" && raw.publisher.trim() ? raw.publisher.trim() : undefined,
+          identifier: typeof raw.identifier === "string" && raw.identifier.trim() ? raw.identifier.trim() : undefined,
+          description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined,
+          cachedAt: Date.now()
+        };
+      } finally {
+        parser.destroy();
+      }
+    } catch (error) {
+      console.warn("[ez-reader] MOBI readMetadata failed", book.locator.path, error);
+      return null;
+    }
+  }
+
   private async createParser(format: BookFormat, bytes: ArrayBuffer): Promise<EpubLikeParser> {
     const mod = await importMobiParser();
     // P0-3: Pass a Uint8Array *view* over the loader's ArrayBuffer instead
@@ -291,14 +340,21 @@ const inlineChapterCss = async (
   parts: ReadonlyArray<{ id: string; href: string }>
 ): Promise<ReadonlyArray<InlinedCss>> => {
   const out: InlinedCss[] = [];
+  const failures: string[] = [];
   for (const part of parts) {
     try {
       const response = await fetch(part.href);
       const text = await response.text();
       out.push({ id: part.id, text });
     } catch (error) {
+      failures.push(part.id);
       console.warn(`[ez-reader] failed to inline chapter CSS ${part.id}`, error);
     }
+  }
+  // P2-2: 汇总失败 — 之前每条单独 warn, console 噪音大, 用户不知道到底坏了几章.
+  // 现在 N 章全失败时打一条 summary, 至少 console 看起来干净.
+  if (failures.length > 0 && failures.length === parts.length) {
+    console.warn(`[ez-reader] MOBI chapter CSS all ${failures.length} part(s) failed to inline — book may render with default styles only`);
   }
   return out;
 };

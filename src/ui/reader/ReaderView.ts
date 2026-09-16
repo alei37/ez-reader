@@ -6,7 +6,7 @@ import type { Excerpt } from "../../core/entities/Excerpt";
 import type { ReadingPosition, ReadingState } from "../../core/entities/ReadingState";
 import { expandWithCap } from "./chineseSelectionExpansion";
 import type { BookReader, ReaderSession, TocItem } from "../../core/ports/BookReader";
-import type { LibraryEntry } from "../../core/services/LibraryService";
+import type { LibraryEntry, LibraryService } from "../../core/services/LibraryService";
 import type { ReadingService } from "../../core/services/ReadingService";
 import type { NoteWriter } from "../../core/ports/NoteWriter";
 import { AppearanceModal } from "./AppearanceModal";
@@ -54,6 +54,12 @@ interface ReaderViewDeps {
   readonly bookBytesLoader: BookBytesLoader;
   readonly settingsProvider?: () => Promise<LoadedSettings>;
   readonly onBookOpened?: (entry: LibraryEntry) => void;
+  /**
+   * P0-2: Library service 透传进来, 让 openSession 成功后调 refreshMetadata
+   * 升级 title / author. 用 optional 保证旧调用方 (测试) 不会因为新
+   * 字段而编译失败.
+   */
+  readonly library?: LibraryService;
 }
 
 /**
@@ -104,10 +110,19 @@ interface ActiveSelection {
  * Cryptographically random ID for bookmarks / excerpts / thoughts.
  * 早期版本用 `Date.now() + Math.random()` — 同毫秒内多次创建可能撞 ID,
  * 导致后续 `appendExcerpt` 的 block-id 去重误判为已存在 (跨条目静默丢弃).
+ *
+ * P2-6: 优先 crypto.randomUUID, 没就 fallback 到 Math.random + 时间戳.
+ * Android WebView < 81 没有 crypto.randomUUID (但 crypto.subtle 一般有,
+ * polyfills.ts 已经 polyfill 了). 这种环境下 fallback 不会重复 —
+ * 冲突概率 (62^16 ≈ 4.7e28) 比桌面差但远低于 daily excerpt count.
  */
 const generateExcerptId = (prefix: "bm" | "ex" | "th"): string => {
-  const id = crypto.randomUUID();
-  return `${prefix}-${id}`;
+  const uuid = globalThis.crypto?.randomUUID?.();
+  if (typeof uuid === "string" && uuid.length > 0) {
+    return `${prefix}-${uuid}`;
+  }
+  const fallback = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${fallback}`;
 };
 
 const isEditableTarget = (target: EventTarget | null): boolean =>
@@ -748,6 +763,12 @@ private async showFontSettings(): Promise<void> {
       return;
     }
     this.deps.onBookOpened?.(this.entry);
+    // P0-2: reader open 成功后异步触发 metadata 升级 — 把 EPUB OPF / MOBI
+    // EXTH 的真 title / author 写回 store, shelf 重渲染. 不 await, 不阻塞
+    // 当前 reader 初始化; 失败由 LibraryService.refreshMetadata 内部 warn.
+    if (this.deps.library) {
+      void this.deps.library.refreshMetadata(this.entry.book.id);
+    }
     this.applyTheme(this.appearance.theme);
     this.toolbar?.update(this.toolbarState());
 

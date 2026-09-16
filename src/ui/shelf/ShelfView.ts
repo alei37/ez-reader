@@ -188,6 +188,13 @@ export class ShelfView extends ItemView {
         this.clearPendingG();
         this.pendingG = globalThis.setTimeout(() => {
           this.pendingG = undefined;
+          // P2-3 兜底: timer 到期没触发 g g (用户按了别的键后没再按), 仍要
+          // 清掉 capture-phase listener — 否则下次 g 会触发老的 pendingGOnce,
+          // 而它已经引用了已 detach 的 view 闭包.
+          if (this.pendingGOnce) {
+            document.removeEventListener("keydown", this.pendingGOnce, true);
+            this.pendingGOnce = undefined;
+          }
         }, 800);
         // 等下一个键 — 用 capture phase 拦截后续 keydown
         this.pendingGOnce = (next: KeyboardEvent): void => {
@@ -292,7 +299,6 @@ export class ShelfView extends ItemView {
       await this.deps.openReader(entry);
     } catch (error) {
       // 错误展示 — 之前 silent fail 用户不知道为什么点书没反应
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`打开《${entry.book.metadata?.title ?? entry.book.locator.path}》失败: ${message}`);
       console.error("[ez-reader] openBook failed", entry.book.locator.path, error);
@@ -369,7 +375,6 @@ export class ShelfView extends ItemView {
 
   private async removeFromLibrary(entry: LibraryEntry): Promise<void> {
     const title = entry.book.metadata?.title ?? entry.book.locator.path;
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
     // 二次确认: 删除不可逆(读书进度、书签、摘录都不会删除, 但书从书架消失)
     const confirm = new Modal(this.deps.app);
     confirm.contentEl.createEl("h3", { text: `从图书馆移除《${title}》?` });
@@ -419,11 +424,13 @@ export class ShelfView extends ItemView {
     if (stats.total - stats.inLibrary <= 0) return;
     this.addingAll = true;
     this.toolbar.setAddAllBusy(true);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
     // P0 修复: 用 withTimeout 兜底, 之前 addAllToLibrary 触发 2N 串行
     // saveData + subscribe listener → renderList 链, 万一任何一步 hang
     // 按钮永远 disabled. 90s 是给超大 library 的余量 (100 本书 × 2N
     // mutations × 50ms ≈ 10s); 超过说明真有 hang, 让用户先能再次点击.
+    //
+    // P1-2: 超时后让按钮 disabled 多保留 3s, 让用户感知"还在做但出错了"
+    // 而不是立刻以为好了又点一次 (再次触发又 hang 90s 体验更糟).
     let timedOut = false;
     const timeoutMs = 90_000;
     const timeoutHandle = globalThis.setTimeout(() => {
@@ -448,7 +455,13 @@ export class ShelfView extends ItemView {
     } finally {
       globalThis.clearTimeout(timeoutHandle);
       this.addingAll = false;
-      this.toolbar.setAddAllBusy(false);
+      if (timedOut) {
+        // 超时后让按钮多 disabled 几秒, 避免立刻又触发同样的 hang.
+        // 没超时则立即放开按钮.
+        globalThis.setTimeout(() => this.toolbar.setAddAllBusy(false), 3000);
+      } else {
+        this.toolbar.setAddAllBusy(false);
+      }
     }
   }
 

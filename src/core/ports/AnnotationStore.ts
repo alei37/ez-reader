@@ -32,6 +32,14 @@ export interface AnnotationSnapshot {
    */
   readonly pinnedAtByBookId?: Readonly<Record<string, number>>;
   /**
+   * Rich metadata parsed out of each book file (EPUB OPF, MOBI EXTH, etc.),
+   * keyed by book id. Distinct from the filename-derived `BookSource.readMetadata`
+   * fallback: these carry the real title / authors / language that the user
+   * saw in the original library, captured the first time they opened the book.
+   * Stored on the snapshot so it survives vault reloads.
+   */
+  readonly richMetadataByBookId?: Readonly<Record<string, import("../entities/Book").BookMetadata>>;
+  /**
    * Whether the first-launch onboarding modal has been dismissed. Stored
    * in the snapshot so it survives plugin reloads but stays scoped to the
    * local vault (Syncthing excludes `.obsidian/`, so each device gets its
@@ -102,6 +110,18 @@ export interface AnnotationStore {
    * the front of the pinned group; clearing sets it back to null.
    */
   setPinnedAt(bookId: BookId, pinnedAt: number | null): Promise<void>;
+  /**
+   * Persist rich metadata extracted from the book file itself (EPUB OPF,
+   * MOBI EXTH, etc.) — as opposed to the filename-derived fallback in
+   * `BookSource.readMetadata`. Keyed by book id so the shelf can show the
+   * real title even after a vault reopen.
+   */
+  saveRichMetadata(bookId: BookId, metadata: import("../entities/Book").BookMetadata): Promise<void>;
+  /**
+   * Load the cached rich metadata for `bookId`, or `null` if none was ever
+   * persisted (e.g. the book was added but never opened).
+   */
+  loadRichMetadata(bookId: BookId): Promise<import("../entities/Book").BookMetadata | null>;
   /**
    * Atomically add a batch of books to the library AND stamp them with the
    * same `addedAt` timestamp in a single snapshot write. Implemented as one

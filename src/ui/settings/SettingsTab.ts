@@ -459,7 +459,6 @@ export class SettingsTab extends PluginSettingTab {
           // UI 翻译是 patch 完 settings 不会自动应用 — i18n 字符串
           // (button / label / desc) 已经在构造时定下来了. 提示用户
           // 重启让翻译生效. (Obsidian 本身没有 plugin 自刷新 API).
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
           new Notice("界面语言将在重启后生效");
         });
       });
@@ -533,10 +532,8 @@ export class SettingsTab extends PluginSettingTab {
           throw new Error("library/reading/bookmarks/excerpts 必须是数组");
         }
         await this.annotations.save(parsed);
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
         new Notice(`数据已导入 (${parsed.excerpts.length} 摘录, ${parsed.bookmarks.length} 书签, ${parsed.library.length} 书)`);
       } catch (error) {
-// [ez-reader] Notice moved to top-level import (esbuild won't externalize dynamic obsidian imports).
         const message = error instanceof Error ? error.message : String(error);
         new Notice(`导入失败: ${message}`);
         console.error("[ez-reader] importData failed", error);

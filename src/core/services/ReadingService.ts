@@ -93,7 +93,7 @@ export class ReadingService {
 }
 
 const computeFraction = (position: ReadingPosition): number => {
-  if (position.kind === "reflow" || position.kind === "text") {
+  if (position.kind === "reflow" || position.kind === "text" || position.kind === "pdf") {
     return progressFraction({
       bookId: "",
       position,

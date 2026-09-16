@@ -126,3 +126,26 @@ test("toggleFavorite: flips state on each call", async () => {
   assert.equal((await svc.toggleFavorite("book-1")).favorite, false);
   assert.equal((await svc.toggleFavorite("book-1")).favorite, true);
 });
+
+// P0-3: PDF 翻页推进进度 — 之前 progressFraction 对 PDF 永远 0,
+// 现在有 totalPages 字段就计算 (page-1) / totalPages.
+test("updatePosition: PDF with totalPages transitions unread → reading", async () => {
+  const svc = await newService();
+  const result = await svc.updatePosition("book-1", { kind: "pdf", page: 5, totalPages: 100 });
+  assert.equal(result.status, "reading", "PDF with any page progress should auto-flip to reading");
+});
+
+test("updatePosition: PDF at 95%+ transitions to finished", async () => {
+  const svc = await newService();
+  const result = await svc.updatePosition("book-1", { kind: "pdf", page: 100, totalPages: 100 });
+  assert.equal(result.status, "finished");
+});
+
+test("updatePosition: PDF without totalPages stays at current status (no regression)", async () => {
+  const svc = await newService();
+  // 老 data.json 可能没 totalPages 字段. 这种情况 progressFraction 返回 0,
+  // 状态机不能推断, 保持 unread. 这是兼容行为 — 不应该让老数据触发
+  // 错误的 status 转换.
+  const result = await svc.updatePosition("book-1", { kind: "pdf", page: 5 });
+  assert.equal(result.status, "unread", "no totalPages means status inference can't fire");
+});

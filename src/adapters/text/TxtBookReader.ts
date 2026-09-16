@@ -1,4 +1,4 @@
-import type { Book } from "../../core/entities/Book";
+import type { Book, BookMetadata } from "../../core/entities/Book";
 import type {
   BookBytesLoader,
   BookReader,
@@ -206,6 +206,15 @@ export class TxtBookReader implements BookReader {
 
   async extractCover(): Promise<ExtractedCover | null> {
     // Plain text has no embedded cover.
+    return null;
+  }
+
+  /**
+   * TXT 没有结构化 metadata — caller 应该 fallback 到
+   * `BookSource.readMetadata` 的 filename-derived 结果. 这里返回 null
+   * 让 LibraryService 走 fallback 路径, 不要覆盖已有的 filename-based title.
+   */
+  async readMetadata(): Promise<BookMetadata | null> {
     return null;
   }
 }

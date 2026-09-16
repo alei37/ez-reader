@@ -1,4 +1,4 @@
-import type { Book } from "../entities/Book";
+import type { Book, BookMetadata } from "../entities/Book";
 import type { ReaderAppearance } from "../types/ReaderSettings";
 
 /** Where the reader should jump to next. Format-specific. */
@@ -153,4 +153,17 @@ export interface BookReader {
    * extraction fails; the host can then fall back to a generated cover.
    */
   extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null>;
+
+  /**
+   * Extract the book's rich metadata (title / authors / language / etc.)
+   * by parsing the file itself — EPUB OPF, MOBI EXTH, etc. Returns null
+   * when the format doesn't carry structured metadata (TXT) or when the
+   * parser fails; the host can then fall back to the filename-derived
+   * `BookSource.readMetadata` result.
+   *
+   * Implementations should be cheap enough to call on every `open()` —
+   * the typical MOBI / EPUB parse already happens inside `open()`, so
+   * reusing that parse is ideal.
+   */
+  readMetadata(book: Book, loader: BookBytesLoader): Promise<BookMetadata | null>;
 }

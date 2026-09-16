@@ -53,7 +53,20 @@ export class LibraryService {
 
   constructor(
     private readonly source: BookSource,
-    private readonly annotations: AnnotationStore
+    private readonly annotations: AnnotationStore,
+    /**
+     * Reader-side metadata extractor. Used by `refreshMetadata` to swap the
+     * filename-derived title for the real OPF/EXTH title after the user
+     * opens a book. Optional — when absent `refreshMetadata` falls back to
+     * `source.readMetadata` (filename-derived).
+     */
+    private readonly metadataReader?: import("../ports/BookReader").BookReader,
+    /**
+     * Vault-relative path → bytes loader. Required when `metadataReader`
+     * is set. Lives next to it on the constructor so tests can keep the
+     * "filename-only" code path (no `metadataReader`, no loader).
+     */
+    private readonly bookBytesLoader?: import("../ports/BookReader").BookBytesLoader
   ) {}
 
   /** Initial load: scan the source and join against stored reading state. */
@@ -90,11 +103,10 @@ export class LibraryService {
     // P1 新功能: 同样在 init 时一次性拉所有 pinned 状态. Pinned 不要求书
     // 已经在 library (理论上用户也可能 pin 未加入的书, 用于"我想以后读"),
     // 所以不带 librarySet 过滤, 全部读.
+    // `initialize()` 入口处的 re-entrancy guard 保证 `doInitialize` 只在
+    // `entries.size === 0` 时调用, 所以这里直接拿 `library` 当种子集.
     const pinnedAtEntries = await Promise.all(
-      this.entries.size === 0
-        ? library.map(async (id) => [id, await this.annotations.getPinnedAt(id)] as const)
-        : [...this.entries.keys(), ...library].filter((id, idx, arr) => arr.indexOf(id) === idx)
-            .map(async (id) => [id, await this.annotations.getPinnedAt(id)] as const)
+      library.map(async (id) => [id, await this.annotations.getPinnedAt(id)] as const)
     );
     const pinnedAtByBookId = new Map(pinnedAtEntries);
 
@@ -106,9 +118,19 @@ export class LibraryService {
     const formats = READER_CAPABLE_FORMATS;
     for await (const locator of this.source.scan(formats)) {
       const id = this.source.resolveId(locator);
-      let metadata = null;
+      // P0-2: rich metadata (EPUB OPF / MOBI EXTH) takes priority over the
+      // filename-derived fallback. If we've never parsed this book, fall
+      // back to source.readMetadata (filename) so the shelf still shows
+      // something — the title gets upgraded next time the user opens it
+      // via `refreshMetadata`.
+      let metadata: BookMetadata | null = null;
       try {
-        metadata = await this.source.readMetadata(locator);
+        const rich = await this.annotations.loadRichMetadata(id);
+        if (rich) {
+          metadata = rich;
+        } else {
+          metadata = await this.source.readMetadata(locator);
+        }
       } catch {
         metadata = null;
       }
@@ -171,12 +193,33 @@ export class LibraryService {
     this.emit();
   }
 
+  /**
+   * P2-1: 并发 race guard. Obsidian 启动时可能并发触发多个 'added' 事件
+   * (一个 per 新文件). 两次并发 refreshBook(path) 会:
+   *   - 都跑 source.lookup/readMetadata (重复 IO)
+   *   - 都 entries.set 同一个 key (冗余写)
+   *   - 都 emit (shelf 重渲染两次)
+   * Map<path, Promise> in-flight 去重: 同一 path 第二次 await 直接复用第一次.
+   * 第一次完成后 delete 出 map, 后续调用走正常路径.
+   */
+  private readonly refreshBookInFlight = new Map<string, Promise<void>>();
+
   /** Re-read a single book from the source, e.g. after a modify event.
    *  If the book is not yet in `entries` (a freshly-added file the user
    *  dragged in mid-session) we synthesise a fresh entry from the
    *  source's metadata. Watch 'added' events previously got dropped
    *  here when entries.size > 0. */
   async refreshBook(path: string): Promise<void> {
+    const inflight = this.refreshBookInFlight.get(path);
+    if (inflight) return inflight;
+    const promise = this.doRefreshBook(path).finally(() => {
+      this.refreshBookInFlight.delete(path);
+    });
+    this.refreshBookInFlight.set(path, promise);
+    return promise;
+  }
+
+  private async doRefreshBook(path: string): Promise<void> {
     const existing = [...this.entries.values()].find((entry) => entry.book.locator.path === path);
     if (existing) {
       const locator = existing.book.locator;
@@ -239,6 +282,39 @@ export class LibraryService {
     return all.find((r) => r.bookId === bookId);
   }
 
+  /**
+   * P2-4: 共享的"更新 entry.book 字段"辅助. 之前 6 处手写 `{ ...entry.book, X }`
+   * + entries.set 重复, 一致性靠人工. 现在一处 helper, 自动 emit.
+   * 关键不变量:
+   *   - bookId 不会变 (不允许跨书 patch)
+   *   - reading 字段保持不变 (跟 book metadata 独立)
+   *   - 没找到 entry 时静默 no-op
+   *   - 没字段实际改变时 skip emit (避免无意义的 shelf 重渲染)
+   */
+  private updateBook(bookId: string, patch: Partial<Book>): boolean {
+    const entry = this.entries.get(bookId);
+    if (!entry) return false;
+    const next = { ...entry.book, ...patch } as Book;
+    // 不变量检查: bookId 必须保持.
+    if (next.id !== bookId) {
+      console.warn("[ez-reader] updateBook: bookId changed, ignoring", { from: bookId, to: next.id });
+      return false;
+    }
+    if (
+      next.metadata === entry.book.metadata &&
+      next.coverPath === entry.book.coverPath &&
+      next.pinnedAt === entry.book.pinnedAt &&
+      next.addedToLibraryAt === entry.book.addedToLibraryAt &&
+      next.sourceModifiedAt === entry.book.sourceModifiedAt &&
+      next.locator === entry.book.locator
+    ) {
+      return false; // 没变化, 跳过 emit
+    }
+    this.entries.set(bookId, { book: next, reading: entry.reading });
+    this.emit();
+    return true;
+  }
+
   /** Persist a reading state change. */
   async updateReading(state: ReadingState): Promise<void> {
     await this.annotations.upsertReading(state);
@@ -278,11 +354,7 @@ export class LibraryService {
     await this.annotations.addToLibrary(bookId);
     // Persist the original add timestamp so it survives vault reopens.
     await this.annotations.setAddedAt(bookId, now);
-    this.entries.set(bookId, {
-      book: { ...entry.book, addedToLibraryAt: now },
-      reading: entry.reading
-    });
-    this.emit();
+    this.updateBook(bookId, { addedToLibraryAt: now });
   }
 
   /** Add every currently-discovered book to the library. Idempotent. */
@@ -293,15 +365,16 @@ export class LibraryService {
     // 个串行 mutate, 100 本书 = 200 个 saveData (~10s). 新方法把 add +
     // stamp 合并到 1 个 mutate — 100 本书降到 1 个 saveData (~50ms).
     await this.annotations.addToLibraryBatchWithStamp(ids, now);
+    // P2-4: 批量 updateBook — 单次 emit, 不让 shelf 重渲染 100 次.
+    let changed = 0;
     for (const id of ids) {
-      const entry = this.entries.get(id);
-      if (!entry) continue;
-      this.entries.set(id, {
-        book: { ...entry.book, addedToLibraryAt: now },
-        reading: entry.reading
-      });
+      if (this.updateBook(id, { addedToLibraryAt: now })) changed++;
     }
-    this.emit();
+    if (changed === 0) {
+      // updateBook 全部 no-op (比如 entries 已被外部 clear) — 强制 emit 一次
+      // 让 shelf 至少感知到 "library 状态可能变了".
+      this.emit();
+    }
     return ids.length;
   }
 
@@ -310,11 +383,7 @@ export class LibraryService {
     const entry = this.entries.get(bookId);
     if (!entry || entry.book.addedToLibraryAt === null) return;
     await this.annotations.removeFromLibrary(bookId);
-    this.entries.set(bookId, {
-      book: { ...entry.book, addedToLibraryAt: null },
-      reading: entry.reading
-    });
-    this.emit();
+    this.updateBook(bookId, { addedToLibraryAt: null });
   }
 
   /**
@@ -322,14 +391,42 @@ export class LibraryService {
    * the user has opened the book and the engine has surfaced an image.
    */
   setCoverPath(bookId: string, coverPath: string | null): void {
+    this.updateBook(bookId, { coverPath });
+  }
+
+  /**
+   * P0-2 修复: 用 reader 解析的真 metadata (EPUB OPF / MOBI EXTH) 替换
+   * filename-derived fallback. 调用时机: ReaderView.openSession 成功后.
+   *
+   * No-op when:
+   *   - 书不在 entries (用户 vault 改 / 已被移除)
+   *   - 没有 metadataReader / loader (Plugin 没装配)
+   *   - reader 解析失败 (返回 null, 通常意味着损坏的 EPUB/MOBI)
+   *   - 解析出来的 title 跟当前 metadata.title 一样 (去重避免无意义的 emit)
+   *
+   * 持久化用 `annotations.saveRichMetadata`, 写盘一次. 后续 vault 重启
+   * `doInitialize` 会先 load rich metadata 再 fallback 到 filename.
+   */
+  async refreshMetadata(bookId: string): Promise<void> {
     const entry = this.entries.get(bookId);
     if (!entry) return;
-    if (entry.book.coverPath === coverPath) return;
-    this.entries.set(bookId, {
-      book: { ...entry.book, coverPath },
-      reading: entry.reading
-    });
-    this.emit();
+    if (!this.metadataReader || !this.bookBytesLoader) return;
+    let fresh: BookMetadata | null = null;
+    try {
+      fresh = await this.metadataReader.readMetadata(entry.book, this.bookBytesLoader);
+    } catch (error) {
+      console.warn("[ez-reader] refreshMetadata: reader parser threw", error);
+      return;
+    }
+    if (!fresh) return;
+    if (entry.book.metadata?.title === fresh.title) return;
+    try {
+      await this.annotations.saveRichMetadata(bookId, fresh);
+    } catch (error) {
+      console.warn("[ez-reader] refreshMetadata: saveRichMetadata failed", error);
+      return;
+    }
+    this.updateBook(bookId, { metadata: fresh });
   }
 
   /**
@@ -344,11 +441,7 @@ export class LibraryService {
     const isPinned = entry.book.pinnedAt !== null;
     const nextPinnedAt = isPinned ? null : now;
     await this.annotations.setPinnedAt(bookId, nextPinnedAt);
-    this.entries.set(bookId, {
-      book: { ...entry.book, pinnedAt: nextPinnedAt },
-      reading: entry.reading
-    });
-    this.emit();
+    this.updateBook(bookId, { pinnedAt: nextPinnedAt });
     return nextPinnedAt !== null;
   }
 

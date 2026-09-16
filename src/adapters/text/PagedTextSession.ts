@@ -346,9 +346,20 @@ export class PagedTextSession implements ReaderSession {
     this.stageEl.replaceChildren(pageEl);
 
     // Hook selectionchange for this page — re-attach on every render.
-    const onChange = () => this.dispatchSelection();
-    document.addEventListener("selectionchange", onChange);
-    const cleanupSelection = () => document.removeEventListener("selectionchange", onChange);
+    //
+    // P1-3: 之前挂在 `document` 上, 选区在 vault 其他地方变化也会触发这里
+    // (例如用户从 PDF / markdown 复制文字). 每次 fire 都要跑 contains() 过滤,
+    // 高频触发下是纯浪费. 改用 mouseup / selectionend 挂在 stageEl —
+    // 只在用户真正在我们页面里选完词时触发, 触发频率从几十 Hz 降到几次/s.
+    const onSelectionDone = () => this.dispatchSelection();
+    this.stageEl.addEventListener("mouseup", onSelectionDone);
+    // selectionchange 在移动端 (iOS / Android) Safari / Chrome 触发,
+    // 桌面 Chrome / Firefox 不会触发 — 两个都挂保险.
+    this.stageEl.addEventListener("selectionchange", onSelectionDone);
+    const cleanupSelection = () => {
+      this.stageEl.removeEventListener("mouseup", onSelectionDone);
+      this.stageEl.removeEventListener("selectionchange", onSelectionDone);
+    };
     this.disposers.add(cleanupSelection);
 
     // Fire relocate for any listener attached after mount.

@@ -67,6 +67,10 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       addedAtByBookId: this.sanitizeAddedAtMap(raw?.addedAtByBookId),
       // 镜像 sanitizeAddedAtMap 的逻辑: 数字映射, 过滤非有限正值.
       pinnedAtByBookId: this.sanitizeAddedAtMap(raw?.pinnedAtByBookId),
+      // P0-2: rich metadata 从 EPUB OPF / MOBI EXTH 解析, 持久化避免每次
+      // open 都重新解析 (MOBI parser 阻塞主线程 2-5s). sanitize 失败时
+      // 静默丢, 让 caller 重试下一次 open.
+      richMetadataByBookId: this.sanitizeRichMetadataMap(raw?.richMetadataByBookId),
       // P0 修复: 之前漏读 onboardingDismissed, hasOnboardingBeenDismissed
       // 永远返回 false, modal 每次启动都弹. markOnboardingDismissed 写的
       // 标志其实在 data.json 里, 只是 load() 没拷到 cache.
@@ -138,6 +142,33 @@ export class ObsidianAnnotationStore implements AnnotationStore {
     const out: Record<string, number> = {};
     for (const [k, v] of Object.entries(input)) {
       if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = v;
+    }
+    return out;
+  }
+
+  /**
+   * Validate the per-book rich metadata map. Each entry must be a plain
+   * object with a non-empty `title` string; everything else (authors,
+   * publisher, etc.) is optional and falls back to empty. Invalid entries
+   * are dropped silently so a corrupt data.json never crashes the shelf.
+   */
+  private sanitizeRichMetadataMap(input: unknown): Record<string, import("../../core/entities/Book").BookMetadata> {
+    if (!input || typeof input !== "object") return {};
+    const out: Record<string, import("../../core/entities/Book").BookMetadata> = {};
+    for (const [k, v] of Object.entries(input)) {
+      if (!v || typeof v !== "object") continue;
+      const m = v as { title?: unknown; authors?: unknown; cachedAt?: unknown };
+      if (typeof m.title !== "string" || !m.title.trim()) continue;
+      const authors: string[] = Array.isArray(m.authors)
+        ? m.authors.filter((a): a is string => typeof a === "string" && a.trim().length > 0).map((a) => a.trim())
+        : [];
+      const cachedAt = typeof m.cachedAt === "number" && Number.isFinite(m.cachedAt) && m.cachedAt > 0 ? m.cachedAt : Date.now();
+      out[k] = {
+        title: m.title.trim(),
+        authors,
+        languages: [],
+        cachedAt
+      };
     }
     return out;
   }
@@ -313,6 +344,24 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       }
       return { ...snapshot, pinnedAtByBookId: next };
     });
+  }
+
+  /**
+   * P0-2 配套: 持久化从 EPUB/MOBI 解析的真 metadata, 避免每次 vault 重启
+   * 都重新解压解析 (MOBI 大文件阻塞主线程 2-5s). overwrite 不 merge —
+   * 真 metadata 应该是 ground truth, 不会比之前解析的还差.
+   */
+  async saveRichMetadata(bookId: BookId, metadata: import("../../core/entities/Book").BookMetadata): Promise<void> {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.richMetadataByBookId ?? {};
+      return { ...snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };
+    });
+  }
+
+  async loadRichMetadata(bookId: BookId): Promise<import("../../core/entities/Book").BookMetadata | null> {
+    const snapshot = await this.load();
+    return snapshot.richMetadataByBookId?.[bookId] ?? null;
   }
 
   /**
