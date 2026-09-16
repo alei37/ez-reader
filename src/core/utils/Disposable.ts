@@ -6,9 +6,3 @@
 export interface Disposable {
   dispose(): void;
 }
-
-export const disposableFrom = (dispose: () => void): Disposable => ({ dispose });
-
-export const disposeAll = (disposables: ReadonlyArray<Disposable>): void => {
-  for (const d of disposables) d.dispose();
-};

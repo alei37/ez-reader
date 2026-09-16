@@ -1,5 +1,5 @@
 import type { Book } from "../entities/Book";
-import type { ReaderAppearance, ReaderOpenMode } from "../types/ReaderSettings";
+import type { ReaderAppearance } from "../types/ReaderSettings";
 
 /** Where the reader should jump to next. Format-specific. */
 export type ReaderTarget =
@@ -26,6 +26,18 @@ export interface ReaderSession {
 
   /** Move within the book. */
   goTo(target: ReaderTarget): Promise<void>;
+
+  /**
+   * Optional: register a keyboard handler that fires for keys pressed
+   * inside the engine's iframe / document. foliate-js wraps EPUB in an
+   * iframe — events inside the iframe don't bubble to the host document,
+   * so the ReaderView's keyboard listener attached to `containerEl`
+   * never sees them. Engines that render to an iframe (Foliate) should
+   * accept this hook and dispatch into it from the iframe's keydown.
+   * Engines that render to the host DOM (PDFView, PagedTextSession) can
+   * leave this unset.
+   */
+  setOnIframeKeydown?(handler: (event: KeyboardEvent) => void): void;
 
   /** Returns the current position as a fraction in [0, 1]. */
   currentFraction(): Promise<number>;
@@ -78,13 +90,6 @@ export interface ReaderSession {
 
   /** 列出当前 session 已加的 highlights。 */
   listHighlights?(): ReadonlyArray<HighlightSpec>;
-
-  /**
-   * 触发翻页动画或同步翻页。platform 为 'desktop' / 'tablet',
-   * 用以决定用键盘/点击/手势。
-   */
-  next?(): Promise<void>;
-  previous?(): Promise<void>;
 
   /** 当前章节标题(若适用)。 */
   currentChapter?(): string | null;
@@ -148,9 +153,4 @@ export interface BookReader {
    * extraction fails; the host can then fall back to a generated cover.
    */
   extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null>;
-}
-
-/** Helper to resolve how a reader should be displayed inside a leaf. */
-export interface ReaderHost {
-  open(mode: ReaderOpenMode): Promise<{ host: HTMLElement; dispose: () => Promise<void> }>;
 }

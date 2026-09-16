@@ -71,7 +71,10 @@ class InMemoryAnnotationStore implements AnnotationStore {
       library: initial.library ?? [],
       reading: initial.reading ?? [],
       bookmarks: initial.bookmarks ?? [],
-      excerpts: initial.excerpts ?? []
+      excerpts: initial.excerpts ?? [],
+      coverPaths: initial.coverPaths,
+      addedAtByBookId: initial.addedAtByBookId,
+      onboardingDismissed: initial.onboardingDismissed
     };
   }
 
@@ -124,11 +127,58 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async saveSettings(settings: AnnotationSnapshot["settings"]): Promise<void> {
     this.snapshot = { ...this.snapshot, settings };
   }
+  async patchSettings(patch: (s: AnnotationSnapshot["settings"]) => AnnotationSnapshot["settings"]): Promise<void> {
+    this.snapshot = { ...this.snapshot, settings: patch(this.snapshot.settings) };
+  }
   async loadCoverPaths(): Promise<Readonly<Record<string, string>>> {
     return this.snapshot.coverPaths ?? {};
   }
   async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
     this.snapshot = { ...this.snapshot, coverPaths };
+  }
+  async getAddedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.addedAtByBookId?.[bookId] ?? null;
+  }
+  async setAddedAt(bookId: string, addedAt: number): Promise<void> {
+    const current = this.snapshot.addedAtByBookId ?? {};
+    if (current[bookId] !== undefined && current[bookId]! <= addedAt) return;
+    this.snapshot = {
+      ...this.snapshot,
+      addedAtByBookId: { ...current, [bookId]: addedAt }
+    };
+  }
+  async getPinnedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.pinnedAtByBookId?.[bookId] ?? null;
+  }
+  async setPinnedAt(bookId: string, pinnedAt: number | null): Promise<void> {
+    const current = this.snapshot.pinnedAtByBookId ?? {};
+    const next = { ...current };
+    if (pinnedAt === null) {
+      delete next[bookId];
+    } else {
+      next[bookId] = pinnedAt;
+    }
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
+  async addToLibraryBatchWithStamp(bookIds: ReadonlyArray<string>, addedAt: number): Promise<void> {
+    const existingLibrary = new Set(this.snapshot.library);
+    const existingAddedAt = this.snapshot.addedAtByBookId ?? {};
+    const newIds = bookIds.filter((id) => !existingLibrary.has(id));
+    if (newIds.length === 0) return;
+    const library = [...this.snapshot.library, ...newIds];
+    const addedAtByBookId = { ...existingAddedAt };
+    for (const id of newIds) {
+      if (addedAtByBookId[id] === undefined || addedAtByBookId[id]! > addedAt) {
+        addedAtByBookId[id] = addedAt;
+      }
+    }
+    this.snapshot = { ...this.snapshot, library, addedAtByBookId };
+  }
+  async markOnboardingDismissed(): Promise<void> {
+    this.snapshot = { ...this.snapshot, onboardingDismissed: true };
+  }
+  async hasOnboardingBeenDismissed(): Promise<boolean> {
+    return this.snapshot.onboardingDismissed === true;
   }
 }
 
@@ -351,4 +401,101 @@ test("LibraryEntry shape", () => {
   };
   assert.ok(entry.book);
   assert.ok(entry.reading);
+});
+
+test("LibraryService.addAllToLibrary uses the batch+stamp write (not N serial mutations)", async () => {
+  const files = [
+    { locator: makeLocator("a.epub"), metadata: makeMetadata("A") },
+    { locator: makeLocator("b.epub"), metadata: makeMetadata("B") },
+    { locator: makeLocator("c.txt"), metadata: makeMetadata("C") }
+  ];
+  const source = new FakeBookSource(files);
+  let mutationCount = 0;
+  let saveCount = 0;
+  const store = new InMemoryAnnotationStore();
+  const originalMutate = store.addToLibrary.bind(store);
+  // Wrap addToLibrary to count calls — we expect addAllToLibrary to NOT
+  // invoke addToLibrary at all when the batch path exists.
+  store.addToLibrary = async (...args) => {
+    mutationCount++;
+    return originalMutate(...args);
+  };
+  const originalBatch = store.addToLibraryBatchWithStamp.bind(store);
+  store.addToLibraryBatchWithStamp = async (...args) => {
+    saveCount++;
+    return originalBatch(...args);
+  };
+  const service = new LibraryService(source, store);
+  await service.initialize();
+  const n = await service.addAllToLibrary();
+  assert.equal(n, 3);
+  assert.equal(mutationCount, 0, "addAllToLibrary should NOT call addToLibrary one-by-one");
+  assert.equal(saveCount, 1, "addAllToLibrary should call addToLibraryBatchWithStamp exactly once");
+});
+
+test("addToLibraryBatchWithStamp preserves original addedAt for books already in the library", async () => {
+  const files = [
+    { locator: makeLocator("a.epub"), metadata: makeMetadata("A") },
+    { locator: makeLocator("b.epub"), metadata: makeMetadata("B") }
+  ];
+  const source = new FakeBookSource(files);
+  const olderTimestamp = 1_000_000_000_000;
+  const newerTimestamp = 2_000_000_000_000;
+  const store = new InMemoryAnnotationStore({
+    library: ["a.epub"],
+    addedAtByBookId: { "a.epub": olderTimestamp }
+  });
+  const service = new LibraryService(source, store);
+  await service.initialize();
+  await service.addAllToLibrary(newerTimestamp);
+  const library = await store.listLibrary();
+  assert.deepEqual([...library].sort(), ["a.epub", "b.epub"]);
+  const addedAt = (await store.getAddedAt("a.epub"))!;
+  const addedAtB = (await store.getAddedAt("b.epub"))!;
+  assert.equal(addedAt, olderTimestamp, "existing book's addedAt must NOT be downgraded");
+  assert.equal(addedAtB, newerTimestamp, "new book's addedAt should be the new stamp");
+});
+
+test("LibraryService.togglePin flips pinnedAt and persists", async () => {
+  const files = [
+    { locator: makeLocator("a.epub"), metadata: makeMetadata("A") },
+    { locator: makeLocator("b.epub"), metadata: makeMetadata("B") }
+  ];
+  const source = new FakeBookSource(files);
+  const store = new InMemoryAnnotationStore();
+  const service = new LibraryService(source, store);
+  await service.initialize();
+  await service.addAllToLibrary();
+
+  // 初始: 都未 pin
+  const before = service.list();
+  assert.equal(before.find((e) => e.book.id === "a.epub")!.book.pinnedAt, null);
+
+  // 第一次 togglePin: 置顶 a
+  const wasPinned1 = await service.togglePin("a.epub", 1000);
+  assert.equal(wasPinned1, true, "first togglePin returns true (now pinned)");
+  const after1 = service.list();
+  const a1 = after1.find((e) => e.book.id === "a.epub")!;
+  const b1 = after1.find((e) => e.book.id === "b.epub")!;
+  assert.equal(a1.book.pinnedAt, 1000);
+  assert.equal(b1.book.pinnedAt, null);
+  assert.ok(after1.indexOf(a1) < after1.indexOf(b1), "pinned book sorts before unpinned");
+
+  // 持久化: 通过 store 直接读, 验证 setPinnedAt 写到了 snapshot
+  assert.equal(await store.getPinnedAt("a.epub"), 1000);
+
+  // 第二次 togglePin: 取消置顶 a, 同时置顶 b (re-pin 跳到前)
+  const wasPinned2 = await service.togglePin("a.epub", 2000);
+  assert.equal(wasPinned2, false, "second togglePin returns false (now unpinned)");
+  await service.togglePin("b.epub", 3000);
+  const after2 = service.list();
+  const a2 = after2.find((e) => e.book.id === "a.epub")!;
+  const b2 = after2.find((e) => e.book.id === "b.epub")!;
+  assert.equal(a2.book.pinnedAt, null);
+  assert.equal(b2.book.pinnedAt, 3000);
+  assert.ok(after2.indexOf(b2) < after2.indexOf(a2), "b (newly pinned) sorts before a (now unpinned)");
+
+  // 持久化
+  assert.equal(await store.getPinnedAt("a.epub"), null);
+  assert.equal(await store.getPinnedAt("b.epub"), 3000);
 });

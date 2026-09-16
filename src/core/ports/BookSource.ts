@@ -1,4 +1,4 @@
-import type { Book, BookFormat, BookLocator, BookMetadata, CoverImage } from "../entities/Book";
+import type { BookFormat, BookLocator, BookMetadata, CoverImage } from "../entities/Book";
 import type { Disposable } from "../utils/Disposable";
 
 /** Change kind emitted by `BookSource.watch`. */
@@ -29,6 +29,14 @@ export interface BookSource {
   /** Parse metadata out of the file (title, authors, languages, etc.). */
   readMetadata(locator: BookLocator): Promise<BookMetadata | null>;
 
+  /**
+   * Look up a single locator by its vault-relative path. Implementations
+   * that scan the whole vault on every call (e.g. walking the adapter)
+   * should override this with an indexed lookup so `LibraryService.refreshBook`
+   * doesn't pay O(total) per added file.
+   */
+  lookup(path: string): Promise<BookLocator | null>;
+
   /** Parse the cover image out of the file, if the format has one. */
   readCover(locator: BookLocator): Promise<CoverImage | null>;
 
@@ -41,12 +49,3 @@ export interface BookSource {
   /** Resolve a book back to its locator, if still present. */
   resolveLocator(id: string): Promise<BookLocator | null>;
 }
-
-export const reifyBook = (source: BookSource, locator: BookLocator, metadata: BookMetadata | null, now = Date.now()): Book => ({
-  id: source.resolveId(locator),
-  locator,
-  metadata,
-  sourceModifiedAt: locator.modifiedAt,
-  addedToLibraryAt: null,
-  coverPath: null
-});

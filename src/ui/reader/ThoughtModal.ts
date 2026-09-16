@@ -96,7 +96,9 @@ export class ThoughtModal extends Modal {
 }
 
 const parseTags = (raw: string): string[] => {
-  const tokens = raw.split(/[\s,,]+/);
+  // P1 修复: 之前用 /[\s,,]+/ 只匹配 ASCII 半角逗号, 中文用户输「,」
+  // 不会被分词. 跟 ExcerptModal.parseTags 对齐 — 全角逗号也算分隔符.
+  const tokens = raw.split(/[\s,,，]+/);
   const seen = new Set<string>();
   for (const token of tokens) {
     const cleaned = token.replace(/^#+/, "").replace(/[^\p{L}\p{N}_/-]/gu, "").slice(0, 60);

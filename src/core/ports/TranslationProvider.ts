@@ -14,13 +14,6 @@ export interface TranslationResult {
   readonly providerId: string;
 }
 
-/** Errors a provider can surface to the UI. */
-export type TranslationError =
-  | { readonly kind: "missing-key" }
-  | { readonly kind: "network"; readonly cause: string }
-  | { readonly kind: "provider"; readonly message: string }
-  | { readonly kind: "unsupported-pair"; readonly source: Locale; readonly target: Locale };
-
 /**
  * A cloud translation provider. Implementations wrap Google Translate,
  * DeepL, OpenAI, a local Ollama instance, or anything else.

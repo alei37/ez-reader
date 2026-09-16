@@ -173,6 +173,37 @@
   display: block;
 }
 
+/* 置顶标记 — 封面右上角, 半透明背景保证在图片/纯色 placeholder 上都可见. */
+.ez-reader__shelf-grid__pin {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffd54a;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+  cursor: pointer;
+  user-select: none;
+  z-index: 1;
+  transition: transform 0.15s ease;
+}
+.ez-reader__shelf-grid__pin:hover {
+  transform: scale(1.1);
+}
+.ez-reader__shelf-grid__cover {
+  position: relative; /* 给 .ez-reader__shelf-grid__pin 绝对定位用 */
+}
+.ez-reader__shelf-list__pin {
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  color: #f5a623;
+  cursor: default;
+}
+
 .ez-reader__shelf-grid__cover-glyph {
   font-size: 42px;
   font-weight: 700;
@@ -249,6 +280,25 @@
   text-overflow: ellipsis;
 }
 
+/* List item progress bar — only drawn for fraction-bearing formats
+   (EPUB); PDF doesn't get one because we can't derive a fraction from
+   a page number alone. */
+.ez-reader__shelf-list__bar {
+  position: relative;
+  height: 2px;
+  background: var(--background-modifier-border);
+  border-radius: 1px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+.ez-reader__shelf-list__bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--interactive-accent);
+  border-radius: 1px;
+  transition: width 0.3s ease;
+}
+
 .ez-reader__shelf-grid__footer {
   display: flex;
   align-items: center;
@@ -281,8 +331,10 @@
   border-radius: 3px;
 }
 
-.ez-reader__shelf-grid__favorite {
+.ez-reader__shelf-grid__favorite,
+.ez-reader__shelf-list__favorite {
   color: var(--color-yellow);
+  font-size: 13px;
 }
 
 .ez-reader__shelf-list__progress {
@@ -322,6 +374,24 @@
   font-size: 11px;
   background: var(--background-modifier-border);
   color: var(--text-muted);
+}
+
+/* toolbar 上的状态 pill 可点击 — 隐藏 button 默认样式 */
+.ez-reader__status-pill.is-clickable {
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  transition: filter 0.12s ease;
+}
+
+.ez-reader__status-pill.is-clickable:hover {
+  filter: brightness(1.15);
+}
+
+.ez-reader__status-pill.is-clickable:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
 }
 
 .ez-reader__status-pill.is-reading {
@@ -553,6 +623,9 @@
   flex: 1 1 auto;
   min-width: 0;
   justify-content: center;
+  flex-direction: column;
+  /* 两行: 上面小字 chapter label, 下面 nav row (prev / progress / next / %).
+     之前挤在一行 chapter 永远显示不出来 — 现在拆开. */
 }
 
 .ez-reader__reader-toolbar__actions {
@@ -563,31 +636,28 @@
   flex: 0 0 auto;
 }
 
-.ez-reader__reader-toolbar__meta {
-  display: none;
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  gap: 8px;
+/* === Reader toolbar nav label (chapter title above progress bar) ===
+   Permanent small row at the top of the nav group, shows the current
+   chapter / section heading without stealing the progress bar's space. */
+.ez-reader__reader-toolbar__nav-label {
+  display: flex;
   align-items: center;
-  font-size: 12px;
+  justify-content: center;
+  font-size: 11px;
   color: var(--text-muted);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  z-index: 10;
-  pointer-events: none;
   white-space: nowrap;
-  max-width: 80%;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 320px;
+  margin-bottom: 2px;
 }
 
-.ez-reader__reader-toolbar.is-meta-visible .ez-reader__reader-toolbar__meta {
+.ez-reader__reader-toolbar__nav-row {
   display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .ez-reader__reader-toolbar__close,
@@ -610,6 +680,29 @@
   line-height: 1;
 }
 
+/* 工具栏最左的目录 icon 按钮 — 跟 close / actions 视觉一致, 但不依赖汉字. */
+.ez-reader__reader-toolbar__toc-left {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.ez-reader__reader-toolbar__toc-left:hover {
+  background: var(--background-modifier-hover);
+}
+.ez-reader__reader-toolbar__toc-left svg {
+  width: 18px;
+  height: 18px;
+}
+
 .ez-reader__reader-toolbar__nav {
   font-size: 12px;
   padding: 4px 8px;
@@ -629,6 +722,32 @@
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
+}
+
+/* 数字 badge — 书签 / 摘录按钮右上角的小圆点 */
+.ez-reader__reader-toolbar__action {
+  position: relative;
+}
+
+.ez-reader__reader-toolbar__badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--color-red, var(--interactive-accent));
+  color: var(--text-on-accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.ez-reader__reader-toolbar__badge.is-hidden {
+  display: none;
 }
 
 .ez-reader__reader-toolbar__zoom-btn {
@@ -801,6 +920,23 @@
   background: var(--interactive-accent-hover);
 }
 
+/* "全部加入" — 比 + 加入 更次要, 用 secondary 样式避免抢 CTA 视线.
+   hidden 时直接 display:none (跟其他 is-hidden 工具类一致). */
+.ez-reader__shelf-toolbar__add-all {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  cursor: pointer;
+}
+.ez-reader__shelf-toolbar__add-all:hover {
+  background: var(--background-modifier-hover);
+}
+.ez-reader__shelf-toolbar__add-all.is-hidden {
+  display: none;
+}
+
 /* Appearance modal */
 .ez-reader__appearance-modal__row {
   display: flex;
@@ -857,6 +993,64 @@
 .ez-reader__add-modal__hint {
   color: var(--text-muted);
   margin-bottom: 12px;
+}
+
+.ez-reader__onboarding {
+  /* 让首启引导模态看起来像引导页, 不是普通的 confirmation. */
+  max-width: 480px;
+}
+
+.ez-reader__onboarding h2 {
+  margin-bottom: 8px;
+}
+
+.ez-reader__onboarding__lede {
+  color: var(--text-muted);
+  margin-top: 0;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.ez-reader__onboarding__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ez-reader__onboarding__step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  align-items: start;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+
+.ez-reader__onboarding__step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.ez-reader__onboarding__step-text strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.ez-reader__onboarding__step-text p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .ez-reader__add-modal__header {
@@ -1156,6 +1350,73 @@
   display: block;
   width: 100%;
   height: 100%;
+  /* 翻页动画: 每次 view 'load' 事件 fire 时, 加 .ez-reader__page-loaded
+     触发一次 keyframes. fade-in + translateX 给一种"页从侧面滑进来"的感觉,
+     类似微信读书. animationend 后 JS 会移除 class, 防止多次翻页动画叠加。 */
+  will-change: transform, opacity;
+}
+
+/* ===== 翻页动画 (方向感知) =====
+ * 三档:
+ *   --forward  : 翻下一页 — 从右滑入 + 轻微淡入
+ *   --backward : 翻上一页 — 从左滑入 + 轻微淡入
+ *   --initial  : 首次加载 / TOC / 进度条跳转 — 纯淡入
+ *
+ * 用 cubic-bezier(0.2, 0.8, 0.2, 1) (近似 material "standard" curve):
+ * 起步快、收尾稳, 比 ease-out 更接近真实翻页手感。
+ * 36px 距离 + 220ms 时长, 对标微信读书。
+ */
+
+@keyframes ez-reader__page-slide-forward {
+  from {
+    opacity: 0;
+    transform: translate3d(36px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes ez-reader__page-slide-backward {
+  from {
+    opacity: 0;
+    transform: translate3d(-36px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes ez-reader__page-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.ez-reader__reader__stage > foliate-view.ez-reader__page-loaded--forward {
+  animation: ez-reader__page-slide-forward 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform, opacity;
+}
+
+.ez-reader__reader__stage > foliate-view.ez-reader__page-loaded--backward {
+  animation: ez-reader__page-slide-backward 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform, opacity;
+}
+
+.ez-reader__reader__stage > foliate-view.ez-reader__page-loaded--initial {
+  animation: ez-reader__page-fade-in 260ms ease-out;
+}
+
+/* 减弱动画偏好 (用户操作系统设置) 时直接显示, 不滑 */
+@media (prefers-reduced-motion: reduce) {
+  .ez-reader__reader__stage > foliate-view[class*="ez-reader__page-loaded"] {
+    animation: none !important;
+  }
 }
 
 /* 桌面端宽屏: notes panel 右侧常驻(用户偏好右侧), 占 ~280px,书 stage 拿到剩余宽度 */
@@ -1217,6 +1478,40 @@
 .ez-reader__toc-header h3 {
   margin: 0;
   font-size: 13px;
+}
+
+/* 所有 reader panel 共用的 header (含 × close 按钮). */
+.ez-reader__panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.ez-reader__panel-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+}
+.ez-reader__panel-header h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.ez-reader__panel-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.ez-reader__panel-close:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
 }
 
 .ez-reader__toc-search {
@@ -1409,12 +1704,93 @@
   transform: translateY(0);
 }
 
+/* 沉浸模式下的小退出按钮 — 永远可见, 不被 toolbar 隐藏逻辑覆盖. */
+.ez-reader__immersive-exit {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 200;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0.7;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.ez-reader__immersive-exit:hover {
+  opacity: 1;
+  transform: scale(1.05);
+}
+.ez-reader__immersive-exit:active {
+  transform: scale(0.95);
+}
+
 .ez-reader__immersive .ez-reader__reader__body {
   height: 100%;
 }
 
 .ez-reader__immersive .ez-reader__reader__stage {
   padding: 0;
+}
+
+/* === PDF "想法" 输入 modal === */
+.ez-reader__pdf-overlay-thought-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ez-reader__pdf-overlay-thought-prompt__box {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  width: min(440px, 92vw);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+.ez-reader__pdf-overlay-thought-prompt__box h3 {
+  margin: 0 0 10px 0;
+  font-size: 16px;
+}
+.ez-reader__pdf-overlay-thought-prompt__preview {
+  margin: 0 0 10px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: pre-wrap;
+  max-height: 80px;
+  overflow-y: auto;
+}
+.ez-reader__pdf-overlay-thought-prompt__input {
+  width: 100%;
+  resize: vertical;
+  min-height: 80px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 14px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  box-sizing: border-box;
+}
+.ez-reader__pdf-overlay-thought-prompt__input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
 }
 
 /* === toolbar is-active for new toggles === */
@@ -1456,6 +1832,17 @@
 
 .ez-reader__settings-hint__link:hover {
   text-decoration: underline;
+}
+
+.ez-reader__settings-readonly {
+  padding: 6px 10px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
 }
 
 .ez-reader__settings-about {
@@ -1519,6 +1906,20 @@
     display: none;
   }
 
+  /* 窄屏 (pad / 手机竖屏) 隐藏次要 toolbar 按钮.
+     这些功能仍有键盘快捷键 (T 目录 / F 沉浸), 用户可一键唤起.
+     之前 14 个按钮挤在一行在 700px 视口里完全无法操作. */
+  .ez-reader__reader-toolbar__nav,
+  .ez-reader__reader-toolbar__progress-value {
+    font-size: 11px;
+  }
+
+  .ez-reader__reader-toolbar__action[data-shortcut="toc"],
+  .ez-reader__reader-toolbar__action[data-shortcut="immersive"],
+  .ez-reader__reader-toolbar__action[data-shortcut="excerpt"] {
+    display: none;
+  }
+
   .ez-reader__selection-menu {
     bottom: 24px;
     left: 50% !important;
@@ -1528,5 +1929,249 @@
 
   .ez-reader__reader__stage {
     touch-action: pan-y;
+  }
+}
+/* ===== PDF Overlay (P4) ===== */
+
+.ez-reader__pdf-overlay-menu {
+  position: fixed;
+  z-index: 9999;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+  user-select: none;
+}
+
+.ez-reader__pdf-overlay-menu__btn {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.ez-reader__pdf-overlay-menu__btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ez-reader__pdf-overlay-notes-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9998;
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+}
+
+.ez-reader__pdf-overlay-notes-btn.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ez-reader__pdf-overlay-notes-panel {
+  position: fixed;
+  bottom: 80px;
+  right: 24px;
+  width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  z-index: 9997;
+  padding: 12px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.22);
+  font-size: 13px;
+  color: var(--text-normal);
+  display: none;
+}
+
+.ez-reader__pdf-overlay-notes-panel.is-open {
+  display: block;
+}
+
+.ez-reader__pdf-overlay-notes-panel__heading {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.ez-reader__pdf-overlay-notes-panel__empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.ez-reader__pdf-overlay-notes-panel h4 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.ez-reader__pdf-overlay-notes-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+
+.ez-reader__pdf-overlay-notes-panel__row .label,
+.ez-reader__pdf-overlay-notes-panel__row .excerpt {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ez-reader__pdf-overlay-notes-panel__row .excerpt {
+  white-space: normal;
+}
+
+.ez-reader__pdf-overlay-notes-panel__row .jump,
+.ez-reader__pdf-overlay-notes-panel__row .remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  color: var(--text-muted);
+}
+
+.ez-reader__pdf-overlay-notes-panel__row .jump:hover,
+.ez-reader__pdf-overlay-notes-panel__row .remove:hover {
+  color: var(--text-normal);
+}
+
+/* ===== PDF Highlight Layer (P5) ===== */
+
+.ez-reader__pdf-overlay-highlight-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  /* z-index 100 — 高于 Obsidian 默认 UI (< 50) 和 PDF++ 的 backlink layer */
+  z-index: 100;
+}
+
+.ez-reader__pdf-overlay-highlight {
+  position: fixed;
+  background: rgba(255, 235, 59, 0.35);
+  border-radius: 2px;
+  mix-blend-mode: multiply;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.ez-reader__pdf-overlay-highlight:hover {
+  background: rgba(255, 235, 59, 0.6);
+}
+
+.theme-dark .ez-reader__pdf-overlay-highlight {
+  background: rgba(255, 235, 59, 0.2);
+  mix-blend-mode: screen;
+}
+
+.theme-dark .ez-reader__pdf-overlay-highlight:hover {
+  background: rgba(255, 235, 59, 0.4);
+}
+
+/* ----------------------------------------------------------------------- */
+/* Paged text reader (TXT / MOBI / AZW3)                                  */
+/* ----------------------------------------------------------------------- */
+
+.ez-reader__paged-text-root {
+  /* 占满 host 的剩余高度 — flex:1 由 .ez-reader__reader 父容器提供 */
+  width: 100%;
+  height: 100%;
+  display: block;
+  position: relative;
+}
+
+.ez-reader__paged-text {
+  /* 字号 / 行距 / 边距 / 主题全部通过 PagedTextSession.buildPagedTextCss
+     内联到 <style data-ez-reader-paged-text-styles> 注入, 运行时切换。
+     这里只负责 layout 和滚动行为。 */
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  text-rendering: optimizeLegibility;
+  /* 长中文 / emoji 选择手感优化 */
+  user-select: text;
+  -webkit-user-select: text;
+  /* 防止 iOS Safari 长按弹出系统菜单 */
+  -webkit-touch-callout: default;
+}
+
+.ez-reader__paged-text-page {
+  /* 翻页动画 — ReaderView 的 .ez-reader__page-loaded--* 钩不到这里,
+     因为 PagedTextSession 直接替换内容。提供简短淡入替代。 */
+  animation: ez-reader__paged-text-fade-in 180ms ease-out;
+}
+
+@keyframes ez-reader__paged-text-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 阅读页内嵌图片自适应 — MOBI/AZW3 章节里的插图 */
+.ez-reader__paged-text img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1em auto;
+}
+
+/* 选区内的"想法"高亮 (PagedTextSession.applyHighlightOverlay 写入) */
+.ez-reader__paged-text mark.ez-reader__highlight {
+  background-color: rgba(255, 220, 80, 0.4);
+  color: inherit;
+  padding: 0;
+  border-radius: 1px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.ez-reader__paged-text mark.ez-reader__highlight:hover {
+  background-color: rgba(255, 220, 80, 0.6);
+}
+
+.theme-dark .ez-reader__paged-text mark.ez-reader__highlight {
+  background-color: rgba(255, 220, 80, 0.2);
+}
+.theme-dark .ez-reader__paged-text mark.ez-reader__highlight:hover {
+  background-color: rgba(255, 220, 80, 0.4);
+}
+
+/* 沉浸模式下让内容铺满整个 stage (无 padding 收缩) */
+.ez-reader__reader--immersive .ez-reader__paged-text {
+  padding-inline: 0 !important;
+}
+
+/* 窄屏 (< 700px) — 减小 padding, 让中文长行可读 */
+@media (max-width: 700px) {
+  .ez-reader__paged-text {
+    padding: 16px 12px 48px !important;
+    font-size: calc(0.95em * var(--ez-reader-font-scale, 1)) !important;
   }
 }

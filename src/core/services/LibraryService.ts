@@ -1,12 +1,10 @@
-import type { Book, BookFormat, BookId, BookLocator, BookMetadata } from "../entities/Book";
+import { type Book, type BookId, type BookLocator, type BookMetadata, READER_CAPABLE_FORMATS } from "../entities/Book";
 import type { ReadingState, ReadingStatus } from "../entities/ReadingState";
 import type { AnnotationStore } from "../ports/AnnotationStore";
 import type { BookSource } from "../ports/BookSource";
 import {
   DEFAULT_SORT,
   emptyFilter,
-  PROGRESS_BUCKETS,
-  RECENCY_BUCKETS,
   type ProgressBucket,
   type RecencyBucket,
   type ShelfFilter,
@@ -80,14 +78,32 @@ export class LibraryService {
     ]);
     const readingByPath = new Map(reading.map((state) => [state.bookId, state]));
     const librarySet = new Set(library);
+    // Fetch "first added at" timestamp for every currently-in-library book
+    // in one pass. Previously we used `Date.now()` here, which silently
+    // reset the timestamp on every vault reopen — sorting by "recently
+    // added" lost its meaning. Now we read the persisted value.
+    const addedAtEntries = await Promise.all(
+      library.map((id) => this.annotations.getAddedAt(id).then((addedAt) => [id, addedAt] as const))
+    );
+    const addedAtByBookId = new Map(addedAtEntries);
 
-    // Note: `txt`, `mobi`, `azw`, `azw3` are still listed above for format
-    // discovery, but we only push reader-capable formats to the shelf. TXT
-    // and MOBI are not yet supported by any `BookReader` adapter, so we
-    // surface them as candidates (for visibility) but skip them during the
-    // reader selection path. Until those adapters exist, drop them entirely
-    // from the scan so users don't see "broken" entries.
-    const formats = new Set<BookFormat>(["epub", "pdf"]);
+    // P1 新功能: 同样在 init 时一次性拉所有 pinned 状态. Pinned 不要求书
+    // 已经在 library (理论上用户也可能 pin 未加入的书, 用于"我想以后读"),
+    // 所以不带 librarySet 过滤, 全部读.
+    const pinnedAtEntries = await Promise.all(
+      this.entries.size === 0
+        ? library.map(async (id) => [id, await this.annotations.getPinnedAt(id)] as const)
+        : [...this.entries.keys(), ...library].filter((id, idx, arr) => arr.indexOf(id) === idx)
+            .map(async (id) => [id, await this.annotations.getPinnedAt(id)] as const)
+    );
+    const pinnedAtByBookId = new Map(pinnedAtEntries);
+
+    // Note: `txt`, `mobi`, `azw`, `azw3` are still recognised by the
+    // BookSource extension map, but we only scan for formats that have a
+    // working `BookReader` adapter today. `READER_CAPABLE_FORMATS` is the
+    // single source of truth — adding a new adapter there is the only
+    // change needed to make a format discoverable on the shelf.
+    const formats = READER_CAPABLE_FORMATS;
     for await (const locator of this.source.scan(formats)) {
       const id = this.source.resolveId(locator);
       let metadata = null;
@@ -96,14 +112,17 @@ export class LibraryService {
       } catch {
         metadata = null;
       }
-      const addedToLibraryAt = librarySet.has(id) ? Date.now() : null;
+      const addedToLibraryAt = librarySet.has(id)
+        ? addedAtByBookId.get(id) ?? Date.now()
+        : null;
       const book: Book = {
         id,
         locator,
         metadata,
         sourceModifiedAt: locator.modifiedAt,
         addedToLibraryAt,
-        coverPath: null
+        coverPath: null,
+        pinnedAt: pinnedAtByBookId.get(id) ?? null
       };
       const stored = readingByPath.get(id);
       this.entries.set(id, {
@@ -175,7 +194,9 @@ export class LibraryService {
       return;
     }
     // Book not yet known — synthesize a locator and pull metadata from source.
-    const newFile = await this.locateByPath(path);
+    // Use the indexed `lookup()` (O(1)) instead of a full vault scan; the
+    // previous `locateByPath` re-walked every entry on every 'added' event.
+    const newFile = await this.source.lookup(path);
     if (!newFile) {
       // Source can't find the file; drop the event silently. The next
       // initialize() will pick it up if it's still around.
@@ -196,7 +217,10 @@ export class LibraryService {
         metadata,
         sourceModifiedAt: newFile.modifiedAt,
         addedToLibraryAt: null,
-        coverPath: null
+        coverPath: null,
+        // refreshBook 走的是 lookup 路径, 不读 pinnedAtByBookId — 视为未 pin.
+        // 重新打开 vault 时 doInitialize 会用最新的 setPinnedAt 覆盖这里.
+        pinnedAt: null
       },
       reading: reading ?? {
         bookId: id,
@@ -213,17 +237,6 @@ export class LibraryService {
   private async getStoredReading(bookId: BookId): Promise<ReadingState | undefined> {
     const all = await this.annotations.listReading();
     return all.find((r) => r.bookId === bookId);
-  }
-
-  /** Find a locator in the source by path. The BookSource interface doesn't
-   *  expose this directly, so we walk the scan iterator (cheap for small
-   *  vaults; for huge vaults the host can keep a side index). */
-  private async locateByPath(path: string): Promise<BookLocator | null> {
-    const wanted = new Set<BookFormat>(["epub", "pdf"]);
-    for await (const locator of this.source.scan(wanted)) {
-      if (locator.path === path) return locator;
-    }
-    return null;
   }
 
   /** Persist a reading state change. */
@@ -263,6 +276,8 @@ export class LibraryService {
     if (!entry) return;
     if (entry.book.addedToLibraryAt !== null) return;
     await this.annotations.addToLibrary(bookId);
+    // Persist the original add timestamp so it survives vault reopens.
+    await this.annotations.setAddedAt(bookId, now);
     this.entries.set(bookId, {
       book: { ...entry.book, addedToLibraryAt: now },
       reading: entry.reading
@@ -273,7 +288,11 @@ export class LibraryService {
   /** Add every currently-discovered book to the library. Idempotent. */
   async addAllToLibrary(now = Date.now()): Promise<number> {
     const ids = [...this.entries.values()].filter((entry) => entry.book.addedToLibraryAt === null).map((entry) => entry.book.id);
-    for (const id of ids) await this.annotations.addToLibrary(id);
+    if (ids.length === 0) return 0;
+    // P0 修复: 之前 `Promise.all([...addToLibrary, ...setAddedAt])` 触发 2N
+    // 个串行 mutate, 100 本书 = 200 个 saveData (~10s). 新方法把 add +
+    // stamp 合并到 1 个 mutate — 100 本书降到 1 个 saveData (~50ms).
+    await this.annotations.addToLibraryBatchWithStamp(ids, now);
     for (const id of ids) {
       const entry = this.entries.get(id);
       if (!entry) continue;
@@ -311,6 +330,26 @@ export class LibraryService {
       reading: entry.reading
     });
     this.emit();
+  }
+
+  /**
+   * Toggle the "pinned to top" flag for `bookId`. Idempotent: calling
+   * when already pinned un-pins, and vice versa. Persists to the
+   * annotation store and emits a single change event so the shelf
+   * re-renders exactly once.
+   */
+  async togglePin(bookId: string, now = Date.now()): Promise<boolean> {
+    const entry = this.entries.get(bookId);
+    if (!entry) return false;
+    const isPinned = entry.book.pinnedAt !== null;
+    const nextPinnedAt = isPinned ? null : now;
+    await this.annotations.setPinnedAt(bookId, nextPinnedAt);
+    this.entries.set(bookId, {
+      book: { ...entry.book, pinnedAt: nextPinnedAt },
+      reading: entry.reading
+    });
+    this.emit();
+    return nextPinnedAt !== null;
   }
 
   /** Aggregate stats the shelf toolbar shows (counts per status, languages, etc.). */
@@ -419,10 +458,17 @@ export const bucketFor = (reading: ReadingState): ProgressBucket => {
   return "early";
 };
 
-export const BUCKETS = PROGRESS_BUCKETS;
-export const RECENCY = RECENCY_BUCKETS;
-
 const compare = (a: LibraryEntry, b: LibraryEntry, sort: SortCriterion): number => {
+  // Pinned books always sort before unpinned ones, regardless of the
+  // active sort criterion. Within the pinned group we keep the chosen
+  // criterion (so "title A→Z" still orders pinned titles alphabetically
+  // if two books are pinned at the same timestamp; falls back to the
+  // natural timestamp desc order otherwise).
+  const ap = a.book.pinnedAt;
+  const bp = b.book.pinnedAt;
+  if (ap !== null && bp === null) return -1;
+  if (ap === null && bp !== null) return 1;
+  if (ap !== null && bp !== null && ap !== bp) return bp - ap;
   switch (sort) {
     case "titleAsc":
       return (a.book.metadata?.title ?? a.book.locator.path).localeCompare(

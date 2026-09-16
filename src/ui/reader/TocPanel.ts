@@ -2,6 +2,8 @@ import type { TocItem } from "../../core/ports/BookReader";
 
 export interface TocPanelHandlers {
   onJump: (item: TocItem) => void;
+  /** Close-button on the panel header. Defaults to no-op if not provided. */
+  onClose?: () => void;
 }
 
 /**
@@ -57,7 +59,19 @@ export class TocPanel {
   private render(): void {
     this.root.empty();
     const headerRow = this.root.createDiv({ cls: "ez-reader__toc-header" });
-    headerRow.createEl("h3", { text: "目录" });
+    const titleRow = headerRow.createDiv({ cls: "ez-reader__panel-header-title" });
+    titleRow.createEl("h3", { text: "目录" });
+    // P0 修复: 之前 panel 打开后用户无法直接关闭 — 必须再去点 toolbar 上的
+    // toggle 按钮, 在沉浸模式下 toolbar 不可见, 用户被迫只能重启 viewer.
+    // 现在 panel header 加一个显式 × 按钮, 同时 Esc 键绑定 (ReaderView 统一处理).
+    if (this.handlers.onClose) {
+      const close = titleRow.createEl("button", {
+        text: "×",
+        attr: { type: "button", title: "关闭面板 (Esc)", "aria-label": "关闭面板" }
+      });
+      close.addClass("ez-reader__panel-close");
+      close.addEventListener("click", () => this.handlers.onClose?.());
+    }
     if (this.items.length >= 8) {
       const search = headerRow.createEl("input", {
         attr: { type: "search", placeholder: "搜索章节...", "aria-label": "搜索章节" }

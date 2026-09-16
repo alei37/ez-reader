@@ -1,9 +1,10 @@
-import { ItemView, WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
 import type { App } from "obsidian";
 import type { Bookmark } from "../../core/entities/Bookmark";
-import type { Book } from "../../core/entities/Book";
+import type { Book, BookFormat } from "../../core/entities/Book";
 import type { Excerpt } from "../../core/entities/Excerpt";
-import type { ReadingPosition } from "../../core/entities/ReadingState";
+import type { ReadingPosition, ReadingState } from "../../core/entities/ReadingState";
+import { expandWithCap } from "./chineseSelectionExpansion";
 import type { BookReader, ReaderSession, TocItem } from "../../core/ports/BookReader";
 import type { LibraryEntry } from "../../core/services/LibraryService";
 import type { ReadingService } from "../../core/services/ReadingService";
@@ -17,6 +18,10 @@ import { SidebarNotesPanel } from "./SidebarNotesPanel";
 import { TocPanel } from "./TocPanel";
 import { ThoughtModal } from "./ThoughtModal";
 import { TranslationDrawer } from "./TranslationDrawer";
+import { routeShortcut, type ShortcutAction } from "./readerShortcuts";
+import { FoliateContentDelegate } from "./foliateContentDelegate";
+import { TextContentDelegate } from "./textContentDelegate";
+import type { ContentDelegate } from "./ContentDelegate";
 import {
   DEFAULT_KEYBOARD_SHORTCUTS,
   DEFAULT_READER_APPEARANCE,
@@ -33,14 +38,42 @@ export const READER_VIEW_TYPE = "ez-reader-view";
 interface ReaderViewDeps {
   readonly app: App;
   readonly reading: ReadingService;
+  /**
+   * EPUB 渲染后端 (foliate-js)。ReaderView 通过 `ContentDelegate` 间接
+   * 使用, P1 之后不再直接看到 foliate / pdfjs 的存在。
+   */
   readonly foliate: BookReader;
-  readonly pdfjs: BookReader;
+  /**
+   * TXT / MOBI / AZW3 渲染后端。统一通过 `PagedTextSession` 渲染,
+   * 跟 EPUB 共享划词 / 翻页 / 高亮 UX。ReaderView 仍然只看到
+   * `ContentDelegate` 这一层抽象, 不知道下面是 foliate 还是 PagedTextSession.
+   */
+  readonly textReader: BookReader;
   readonly translation: TranslationService;
   readonly noteWriter?: NoteWriter;
   readonly bookBytesLoader: BookBytesLoader;
   readonly settingsProvider?: () => Promise<LoadedSettings>;
   readonly onBookOpened?: (entry: LibraryEntry) => void;
 }
+
+/**
+ * 根据 book format 选对应的 ContentDelegate。
+ * - PDF 不走这里 (Plugin.openReader 直接交给 Obsidian 内置 viewer)
+ * - EPUB → foliate-js (FoliateContentDelegate)
+ * - TXT / MOBI / AZW3 → PagedTextSession (TextContentDelegate)
+ */
+const createContentDelegate = (format: BookFormat, deps: { foliate: BookReader; textReader: BookReader }): ContentDelegate => {
+  switch (format) {
+    case "txt":
+    case "mobi":
+    case "azw3":
+      return new TextContentDelegate(deps.textReader);
+    case "epub":
+    case "pdf":
+    case "azw":
+      return new FoliateContentDelegate(deps.foliate);
+  }
+};
 
 interface LoadedSettings {
   defaultAppearance: ReaderAppearance;
@@ -56,64 +89,79 @@ interface ActiveSelection {
   rect: DOMRect | undefined;
   locator: string | undefined;
   chapter?: string;
+  /**
+   * Fraction at the moment of selection, frozen so it doesn't drift if
+   * the reader scrolls / pages between selection and "save excerpt".
+   * Previously we used the live `this.fraction`, which advanced silently
+   * while the user opened the excerpt modal — by the time the excerpt
+   * was saved, the cfi/page was for the old page but the fraction was
+   * for the new one.
+   */
+  fraction: number;
 }
+
+/**
+ * Cryptographically random ID for bookmarks / excerpts / thoughts.
+ * 早期版本用 `Date.now() + Math.random()` — 同毫秒内多次创建可能撞 ID,
+ * 导致后续 `appendExcerpt` 的 block-id 去重误判为已存在 (跨条目静默丢弃).
+ */
+const generateExcerptId = (prefix: "bm" | "ex" | "th"): string => {
+  const id = crypto.randomUUID();
+  return `${prefix}-${id}`;
+};
 
 const isEditableTarget = (target: EventTarget | null): boolean =>
   target instanceof Element &&
   Boolean(target.closest("input, textarea, select, button, [contenteditable='true'], a"));
 
 /**
- * Heuristic that expands a too-short selection to a nearby sentence
- * boundary when the surrounding text looks CJK. Browsers without
- * CJK word segmentation tend to leave a selection as a single
- * character; the user usually meant the whole clause.
+ * Map a `ReadingPosition` to the locator shape `NoteWriter.appendExcerpt`
+ * expects (cfi / fraction / page). The new "text" kind (TXT / MOBI /
+ * AZW3 paginated books) sends fraction + start/end so the markdown note
+ * records both the page position and the progress fraction.
+ */
+const locatorForNoteWriter = (pos: ReadingPosition): {
+  readonly cfi?: string;
+  readonly fraction: number;
+  readonly page?: number;
+} => {
+  switch (pos.kind) {
+    case "reflow":
+      return {
+        cfi: pos.cfi,
+        fraction: pos.fraction
+      };
+    case "pdf":
+      return {
+        fraction: 0,
+        page: pos.page
+      };
+    case "text":
+      return {
+        fraction: pos.fraction
+      };
+  }
+};
+
+/**
+ * Wrapper that returns the expanded selection (or `raw` unchanged) for
+ * the current document selection. Caches the surrounding context text
+ * (from the selection's commonAncestor text node) so the pure helper
+ * `expandWithCap` from `./chineseSelectionExpansion` can be unit-tested
+ * separately.
  *
- * Trigger conditions:
- *   - the original selection is shorter than 12 chars
- *   - the selection contains CJK characters (otherwise leave alone —
- *     Latin selections are tokenized correctly)
- *   - we can find a stop character (。！？!?;,，;\n) within ±80 chars
- *     of the selection inside `docText` (we approximate by walking
- *     the current Selection's surrounding text node when possible)
+ * Cap is 100 chars — long enough for a sentence, short enough that we
+ * don't accidentally swallow an entire paragraph.
  */
 const maybeExpandChineseSelection = (raw: string): { text: string } => {
-  if (raw.length >= 12) return { text: raw };
-  // CJK 字符比例 > 0.5 才认为需要扩展
-  const cjkCount = Array.from(raw).filter((ch) => /[\u3400-\u9fff\uf900-\ufaff]/.test(ch)).length;
-  if (cjkCount === 0) return { text: raw };
-  // 从当前 DOM selection 拿到上下文, 在 ±120 字符窗口内找标点
   const sel = globalThis.document.getSelection();
   const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
   if (!range) return { text: raw };
   const container = range.commonAncestorContainer;
   const containerText = container.nodeType === 3 ? container.textContent ?? "" : container.textContent ?? "";
   if (!containerText) return { text: raw };
-  // 找到 raw 在 containerText 里的位置 (近似)
-  const idx = containerText.indexOf(raw);
-  if (idx < 0) return { text: raw };
-  const before = containerText.slice(Math.max(0, idx - 120), idx);
-  const after = containerText.slice(idx + raw.length, Math.min(containerText.length, idx + raw.length + 120));
-  // 找左侧最近的句号/逗号
-  const leftStop = Math.max(
-    before.lastIndexOf("。"), before.lastIndexOf("！"), before.lastIndexOf("？"),
-    before.lastIndexOf("."), before.lastIndexOf("!"), before.lastIndexOf("?"),
-    before.lastIndexOf("，"), before.lastIndexOf(","),
-    before.lastIndexOf("\n"), before.lastIndexOf("；"), before.lastIndexOf(";")
-  );
-  const rightStopMatch = [
-    "。", "！", "？", ".", "!", "?",
-    "，", ",", "\n", "；", ";"
-  ].map((c) => ({ ch: c, at: after.indexOf(c) }))
-    .filter((m) => m.at >= 0)
-    .sort((a, b) => a.at - b.at)[0];
-  const leftStart = leftStop >= 0 ? Math.max(0, idx - 120) + leftStop + 1 : Math.max(0, idx - 20);
-  const rightEnd = rightStopMatch
-    ? idx + raw.length + rightStopMatch.at + 1
-    : idx + raw.length + 20;
-  const expanded = containerText.slice(leftStart, rightEnd).trim();
-  // 只接受 < 100 字符的扩展结果
-  if (expanded.length > 100 || expanded.length <= raw.length) return { text: raw };
-  return { text: expanded };
+  const text = expandWithCap(raw, containerText, 100);
+  return { text };
 };
 
 /**
@@ -144,10 +192,17 @@ export class ReaderView extends ItemView {
   private host: HTMLElement | undefined;
   private fraction = 0;
   private chapter = "";
+  private bookmarkCount = 0;
+  private excerptCount = 0;
   private pendingSelection: ActiveSelection | undefined;
   private tocItems: ReadonlyArray<TocItem> = [];
   private isDesktopWide = false;
   private isImmersive = false;
+  /**
+   * Debounce timestamp for `persistProgress` failures — relocate 触发频繁
+   * (每翻页一次),连续失败时不能让 Notice 刷屏. 5s 内只展示一次.
+   */
+  private lastProgressFailureNoticeAt = 0;
 
   constructor(leaf: WorkspaceLeaf, deps: ReaderViewDeps) {
     super(leaf);
@@ -203,12 +258,11 @@ export class ReaderView extends ItemView {
         onToggleBookmarks: () => void this.toggleBookmarks(),
         onToggleExcerpts: () => void this.toggleExcerpts(),
         onClose: () => this.leaf.detach(),
-        onZoomIn: () => void this.zoomIn(),
-        onZoomOut: () => void this.zoomOut(),
-        onZoomReset: () => void this.zoomReset(),
         onShowFontSettings: () => void this.showFontSettings(),
         onToggleToc: () => void this.toggleToc(),
         onToggleNotes: () => void this.toggleNotes(),
+        onCycleStatus: () => void this.cycleStatus(),
+        onToggleFavorite: () => void this.toggleFavorite(),
         onToggleImmersive: () => this.toggleImmersive()
       },
       {
@@ -220,7 +274,6 @@ export class ReaderView extends ItemView {
         showingNotes: this.isDesktopWide,
         showingToc: false,
         showingImmersive: this.isImmersive,
-        showZoomControls: false,
         showFontSettings: true
       }
     );
@@ -229,14 +282,16 @@ export class ReaderView extends ItemView {
     this.bookmarksPanel = new BookmarksPanel(
       {
         onJump: (bookmark) => void this.jumpToBookmark(bookmark),
-        onRemove: (bookmark) => void this.removeBookmark(bookmark)
+        onRemove: (bookmark) => void this.removeBookmark(bookmark),
+        onClose: () => this.hideAllPanels()
       },
       container
     );
     this.excerptsPanel = new ExcerptsPanel(
       {
         onJump: (excerpt) => void this.jumpToExcerpt(excerpt),
-        onRemove: (excerpt) => void this.removeExcerpt(excerpt)
+        onRemove: (excerpt) => void this.removeExcerpt(excerpt),
+        onClose: () => this.hideAllPanels()
       },
       container
     );
@@ -244,8 +299,18 @@ export class ReaderView extends ItemView {
     // 双栏布局: desktop 上 notes 面板在左侧常驻
     const body = container.createDiv({ cls: "ez-reader__reader__body" });
 
+    // 沉浸模式下的小 × 按钮 — 永远可见, 用户不需要先 swipe / tap 触发 toolbar.
+    // P0 修复: 之前沉浸模式 toolbar 完全隐藏, 用户没有任何方式退出 (除了关闭整个
+    // Obsidian), 只能 swipe down / tap 才能临时显示 toolbar — 移动端极易误触翻页.
+    // 又: 之前按钮只在 onload 一次性创建, 用户用 Shift+F 进入沉浸 (onload 后)
+    // 时按钮根本不在 DOM, 用户完全卡住. 现在 toggleImmersive 也会动态创建/移除.
+    if (this.isImmersive) {
+      this.ensureImmersiveExitButton(container);
+    }
+
     this.notesPanel = new SidebarNotesPanel(
       {
+        app: this.deps.app,
         onJump: (excerpt) => void this.jumpToExcerpt(excerpt),
         onRemove: (excerpt) => void this.removeExcerpt(excerpt),
         onEdit: (excerpt) => void this.editExcerpt(excerpt),
@@ -263,7 +328,8 @@ export class ReaderView extends ItemView {
 
     this.tocPanel = new TocPanel(
       {
-        onJump: (item) => void this.jumpToTocItem(item)
+        onJump: (item) => void this.jumpToTocItem(item),
+        onClose: () => this.hideAllPanels()
       },
       container
     );
@@ -297,7 +363,18 @@ export class ReaderView extends ItemView {
     }
     this.selectionMenu?.destroy();
     this.selectionMenu = undefined;
+    this.notesPanel?.dispose();
     this.host = undefined;
+    // P0 修复: 之前 readyPromise 没清, 如果 onClose 时还有 awaiter
+    // (例如协议 handler 调 openExcerptById 后没等到 ready), 等到
+    // 30s 兜底才退出. 现在 resolve 让 awaiter 立刻解.
+    if (this.readyResolve) {
+      const oldResolve = this.readyResolve;
+      this.readyResolve = undefined;
+      this.readyPromise = undefined;
+      oldResolve();
+    }
+    this.pendingSelection = undefined;
   }
 
   setEntry(entry: LibraryEntry): void {
@@ -308,9 +385,19 @@ export class ReaderView extends ItemView {
       this.session = undefined;
       void old.close().catch((error) => console.warn("[ez-reader] failed to close previous session", error));
     }
-    // 重新创建 ready promise 以便下次 whenReady 重新等待
-    this.readyPromise = undefined;
-    this.readyResolve = undefined;
+    // 切书时清掉 pendingSelection — 否则上一本书选过的词, pending 文本还指向
+    // 旧书. 用户点 "翻译 / 摘录 / 想法" 按钮会作用在错的书上 (locator 也无效).
+    this.pendingSelection = undefined;
+    this.selectionMenu?.hide();
+    // 解析旧 readyPromise — 旧 awaiter (例如协议 handler 调
+    // openExcerptById) 之前阻塞在 await whenReady(),现在让它退出,
+    // 避免 30s 兜底超时.
+    if (this.readyResolve) {
+      const oldResolve = this.readyResolve;
+      this.readyResolve = undefined;
+      this.readyPromise = undefined;
+      oldResolve();
+    }
     if (this.host) {
       void this.openSession();
     } else {
@@ -378,13 +465,6 @@ export class ReaderView extends ItemView {
     return this.readyPromise;
   }
 
-  // ---- 平台检测 ----
-  private shouldAutoImmerse(): boolean {
-    // 默认 desktop 不进沉浸; pad / phone 进
-    // (具体从 settings 读)
-    return false;
-  }
-
   private bindImmersiveToolbarToggle(): void {
     if (!this.host) return;
     let lastTouchY = 0;
@@ -431,13 +511,15 @@ export class ReaderView extends ItemView {
     };
 
     this.host.addEventListener("touchstart", onTouchStart, { passive: true });
-    this.host.addEventListener("touchend", onTouchEnd, { passive: false });
+    // passive: true — onTouchEnd 不调 preventDefault (让 selection 行为正常),
+    // 标 false 会让 Chrome 在控制台报 "Unable to preventDefault" 警告, 没意义.
+    this.host.addEventListener("touchend", onTouchEnd, { passive: true });
     // mousemove passive 避免阻塞滚动; 60Hz 触发但 setTimeout 重置足够轻量
     this.host.addEventListener("mousemove", onMouseMove, { passive: true });
     this.register(() => {
       this.host?.removeEventListener("touchstart", onTouchStart);
       this.host?.removeEventListener("touchend", onTouchEnd);
-      this.host?.removeEventListener("mousemove", onMouseMove, { passive: true } as AddEventListenerOptions);
+      this.host?.removeEventListener("mousemove", onMouseMove);
       if (visibleTimer !== undefined) globalThis.clearTimeout(visibleTimer);
     });
   }
@@ -446,38 +528,126 @@ export class ReaderView extends ItemView {
   private bindKeyboardNavigation(): void {
     const handler = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      if (event.altKey || event.ctrlKey || event.metaKey) return;
       if (isEditableTarget(event.target)) return;
       if (!this.session) return;
-      const key = event.key.toLowerCase();
-      if (key === this.shortcuts.prev.toLowerCase() || event.key === "PageUp") {
-        event.preventDefault();
-        void this.goToNext(-1);
-      } else if (key === this.shortcuts.next.toLowerCase() || event.key === "PageDown") {
-        event.preventDefault();
-        void this.goToNext(1);
-      } else if (key === this.shortcuts.toggleSidebar.toLowerCase()) {
-        event.preventDefault();
-        void this.toggleNotes();
-      } else if (key === this.shortcuts.toggleToc.toLowerCase()) {
-        event.preventDefault();
-        void this.toggleToc();
-      } else if (key === this.shortcuts.translate.toLowerCase() && event.shiftKey) {
-        event.preventDefault();
-        void this.requestTranslation();
-      } else if (key === this.shortcuts.highlight.toLowerCase() && event.shiftKey) {
-        event.preventDefault();
-        void this.saveExcerptFromSelection();
-      } else if (event.key === "Escape") {
-        // 关闭浮窗
-        this.translationDrawer?.hide();
-        this.tocPanel?.hide();
-        this.selectionMenu?.hide();
-      }
+      const action = routeShortcut(event, this.shortcuts);
+      if (action === null) return;
+      this.runShortcutAction(action, event);
     };
     // 用 capture: true 让我们的 handler 在 foliate 内部 keyboard handler 之前跑
     this.containerEl.addEventListener("keydown", handler, true);
     this.register(() => this.containerEl.removeEventListener("keydown", handler, true));
+  }
+
+  /**
+   * Dispatch a routed shortcut to the actual handler. Kept separate from
+   * `routeShortcut` so the router stays a pure function (testable).
+   */
+  private runShortcutAction(action: ShortcutAction, event: KeyboardEvent): void {
+    switch (action) {
+      case "prev":
+        event.preventDefault();
+        void this.goToNext(-1);
+        return;
+      case "next":
+        event.preventDefault();
+        void this.goToNext(1);
+        return;
+      case "first":
+        event.preventDefault();
+        void this.seekFraction(0);
+        return;
+      case "last":
+        event.preventDefault();
+        void this.seekFraction(1);
+        return;
+      case "toggleNotes":
+        event.preventDefault();
+        void this.toggleNotes();
+        return;
+      case "toggleToc":
+        event.preventDefault();
+        void this.toggleToc();
+        return;
+      case "translate":
+        event.preventDefault();
+        void this.requestTranslation();
+        return;
+      case "excerpt":
+        event.preventDefault();
+        void this.saveExcerptFromSelection();
+        return;
+      case "toggleImmersive":
+        event.preventDefault();
+        this.toggleImmersive();
+        return;
+      case "showHelp":
+        event.preventDefault();
+        void this.showShortcutHelp();
+        return;
+      case "copySelection":
+        event.preventDefault();
+        this.copyCurrentSelection();
+        return;
+      case "escape":
+        // 优先级: 选区菜单 → 抽屉 → panel → 不动 reader (防止误关)
+        if (this.selectionMenu?.isVisible()) {
+          this.selectionMenu.hide();
+        } else if (this.translationDrawer?.isVisible()) {
+          this.translationDrawer.hide();
+        } else if (this.tocPanel?.isVisible() || this.bookmarksPanel?.isVisible() || this.excerptsPanel?.isVisible() || this.notesPanel?.isVisible()) {
+          // P0 修复: 之前 Esc 只关 tocPanel, 其他三个 panel (书签/摘录/笔记) Esc
+          // 没反应. 现在统一通过 hideAllPanels 关闭所有可见 panel, 任何可见 panel
+          // 上的 × 按钮和 Esc 都走同一条路径.
+          this.hideAllPanels();
+        }
+        return;
+    }
+  }
+
+  /** Copy current document selection to clipboard (Ctrl+C-style shortcut). */
+  private copyCurrentSelection(): void {
+    const sel = globalThis.document.getSelection();
+    const text = sel?.toString() ?? "";
+    if (!text) return;
+    void this.copyTextToClipboard(text);
+  }
+
+  /**
+   * Write `text` to the system clipboard and give a short Notice. Used by
+   * both the keyboard shortcut and the selection menu — previously the
+   * latter did not await and gave no feedback, so failures (clipboard
+   * permission denied) were silent.
+   */
+  private async copyTextToClipboard(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      new Notice(`已复制 (${text.length} 字符)`, 1500);
+    } catch (error) {
+      console.warn("[ez-reader] copy failed", error);
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`复制失败: ${message}`, 4000);
+    }
+  }
+
+  /** Show keyboard shortcut help overlay. */
+  private async showShortcutHelp(): Promise<void> {
+    const lines: Array<[string, string]> = [
+      ["← / PageUp", "上一页"],
+      ["→ / PageDown / Space", "下一页"],
+      ["Shift+Space", "上一页"],
+      ["Home / End", "跳到首/末"],
+      ["Shift+T", "翻译选词"],
+      ["Shift+H", "保存摘录"],
+      ["S", "切换笔记侧栏"],
+      ["T", "切换目录"],
+      ["F", "切换沉浸模式"],
+      ["C", "复制选区"],
+      ["?", "显示此帮助"],
+      ["Esc", "关闭面板"]
+    ];
+    const list = lines.map(([k, desc]) => `  ${k.padEnd(24)} ${desc}`).join("\n");
+    new Notice(`EzReader 快捷键:\n${list}`, 8000);
   }
 
   private bindSwipeGestures(): void {
@@ -520,27 +690,11 @@ export class ReaderView extends ItemView {
     return this.entry?.book.locator.format === "pdf";
   }
 
-  private async zoomIn(): Promise<void> {
-    if (!this.session?.setScale) return;
-    const current = this.session.currentScale?.() ?? 1.5;
-    await this.session.setScale(current * 1.25);
-    this.toolbar?.update(this.toolbarState());
-  }
+  // Zoom controls live on the PDF overlay (ReaderView doesn't render PDFs),
+// so there's no in-toolbar zoom cluster here. BookReaderSession.setScale /
+// setFitWidth remain on the port in case a future adapter (PDF+) needs them.
 
-  private async zoomOut(): Promise<void> {
-    if (!this.session?.setScale) return;
-    const current = this.session.currentScale?.() ?? 1.5;
-    await this.session.setScale(current / 1.25);
-    this.toolbar?.update(this.toolbarState());
-  }
-
-  private async zoomReset(): Promise<void> {
-    if (!this.session?.setFitWidth) return;
-    await this.session.setFitWidth();
-    this.toolbar?.update(this.toolbarState());
-  }
-
-  private async showFontSettings(): Promise<void> {
+private async showFontSettings(): Promise<void> {
     if (!this.session) return;
     const modal = new AppearanceModal(this.deps.app, this.appearance);
     const next = await modal.openAndWait();
@@ -576,9 +730,16 @@ export class ReaderView extends ItemView {
   private async openSession(): Promise<void> {
     if (!this.entry || !this.host) return;
     const book = this.entry.book;
-    const engine = this.bookReaderFor(book);
+    const delegate = createContentDelegate(book.locator.format, {
+      foliate: this.deps.foliate,
+      textReader: this.deps.textReader
+    });
     try {
-      this.session = await engine.open(book, this.host, this.appearance, this.deps.bookBytesLoader);
+      this.session = await delegate.mount(this.host, {
+        book,
+        appearance: this.appearance,
+        loader: this.deps.bookBytesLoader
+      });
     } catch (error) {
       console.error("[ez-reader] failed to open book", book.locator.path, error);
       this.renderOpenError(error);
@@ -589,6 +750,22 @@ export class ReaderView extends ItemView {
     this.deps.onBookOpened?.(this.entry);
     this.applyTheme(this.appearance.theme);
     this.toolbar?.update(this.toolbarState());
+
+    // P0 修复: foliate iframe 内的 keydown 事件不会 bubble 到 parent document,
+    // 所以挂在 containerEl 上的 keyboard listener 永远收不到 ArrowLeft /
+    // ArrowRight — 用户报告"键盘翻页不工作". 现在 FoliateSession 暴露
+    // setOnIframeKeydown, ReaderView 注册一个转发到自己的 routeShortcut + 
+    // runShortcutAction 路径, 复用同一套 keyboard route.
+    const routeFromIframe = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) return;
+      if (isEditableTarget(event.target)) return;
+      const action = routeShortcut(event, this.shortcuts);
+      if (action === null) return;
+      this.runShortcutAction(action, event);
+    };
+    if (typeof this.session.setOnIframeKeydown === "function") {
+      this.session.setOnIframeKeydown(routeFromIframe);
+    }
 
     // 进度记忆: 跳转到上次位置 (受 settings 开关控制)
     const progressEnabled = await this.isProgressMemoryEnabled();
@@ -637,7 +814,7 @@ export class ReaderView extends ItemView {
       // 这样想法/摘录更有意义. CJK 段落 (没有空格 / 拉丁词比例低) 才触发.
       const expanded = maybeExpandChineseSelection(detail.text);
       const text = expanded.text;
-      this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter };
+      this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter, fraction: this.fraction };
       // 同步扩展 DOM Selection, 让用户视觉上看到选词扩展了
       if (text !== detail.text) {
         const sel = globalThis.document.getSelection();
@@ -663,8 +840,12 @@ export class ReaderView extends ItemView {
         const sel = globalThis.document.getSelection();
         const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
         const rect = range?.getBoundingClientRect() ?? detail.rect;
+        // foliate 选词 rect 是 iframe-viewport 相对 — 找 iframe 在 host 里的
+        // 偏移,传给 selectionMenu 让它把 rect 转到 host viewport 空间,
+        // 否则菜单飘到屏幕左上角.
+        const hostOffset = this.findSessionIframeOffset();
         if (rect && rect.width > 0) {
-          this.selectionMenu?.show(rect);
+          this.selectionMenu?.show(rect, hostOffset);
         } else {
           const fallbackRect = new DOMRect(
             globalThis.innerWidth / 2 - 100,
@@ -672,7 +853,7 @@ export class ReaderView extends ItemView {
             200,
             40
           );
-          this.selectionMenu?.show(fallbackRect);
+          this.selectionMenu?.show(fallbackRect, hostOffset);
         }
       }, 180);
     });
@@ -747,6 +928,17 @@ export class ReaderView extends ItemView {
       } else if (ex.locator.position.kind === "pdf") {
         // 优先 subpath(精确 4-tuple), 否则只到页
         locator = ex.locator.position.selection ?? `page=${ex.locator.position.page}`;
+      } else if (ex.locator.position.kind === "text") {
+        // PagedTextSession 的 locator 是 `paged-text:<pageIdx>`。我们从
+        // 持久化的 start/end 还原 pageIdx: start * totalPages。
+        const textPos = ex.locator.position;
+        const session = this.session;
+        if (!session) return;
+        const totalRaw = session.totalPages ? session.totalPages() : null;
+        const total = totalRaw ?? 1;
+        const safeTotal = total > 0 ? total : 1;
+        const pageIdx = Math.max(0, Math.min(safeTotal - 1, Math.floor(textPos.start * safeTotal)));
+        locator = `paged-text:${pageIdx}`;
       }
       if (!locator) return;
       try {
@@ -763,24 +955,49 @@ export class ReaderView extends ItemView {
     }));
   }
 
+  /**
+   * Returns the viewport offset between the session's iframe content
+   * and the host document. Selection rects from inside an iframe are
+   * iframe-viewport relative — to position a menu in the host viewport
+   * we need to add this offset.
+   *
+   * `session.element` is the foliate-view web component, which is a
+   * positioned overlay matching the host host's size and origin. We
+   * assume the foliate iframe is rendered at the same offset (true in
+   * practice for foliate-js 1.0.1 with `data-ez-reader-flow` set).
+   *
+   * P1-9: PagedTextSession (TXT / MOBI / AZW3) renders directly into the
+   * host document (no iframe). Selection rects from inside its stage
+   * are already host-viewport-relative — passing an offset would
+   * double-shift the menu. We detect the non-iframe path via the
+   * session.element's tag name and return undefined for it.
+   */
+  private findSessionIframeOffset(): { x: number; y: number } | undefined {
+    if (!this.session) return undefined;
+    const el = this.session.element;
+    // foliate-view is a custom element (registered by foliate-js). Anything
+    // else (PagedTextSession's <div>) doesn't need an iframe offset.
+    if (el.tagName.toLowerCase() !== "foliate-view") return undefined;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return undefined;
+    return { x: rect.left, y: rect.top };
+  }
+
   private toolbarState(): Parameters<NonNullable<typeof this.toolbar>["update"]>[0] {
     return {
       fraction: this.fraction,
       chapter: this.chapter,
       status: this.entry?.reading.status ?? "unread",
+      favorite: this.entry?.reading.favorite ?? false,
       showingBookmarks: this.bookmarksPanel?.isVisible?.() ?? false,
       showingExcerpts: this.excerptsPanel?.isVisible?.() ?? false,
       showingNotes: this.notesPanel?.isVisible?.() ?? false,
       showingToc: this.tocPanel?.isVisible?.() ?? false,
       showingImmersive: this.isImmersive,
-      zoom: this.session?.currentScale?.(),
-      showZoomControls: this.session?.setScale !== undefined,
-      showFontSettings: true
+      showFontSettings: true,
+      bookmarkCount: this.bookmarkCount,
+      excerptCount: this.excerptCount
     };
-  }
-
-  private bookReaderFor(book: Book): BookReader {
-    return book.locator.format === "pdf" ? this.deps.pdfjs : this.deps.foliate;
   }
 
   // ---- 翻页 / 跳转 ----
@@ -790,13 +1007,9 @@ export class ReaderView extends ItemView {
     this.selectionMenu?.hide();
     const sel = globalThis.document.getSelection();
     if (sel && !sel.isCollapsed) sel.removeAllRanges();
-    if (direction === 1 && this.session.next) {
-      await this.session.next();
-    } else if (direction === -1 && this.session.previous) {
-      await this.session.previous();
-    } else {
-      await this.session.goTo(direction === 1 ? { kind: "next" } : { kind: "previous" });
-    }
+    // ReaderSession.goTo 自身支持 { kind: "next" | "previous" }, 不再走
+    // 重复的 session.next() / session.previous() (port 上是 redundant).
+    await this.session.goTo(direction === 1 ? { kind: "next" } : { kind: "previous" });
   }
 
   private async seekFraction(fraction: number): Promise<void> {
@@ -824,12 +1037,35 @@ export class ReaderView extends ItemView {
         fitWidth: this.session.isFitWidth?.(),
         ...(pdfSelection ? { selection: pdfSelection } : {})
       };
+    } else if (typeof finalLocator === "string" && finalLocator.startsWith("paged-text:")) {
+      // TXT / MOBI / AZW3 — PagedTextSession locator is `paged-text:<pageIdx>`.
+      // Persist both the page range and the fraction so future readers can
+      // resume either by page or by scroll-position.
+      const pageIdx = Number(finalLocator.slice("paged-text:".length)) || 0;
+      const session = this.session;
+      const totalRaw = session && session.totalPages ? session.totalPages() : null;
+      const total = totalRaw ?? 1;
+      const safeTotal = total > 0 ? total : 1;
+      const start = pageIdx / safeTotal;
+      const end = (pageIdx + 1) / safeTotal;
+      position = { kind: "text", fraction, start, end };
     } else if (finalLocator) {
       position = { kind: "reflow", fraction, cfi: finalLocator };
     } else {
       position = { kind: "reflow", fraction };
     }
-    await this.deps.reading.updatePosition(this.entry.book.id, position);
+    try {
+      await this.deps.reading.updatePosition(this.entry.book.id, position);
+    } catch (error) {
+      // 进度写入失败 — relocate 触发频繁 (每翻页一次), 不能弹 Notice 否则刷屏.
+      // 5s 兜底只展示一次, 让用户知道有问题但不阻塞阅读.
+      console.warn("[ez-reader] persistProgress failed", error);
+      const now = Date.now();
+      if (now - this.lastProgressFailureNoticeAt > 5000) {
+        this.lastProgressFailureNoticeAt = now;
+        new Notice("保存阅读进度失败,稍后重试");
+      }
+    }
   }
 
   // ---- 书签 ----
@@ -841,14 +1077,21 @@ export class ReaderView extends ItemView {
     if (label === null) return;
     const locator = await this.session?.exportLocator();
     if (!locator) return;
-    await this.deps.reading.addBookmark({
-      id: `bm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      bookId: this.entry.book.id,
-      label,
-      locator: { position: { kind: "reflow", fraction: this.fraction, cfi: locator }, chapter: this.chapter },
-      createdAt: Date.now()
-    });
+    try {
+      await this.deps.reading.addBookmark({
+        id: generateExcerptId("bm"),
+        bookId: this.entry.book.id,
+        label,
+        locator: { position: { kind: "reflow", fraction: this.fraction, cfi: locator }, chapter: this.chapter },
+        createdAt: Date.now()
+      });
+    } catch (error) {
+      console.warn("[ez-reader] addBookmark failed", error);
+      new Notice("添加书签失败");
+      return;
+    }
     await this.refreshPanels();
+    new Notice("书签已添加", 1500);
   }
 
   private async toggleBookmarks(): Promise<void> {
@@ -879,11 +1122,72 @@ export class ReaderView extends ItemView {
     this.toolbar?.update(this.toolbarState());
   }
 
+  /** 关闭所有侧边 panel — panel header 上的 × 按钮和 Esc 键都走这个. */
+  private hideAllPanels(): void {
+    this.bookmarksPanel?.hide();
+    this.excerptsPanel?.hide();
+    this.tocPanel?.hide();
+    this.notesPanel?.hide();
+    this.toolbar?.update(this.toolbarState());
+  }
+
   private toggleImmersive(): void {
     this.isImmersive = !this.isImmersive;
     const root = this.containerEl.children[1] as HTMLElement;
     root.toggleClass("ez-reader__immersive", this.isImmersive);
+    // P0 修复: 切换后动态管理 × 按钮 — 进入沉浸时创建, 退出时移除. 之前
+    // 按钮只在 onload 时一次性创建, 用户用 Shift+F 切沉浸时按钮根本不在 DOM.
+    if (this.isImmersive) {
+      this.ensureImmersiveExitButton(root);
+    } else {
+      root.querySelector(".ez-reader__immersive-exit")?.remove();
+    }
     this.toolbar?.update(this.toolbarState());
+  }
+
+  /** 在 container 里加一个 immersive-exit × 按钮 (如果还没建). */
+  private ensureImmersiveExitButton(container: HTMLElement): void {
+    if (container.querySelector(".ez-reader__immersive-exit")) return;
+    const exitBtn = container.createEl("button", {
+      cls: "ez-reader__immersive-exit",
+      attr: { type: "button", "aria-label": "退出沉浸模式", title: "退出沉浸模式 (Esc)" },
+      text: "×"
+    });
+    exitBtn.addEventListener("click", () => {
+      this.isImmersive = false;
+      container.removeClass("ez-reader__immersive");
+      exitBtn.remove();
+      this.toolbar?.update(this.toolbarState());
+    });
+  }
+
+  private async cycleStatus(): Promise<void> {
+    if (!this.entry) return;
+    // 轮询: unread → reading → finished → abandoned → unread
+    const order: ReadonlyArray<ReadingState["status"]> = ["unread", "reading", "finished", "abandoned"];
+    const current = this.entry.reading.status;
+    const idx = order.indexOf(current);
+    const next = order[(idx + 1) % order.length] ?? "unread";
+    try {
+      const updated = await this.deps.reading.setStatus(this.entry.book.id, next);
+      this.entry = { ...this.entry, reading: updated };
+      this.toolbar?.update(this.toolbarState());
+    } catch (error) {
+      console.warn("[ez-reader] cycleStatus failed", error);
+      new Notice("更新阅读状态失败");
+    }
+  }
+
+  private async toggleFavorite(): Promise<void> {
+    if (!this.entry) return;
+    try {
+      const updated = await this.deps.reading.toggleFavorite(this.entry.book.id);
+      this.entry = { ...this.entry, reading: updated };
+      this.toolbar?.update(this.toolbarState());
+    } catch (error) {
+      console.warn("[ez-reader] toggleFavorite failed", error);
+      new Notice("更新收藏状态失败");
+    }
   }
 
   private async refreshPanels(): Promise<void> {
@@ -892,9 +1196,12 @@ export class ReaderView extends ItemView {
       this.deps.reading.listBookmarks(this.entry.book.id),
       this.deps.reading.listExcerpts(this.entry.book.id)
     ]);
+    this.bookmarkCount = bookmarks.length;
+    this.excerptCount = excerpts.length;
     this.bookmarksPanel?.setBookmarks(bookmarks);
     this.excerptsPanel?.setExcerpts(excerpts);
     this.notesPanel?.setEntries(excerpts);
+    this.toolbar?.update(this.toolbarState());
   }
 
   private async jumpToBookmark(bookmark: Bookmark): Promise<void> {
@@ -908,8 +1215,15 @@ export class ReaderView extends ItemView {
 
   private async removeBookmark(bookmark: Bookmark): Promise<void> {
     if (!this.entry) return;
-    await this.deps.reading.removeBookmark(this.entry.book.id, bookmark.id);
+    try {
+      await this.deps.reading.removeBookmark(this.entry.book.id, bookmark.id);
+    } catch (error) {
+      console.warn("[ez-reader] removeBookmark failed", error);
+      new Notice("删除书签失败");
+      return;
+    }
     await this.refreshPanels();
+    new Notice("书签已删除", 1500);
   }
 
   private async jumpToExcerpt(excerpt: Excerpt): Promise<void> {
@@ -928,15 +1242,22 @@ export class ReaderView extends ItemView {
 
   private async removeExcerpt(excerpt: Excerpt): Promise<void> {
     if (!this.entry) return;
-    await this.deps.reading.removeExcerpt(this.entry.book.id, excerpt.id);
+    try {
+      await this.deps.reading.removeExcerpt(this.entry.book.id, excerpt.id);
+    } catch (error) {
+      console.warn("[ez-reader] removeExcerpt failed", error);
+      new Notice("删除摘录失败");
+      return;
+    }
     if (this.session?.removeHighlight) {
       try {
         await this.session.removeHighlight(excerpt.id);
       } catch {
-        // ignore
+        // ignore — 引擎层失败不影响 annotation store 已经成功的删除
       }
     }
     await this.refreshPanels();
+    new Notice("摘录已删除", 1500);
   }
 
   private async editExcerpt(excerpt: Excerpt): Promise<void> {
@@ -951,8 +1272,14 @@ export class ReaderView extends ItemView {
       note: submit.note,
       tags: submit.tags
     };
-    await this.deps.reading.removeExcerpt(this.entry.book.id, excerpt.id);
-    await this.deps.reading.addExcerpt(updated);
+    try {
+      await this.deps.reading.removeExcerpt(this.entry.book.id, excerpt.id);
+      await this.deps.reading.addExcerpt(updated);
+    } catch (error) {
+      console.warn("[ez-reader] editExcerpt failed", error);
+      new Notice("编辑摘录失败");
+      return;
+    }
     // 同步到 markdown 笔记
     if (this.deps.noteWriter && this.entry) {
       try {
@@ -966,20 +1293,18 @@ export class ReaderView extends ItemView {
           text: updated.text,
           note: updated.note,
           tags: updated.tags,
-          locator: {
-            cfi: updated.locator.position.kind === "reflow" ? updated.locator.position.cfi : undefined,
-            fraction: updated.locator.position.kind === "reflow" ? updated.locator.position.fraction : 0,
-            page: updated.locator.position.kind === "pdf" ? updated.locator.position.page : undefined
-          },
+          locator: locatorForNoteWriter(updated.locator.position),
           chapterTitle: updated.locator.chapter,
-          format: this.entry.book.locator.format === "pdf" ? "pdf" : "epub",
+          format: this.entry.book.locator.format,
           createdAt: updated.createdAt
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
+        new Notice("写入笔记失败 (摘录已保存)");
       }
     }
     await this.refreshPanels();
+    new Notice("摘录已更新", 1500);
   }
 
   private async saveExcerptFromSelection(): Promise<void> {
@@ -988,7 +1313,7 @@ export class ReaderView extends ItemView {
     const modal = new ExcerptModal(this.deps.app, { text: this.pendingSelection.text });
     const submit = await modal.openAndWait();
     if (!submit) return;
-    const excerptId = `ex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const excerptId = generateExcerptId("ex");
     const locator = this.pendingSelection.locator ?? (await this.session?.exportLocator()) ?? undefined;
     if (!locator) return;
     // PDF 上保存完整 4-tuple subpath 用于精确还原高亮
@@ -998,7 +1323,9 @@ export class ReaderView extends ItemView {
           page: this.session.currentPage() ?? 1,
           ...(typeof locator === "string" && locator.startsWith("#page=") ? { selection: locator } : {})
         }
-      : { kind: "reflow", fraction: this.fraction, cfi: locator };
+      // 用 frozen fraction (选词那一刻) 而非 live this.fraction — 防止
+      // 用户在 modal 里翻页后 fraction 漂到新页.
+      : { kind: "reflow", fraction: this.pendingSelection.fraction, cfi: locator };
 
     const excerpt: Excerpt = {
       id: excerptId,
@@ -1009,7 +1336,13 @@ export class ReaderView extends ItemView {
       tags: submit.tags,
       createdAt: Date.now()
     };
-    await this.deps.reading.addExcerpt(excerpt);
+    try {
+      await this.deps.reading.addExcerpt(excerpt);
+    } catch (error) {
+      console.warn("[ez-reader] addExcerpt failed", error);
+      new Notice("保存摘录失败");
+      return;
+    }
     if (this.session?.highlight) {
       try {
         await this.session.highlight({
@@ -1021,6 +1354,7 @@ export class ReaderView extends ItemView {
         });
       } catch (error) {
         console.warn("[ez-reader] session.highlight failed", error);
+        // foliate 高亮失败不影响 annotation store 已经保存的摘录 — 不需要 return
       }
     }
     // 同步到 vault md
@@ -1036,21 +1370,19 @@ export class ReaderView extends ItemView {
           text: excerpt.text,
           note: excerpt.note,
           tags: excerpt.tags,
-          locator: {
-            cfi: pos.kind === "reflow" ? pos.cfi : undefined,
-            fraction: pos.kind === "reflow" ? pos.fraction : 0,
-            page: pos.kind === "pdf" ? pos.page : undefined
-          },
+          locator: locatorForNoteWriter(pos),
           chapterTitle: excerpt.locator.chapter,
-          format: this.entry.book.locator.format === "pdf" ? "pdf" : "epub",
+          format: this.entry.book.locator.format,
           createdAt: excerpt.createdAt
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
+        new Notice("写入笔记失败 (摘录已保存)");
       }
     }
     await this.refreshPanels();
     this.notesPanel?.flashLast(excerptId);
+    new Notice("摘录已保存", 1500);
   }
 
   private async saveThoughtFromSelection(): Promise<void> {
@@ -1072,14 +1404,17 @@ export class ReaderView extends ItemView {
     });
     const submit = await modal.openAndWait();
     if (!submit) return;
-    const excerptId = `th-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const excerptId = generateExcerptId("th");
+    // 选词触发 → 用 pendingSelection.fraction (frozen);
+    // 自由想法 (openFreeThoughtModal) → text 是 undefined, 用 live this.fraction.
+    const thoughtFraction = text !== undefined ? this.pendingSelection?.fraction ?? this.fraction : this.fraction;
     const pos: ReadingPosition = this.isPdf && this.session?.currentPage
       ? {
           kind: "pdf",
           page: this.session.currentPage() ?? 1,
           ...(typeof locator === "string" && locator.startsWith("#page=") ? { selection: locator } : {})
         }
-      : { kind: "reflow", fraction: this.fraction, cfi: locator };
+      : { kind: "reflow", fraction: thoughtFraction, cfi: locator };
 
     const excerpt: Excerpt = {
       id: excerptId,
@@ -1090,7 +1425,13 @@ export class ReaderView extends ItemView {
       tags: submit.tags,
       createdAt: Date.now()
     };
-    await this.deps.reading.addExcerpt(excerpt);
+    try {
+      await this.deps.reading.addExcerpt(excerpt);
+    } catch (error) {
+      console.warn("[ez-reader] saveThought addExcerpt failed", error);
+      new Notice("保存想法失败");
+      return;
+    }
     // 同步到 vault md
     if (this.deps.noteWriter) {
       try {
@@ -1104,27 +1445,25 @@ export class ReaderView extends ItemView {
           text: excerpt.text,
           note: excerpt.note,
           tags: excerpt.tags,
-          locator: {
-            cfi: pos.kind === "reflow" ? pos.cfi : undefined,
-            fraction: pos.kind === "reflow" ? pos.fraction : 0,
-            page: pos.kind === "pdf" ? pos.page : undefined
-          },
+          locator: locatorForNoteWriter(pos),
           chapterTitle: excerpt.locator.chapter,
-          format: this.entry.book.locator.format === "pdf" ? "pdf" : "epub",
+          format: this.entry.book.locator.format,
           createdAt: excerpt.createdAt
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
+        new Notice("写入笔记失败 (想法已保存)");
       }
     }
     await this.refreshPanels();
     this.notesPanel?.flashLast(excerptId);
+    new Notice("想法已保存", 1500);
   }
 
   private copySelectionToClipboard(): void {
     const selection = this.pendingSelection?.text;
     if (!selection) return;
-    void navigator.clipboard.writeText(selection);
+    void this.copyTextToClipboard(selection);
   }
 
   private async requestTranslation(): Promise<void> {
@@ -1138,3 +1477,4 @@ export class ReaderView extends ItemView {
     await this.saveThoughtCore(text, this.pendingSelection?.locator);
   }
 }
+

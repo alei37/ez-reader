@@ -1,4 +1,6 @@
+import type { App } from "obsidian";
 import type { Excerpt } from "../../core/entities/Excerpt";
+import { ConfirmModal } from "./ConfirmModal";
 
 export interface SidebarNotesHandlers {
   /** Jump the reader to the position the excerpt was captured at. */
@@ -23,15 +25,36 @@ export interface SidebarNotesHandlers {
 export class SidebarNotesPanel {
   readonly root: HTMLElement;
   private readonly handlers: SidebarNotesHandlers;
+  private readonly app: App | undefined;
   private entries: ReadonlyArray<Excerpt> = [];
   private query: string = "";
   private flashId: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Debounce timer for the search box. */
+  private searchTimer: ReturnType<typeof setTimeout> | undefined;
+  private searchInput: HTMLInputElement | undefined;
 
-  constructor(handlers: SidebarNotesHandlers, host: HTMLElement) {
+  constructor(handlers: SidebarNotesHandlers & { app?: App }, host: HTMLElement) {
     this.handlers = handlers;
+    this.app = handlers.app;
     this.root = host.createDiv({ cls: "ez-reader__notes-panel" });
     this.render();
+  }
+
+  /**
+   * Tear down listeners + timers. The host should call this when the
+   * reader view is closed; previously `flashTimer` could fire after
+   * detach and write to a dead DOM.
+   */
+  dispose(): void {
+    if (this.flashTimer !== undefined) {
+      globalThis.clearTimeout(this.flashTimer);
+      this.flashTimer = undefined;
+    }
+    if (this.searchTimer !== undefined) {
+      globalThis.clearTimeout(this.searchTimer);
+      this.searchTimer = undefined;
+    }
   }
 
   setEntries(entries: ReadonlyArray<Excerpt>): void {
@@ -98,10 +121,18 @@ export class SidebarNotesPanel {
       const search = searchWrap.createEl("input", {
         attr: { type: "search", placeholder: "搜索笔记内容、标签、章节……", "aria-label": "搜索笔记" }
       });
+      this.searchInput = search;
       search.value = this.query;
+      // 150ms debounce — 用户连击输入不会每按一字符全量重建笔记列表.
       search.addEventListener("input", () => {
-        this.query = search.value.trim().toLocaleLowerCase();
-        this.renderList();
+        if (this.searchTimer !== undefined) {
+          globalThis.clearTimeout(this.searchTimer);
+        }
+        this.searchTimer = globalThis.setTimeout(() => {
+          this.searchTimer = undefined;
+          this.query = search.value.trim().toLocaleLowerCase();
+          this.renderList();
+        }, 150);
       });
       this.renderList();
     } else {
@@ -159,10 +190,21 @@ export class SidebarNotesPanel {
         text: "×",
         attr: { type: "button", title: "删除这条笔记", "aria-label": "删除这条笔记" }
       });
-      remove.onclick = () => {
-        if (globalThis.confirm("确定删除这条笔记? 原书高亮也会被移除。")) {
+      remove.onclick = async () => {
+        // P1 修复: 之前用 globalThis.confirm, 在 Obsidian 移动端 WebView
+        // 表现不一致. 改用 Obsidian Modal, 通过 SidebarNotesPanel 的
+        // handlers.app 注入 (ReaderView 已经持有 app).
+        if (!this.app) {
           this.handlers.onRemove(entry);
+          return;
         }
+        const ok = await new ConfirmModal(
+          this.app,
+          "删除这条笔记?",
+          "原文高亮也会被移除。读书进度、书签、其它笔记不受影响。",
+          "删除"
+        ).openAndWait();
+        if (ok) this.handlers.onRemove(entry);
       };
     }
     this.refreshFlashStyles();

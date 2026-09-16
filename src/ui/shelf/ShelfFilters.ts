@@ -2,6 +2,7 @@ import { Modal } from "obsidian";
 import type { App } from "obsidian";
 import type { ShelfFilter, ProgressBucket, RecencyBucket } from "../../core/types/ShelfFilter";
 import type { ReadingStatus } from "../../core/entities/ReadingState";
+import { type BookFormat, READER_CAPABLE_FORMATS } from "../../core/entities/Book";
 
 const STATUS_LABELS: Record<ReadingStatus, string> = {
   unread: "未开始",
@@ -26,10 +27,17 @@ const RECENCY_LABELS: Record<RecencyBucket, string> = {
   never: "从未"
 };
 
-const FORMAT_LABELS: Record<"epub" | "pdf" | "mobi" | "txt", string> = {
+// 仅暴露已有 reader 适配器的格式 — 未实现的格式 (如 .azw) 不算进来,
+// 否则会出现"勾选后没结果"的死选项。BookFormat 类型仍保留 mobi/txt/azw 等
+// 字面量,这样将来加 adapter 时只需改 READER_CAPABLE_FORMATS + 这里。
+// 这里手动列出顺序 (避免 Set 迭代顺序依赖)。
+const SHELF_FORMAT_ORDER: ReadonlyArray<BookFormat> = ["epub", "pdf", "txt", "mobi", "azw3"];
+const FORMAT_LABELS: Record<BookFormat, string> = {
   epub: "EPUB",
   pdf: "PDF",
   mobi: "MOBI",
+  azw: "AZW",
+  azw3: "AZW3",
   txt: "TXT"
 };
 
@@ -100,7 +108,10 @@ export class ShelfFiltersModal extends Modal {
   private renderFormatSection(host: HTMLElement): void {
     host.createEl("h3", { text: "文件格式" });
     const wrap = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
-    for (const format of Object.keys(FORMAT_LABELS) as Array<keyof typeof FORMAT_LABELS>) {
+    // SHELF_FORMAT_ORDER 必须与 READER_CAPABLE_FORMATS 一致 — 加新格式
+    // 时同步更新两个地方。
+    for (const format of SHELF_FORMAT_ORDER) {
+      if (!READER_CAPABLE_FORMATS.has(format)) continue;
       const button = wrap.createEl("button", {
         text: FORMAT_LABELS[format],
         attr: { type: "button" }
@@ -164,7 +175,10 @@ export class ShelfFiltersModal extends Modal {
     const row = host.createDiv({ cls: "ez-reader__shelf-filters__actions" });
     const clear = row.createEl("button", { text: "清除全部", attr: { type: "button" } });
     clear.onclick = () => {
-      this.result = {};
+      // P0 修复: 之前 close() → onClose → settle(null) → ShelfView 收到
+      // null 不 apply 任何 filter, 按钮实际上是"放弃修改并关闭". 现在
+      // settle({}) 让 ShelfView 真的清空 filter.
+      this.settle({});
       this.close();
     };
     const apply = row.createEl("button", { text: "应用", attr: { type: "button" } });

@@ -1,5 +1,6 @@
 import type { AnnotationStore } from "../ports/AnnotationStore";
 import type { TranslationProvider, TranslationRequest, TranslationResult, TranslationService as ITranslationService } from "../ports/TranslationProvider";
+import type { PluginSettings } from "../types/ReaderSettings";
 import type { Locale } from "../types/Locale";
 
 /**
@@ -9,6 +10,16 @@ import type { Locale } from "../types/Locale";
  */
 export class TranslationCoordinator implements ITranslationService {
   private readonly providers = new Map<string, TranslationProvider>();
+
+  /**
+   * Short-TTL cache of `listSettings()`. Settings are read on every
+   * translate() call but rarely change — caching for ~30s avoids the
+   * IO hit on rapid translation requests (e.g. user translating
+   * multiple selections in succession). `invalidate()` lets settings-tab
+   * saves bust the cache immediately.
+   */
+  private cachedSettings: { value: PluginSettings; fetchedAt: number } | null = null;
+  private static readonly SETTINGS_CACHE_TTL_MS = 30_000;
 
   constructor(
     private readonly annotations: AnnotationStore,
@@ -21,8 +32,26 @@ export class TranslationCoordinator implements ITranslationService {
     return [...this.providers.values()];
   }
 
+  /** Drop the settings cache. Called by Plugin after saveSettings. */
+  invalidate(): void {
+    this.cachedSettings = null;
+  }
+
+  private async getSettings(): Promise<PluginSettings> {
+    const now = Date.now();
+    if (
+      this.cachedSettings &&
+      now - this.cachedSettings.fetchedAt < TranslationCoordinator.SETTINGS_CACHE_TTL_MS
+    ) {
+      return this.cachedSettings.value;
+    }
+    const value = await this.annotations.listSettings();
+    this.cachedSettings = { value, fetchedAt: now };
+    return value;
+  }
+
   async translate(text: string, source: Locale, target: Locale): Promise<TranslationResult> {
-    const settings = await this.annotations.listSettings();
+    const settings = await this.getSettings();
     if (!settings.translation) {
       throw new Error("Translation is not configured. Add an API key in plugin settings first.");
     }

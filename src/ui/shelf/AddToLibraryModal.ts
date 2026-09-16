@@ -1,4 +1,4 @@
-import { Modal } from "obsidian";
+import { Modal, Notice } from "obsidian";
 import type { App } from "obsidian";
 import type { Book } from "../../core/entities/Book";
 import type { LibraryEntry, LibraryService } from "../../core/services/LibraryService";
@@ -88,12 +88,22 @@ export class AddToLibraryModal extends Modal {
     cancel.onclick = () => this.close();
     const confirm = actions.createEl("button", { text: "加入所选", attr: { type: "button" } });
     confirm.addClass("mod-cta");
-    confirm.onclick = () => void this.confirmSelection();
+    // 锁定所有 action 按钮防双击, confirm handler 完成后解锁.
+    const setActionsBusy = (busy: boolean): void => {
+      const btns: HTMLButtonElement[] = [confirm, addAll, selectAll, selectNone];
+      for (const btn of btns) btn.disabled = busy;
+    };
+    confirm.onclick = () => void this.confirmSelection(setActionsBusy);
+    addAll.onclick = () => void this.confirmAddAll(setActionsBusy);
   }
 
   onClose(): void {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    // P1 修复: 之前 coverFetchInFlight 在 modal 关闭后仍可能 self-clean,
+    // 但如果有 worker promise 还没 resolve, set 一直占着, 内存中多个 modal
+    // 实例化会导致 leak. 显式清空 + 拒绝新启动.
+    this.coverFetchInFlight.clear();
   }
 
   private filteredCandidates(): LibraryEntry[] {
@@ -190,27 +200,117 @@ export class AddToLibraryModal extends Modal {
     if (list) this.renderList(list);
   }
 
-  private async confirmSelection(): Promise<void> {
+  private async confirmSelection(setActionsBusy: (busy: boolean) => void = () => {}): Promise<void> {
     const ids = [...this.selected];
-    for (const id of ids) {
-      await this.service.addToLibrary(id);
+    if (ids.length === 0) {
+      this.close();
+      return;
     }
-    const books = ids
-      .map((id) => this.service.get(id)?.book)
-      .filter((b): b is Book => Boolean(b));
-    await this.extractCoversFor(books);
+    setActionsBusy(true);
+    // P0 修复: 用 finally + withTimeout 兜底, 之前 setActionsBusy(false) 只在
+    // catch 路径调用. 如果 extractCover 因 reader bug 永不 resolve (例如损坏的
+    // EPUB 让 foliate.getCover() 卡死), confirmSelection 永远不 close, 按钮
+    // 永远 disabled — 用户唯一的选择是关闭整个 Obsidian 重启.
+    let timedOut = false;
+    const timeoutMs = 30_000;
+    const timeoutHandle = globalThis.setTimeout(() => {
+      timedOut = true;
+      console.error(`[ez-reader] confirmSelection timed out after ${timeoutMs}ms — closing modal forcibly`);
+    }, timeoutMs);
+    try {
+      // 并行 addToLibrary: ObsidianAnnotationStore.writeChain 内部串行化
+      // write,但读 + 准备可以并行 — N 本书的 IO 不再 N 倍耗时.
+      await this.raceWithTimeout(
+        Promise.all(ids.map((id) => this.service.addToLibrary(id))),
+        timeoutMs,
+        "confirmSelection.addToLibrary"
+      );
+      if (timedOut) throw new Error("addToLibrary 超时");
+      const books = ids
+        .map((id) => this.service.get(id)?.book)
+        .filter((b): b is Book => Boolean(b));
+      await this.raceWithTimeout(this.extractCoversFor(books), timeoutMs, "confirmSelection.extractCoversFor");
+      if (timedOut) throw new Error("extractCoversFor 超时");
+    } catch (error) {
+      console.error("[ez-reader] confirmSelection failed", error);
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`加入失败: ${message}`);
+      setActionsBusy(false);
+      return;
+    } finally {
+      globalThis.clearTimeout(timeoutHandle);
+      // 即使 timeout 触发或 throw, 也要解锁按钮 + 关 modal — 不让 UI 卡死.
+      setActionsBusy(false);
+      // 二次防御: 在 finally 里强制 close, 避免任何漏掉的 return 路径让 modal 留着.
+      // close() 是 idempotent (Obsidian 内部已经处理), 重复调用安全.
+      if (timedOut) this.close();
+    }
     this.close();
   }
 
-  private async confirmAddAll(): Promise<void> {
-    const before = new Set(this.service.list({}, "titleAsc", true).map((entry) => entry.book.id));
-    await this.service.addAllToLibrary();
-    const newlyAdded = this.service
-      .list({}, "titleAsc", true)
-      .filter((entry) => !before.has(entry.book.id))
-      .map((entry) => entry.book);
-    await this.extractCoversFor(newlyAdded);
+  private async confirmAddAll(setActionsBusy: (busy: boolean) => void = () => {}): Promise<void> {
+    setActionsBusy(true);
+    let timedOut = false;
+    const timeoutMs = 60_000;
+    const timeoutHandle = globalThis.setTimeout(() => {
+      timedOut = true;
+      console.error(`[ez-reader] confirmAddAll timed out after ${timeoutMs}ms — closing modal forcibly`);
+    }, timeoutMs);
+    try {
+      const before = new Set(this.service.list({}, "titleAsc", true).map((entry) => entry.book.id));
+      await this.raceWithTimeout(this.service.addAllToLibrary(), timeoutMs, "confirmAddAll.addAllToLibrary");
+      if (timedOut) throw new Error("addAllToLibrary 超时");
+      const newlyAdded = this.service
+        .list({}, "titleAsc", true)
+        .filter((entry) => !before.has(entry.book.id))
+        .map((entry) => entry.book);
+      await this.raceWithTimeout(this.extractCoversFor(newlyAdded), timeoutMs, "confirmAddAll.extractCoversFor");
+      if (timedOut) throw new Error("extractCoversFor 超时");
+    } catch (error) {
+      console.error("[ez-reader] confirmAddAll failed", error);
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`全部加入失败: ${message}`);
+      setActionsBusy(false);
+      return;
+    } finally {
+      globalThis.clearTimeout(timeoutHandle);
+      setActionsBusy(false);
+      if (timedOut) this.close();
+    }
     this.close();
+  }
+
+  /**
+   * Race a promise against a deadline. 跟 Plugin.withTimeout 一样的语义, 但
+   * 用在这里避免 modal 调用 Plugin 的私有方法. Promise 自身不 reject (超时
+   * 不会被外部 catch 看到), 只让外层的 `timedOut` flag 翻起来走关闭路径.
+   */
+  private raceWithTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | undefined> {
+    return new Promise<T | undefined>((resolve) => {
+      let resolved = false;
+      const timer = globalThis.setTimeout(() => {
+        if (resolved) return;
+        console.warn(`[ez-reader] ${label} exceeded ${ms}ms — leaving promise pending`);
+        resolve(undefined);
+      }, ms);
+      promise.then(
+        (value) => {
+          if (resolved) return;
+          resolved = true;
+          globalThis.clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          if (resolved) return;
+          resolved = true;
+          globalThis.clearTimeout(timer);
+          // 把 reject 翻成 resolve(undefined) — 让调用方根据 timedOut flag
+          // 决定是否重 throw 或直接走关闭路径, 避免 race-with-resolve 的反模式.
+          console.warn(`[ez-reader] ${label} rejected`, error);
+          resolve(undefined);
+        }
+      );
+    });
   }
 
   private async extractCoversFor(books: ReadonlyArray<Book>): Promise<void> {

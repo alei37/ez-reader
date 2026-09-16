@@ -1,5 +1,6 @@
 import type { LibraryEntry } from "../../core/services/LibraryService";
 import { progressFraction } from "../../core/entities/ReadingState";
+import { extractAuthorFallback, statusLabel } from "./shelfFormatters";
 
 export interface ShelfItemHandlers {
   onOpen: (entry: LibraryEntry) => void;
@@ -47,6 +48,17 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
     cover.createEl("span", {
       text: title,
       cls: "ez-reader__shelf-grid__cover-title"
+    });
+  }
+  // P1 新功能: 置顶标记 — 在封面右上角放一个小 📌 icon, 不遮挡封面内容.
+  // 用 lucide `pin` 图标, setIcon 由 caller (ShelfView) 在 toolbar 入口
+  // 注入 setIcon; 这里直接画 fallback 字符 (Obsidian 在 1.5+ 内置
+  // lucide, 但为了兼容先 unicode 字符, 后续可以替换成 SVG).
+  if (entry.book.pinnedAt !== null) {
+    const pin = cover.createDiv({ cls: "ez-reader__shelf-grid__pin", attr: { title: "已置顶 — 在右键菜单中可取消", "aria-label": "已置顶" }, text: "📌" });
+    pin.addEventListener("click", (event) => {
+      event.stopPropagation();
+      handlers.onContextMenu(entry, event as MouseEvent);
     });
   }
 
@@ -103,30 +115,6 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
     handlers.onContextMenu(entry, event);
   });
   return card;
-};
-
-const statusLabel = (status: string): string => {
-  switch (status) {
-    case "reading":
-      return "在读";
-    case "finished":
-      return "已读完";
-    case "abandoned":
-      return "暂弃";
-    default:
-      return "未开始";
-  }
-};
-
-/**
- * Best-effort author guess from the path when we haven't parsed metadata
- * yet (covers PDF files we haven't opened). Falls back to the parent
- * directory name so the card shows something more useful than "未知作者".
- */
-const extractAuthorFallback = (path: string): string => {
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length >= 2) return parts.slice(0, -1).join(" / ");
-  return "未知作者";
 };
 
 /**

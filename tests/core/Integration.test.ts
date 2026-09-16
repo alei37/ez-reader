@@ -41,7 +41,7 @@ const next_settings = (raw: unknown): Record<string, unknown> => {
     readerOpenMode: "tab",
     twoPagesByDefault: false,
     immersiveOnTablet: false,
-    autoCreateNoteOnOpen: true,
+    autoCreateNoteOnOpen: true, // legacy field, ignored by current code
     keyboardShortcuts: undefined,
     rememberProgress: true
   };
@@ -57,6 +57,16 @@ class InMemoryStore implements AnnotationStore {
     excerpts: [],
     coverPaths: {}
   };
+  /** Mirror ObsidianAnnotationStore.onSettingsChanged — listSettings TTL
+   * cache busters (e.g. TranslationCoordinator.invalidate) plug in here. */
+  private settingsListeners = new Set<(settings: unknown) => void>();
+  onSettingsChanged(listener: (settings: unknown) => void): () => void {
+    this.settingsListeners.add(listener);
+    return () => this.settingsListeners.delete(listener);
+  }
+  private notifySettingsChanged(settings: unknown): void {
+    for (const listener of this.settingsListeners) listener(settings);
+  }
 
   async load(): Promise<AnnotationSnapshot> { return this.snapshot; }
   async save(s: AnnotationSnapshot): Promise<void> { this.snapshot = s; }
@@ -92,10 +102,28 @@ class InMemoryStore implements AnnotationStore {
   async saveSettings(s: unknown): Promise<void> {
     // Persist back into the snapshot so subsequent translate() sees the key.
     const current = (next_settings(this.snapshot.settings) ?? {}) as Record<string, unknown>;
-    this.snapshot = { ...this.snapshot, settings: { ...current, ...(s as Record<string, unknown>) } };
+    const merged = { ...current, ...(s as Record<string, unknown>) };
+    this.snapshot = { ...this.snapshot, settings: merged as never };
+    this.notifySettingsChanged(merged);
+  }
+  async patchSettings(patch: (s: ReturnType<typeof next_settings>) => unknown): Promise<void> {
+    const next = patch(this.snapshot.settings);
+    this.snapshot = { ...this.snapshot, settings: next as never };
+    this.notifySettingsChanged(next);
   }
   async loadCoverPaths(): Promise<Readonly<Record<string, string>>> { return {}; }
   async saveCoverPaths(): Promise<void> {}
+  async getAddedAt(): Promise<number | null> { return null; }
+  async setAddedAt(bookId: string, addedAt: number): Promise<void> {
+    const current = this.snapshot.addedAtByBookId ?? {};
+    this.snapshot = { ...this.snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
+  }
+  async markOnboardingDismissed(): Promise<void> {
+    this.snapshot = { ...this.snapshot, onboardingDismissed: true };
+  }
+  async hasOnboardingBeenDismissed(): Promise<boolean> {
+    return this.snapshot.onboardingDismissed === true;
+  }
 }
 
 class FakeSource implements BookSource {
@@ -117,8 +145,14 @@ class FakeSource implements BookSource {
     return f?.metadata ?? null;
   }
   async readCover(): Promise<CoverImage | null> { return null; }
+  async lookup(path: string): Promise<BookLocator | null> {
+    const f = this.files.find((x) => x.locator.path === path);
+    return f?.locator ?? null;
+  }
   resolveId(locator: BookLocator): string { return locator.path; }
-  async resolveLocator(): Promise<BookLocator | null> { return null; }
+  async resolveLocator(id: string): Promise<BookLocator | null> {
+    return this.lookup(id);
+  }
   watch(handler: BookChangeHandler): Disposable {
     this.watchers.push(handler);
     return { dispose: () => {} };
@@ -154,6 +188,8 @@ const newServices = () => {
   const library = new LibraryService(source, store);
   const reading = new ReadingService(store);
   const translation = new TranslationCoordinator(store, [new FakeProvider()]);
+  // Mirror Plugin.onload — bust translation's listSettings TTL cache on save.
+  store.onSettingsChanged(() => translation.invalidate());
   return { library, reading, translation, store, source };
 };
 

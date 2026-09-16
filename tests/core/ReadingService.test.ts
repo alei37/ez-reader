@@ -90,11 +90,25 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async saveSettings(settings: PluginSettings): Promise<void> {
     this.snapshot = { ...this.snapshot, settings };
   }
+  async patchSettings(patch: (s: PluginSettings) => PluginSettings): Promise<void> {
+    this.snapshot = { ...this.snapshot, settings: patch(this.snapshot.settings) };
+  }
   async loadCoverPaths(): Promise<Readonly<Record<string, string>>> {
     return this.snapshot.coverPaths ?? {};
   }
   async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
     this.snapshot = { ...this.snapshot, coverPaths };
+  }
+  async getAddedAt(): Promise<number | null> { return null; }
+  async setAddedAt(bookId: string, addedAt: number): Promise<void> {
+    const current = this.snapshot.addedAtByBookId ?? {};
+    this.snapshot = { ...this.snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
+  }
+  async markOnboardingDismissed(): Promise<void> {
+    this.snapshot = { ...this.snapshot, onboardingDismissed: true };
+  }
+  async hasOnboardingBeenDismissed(): Promise<boolean> {
+    return this.snapshot.onboardingDismissed === true;
   }
 }
 

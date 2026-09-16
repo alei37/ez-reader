@@ -43,8 +43,6 @@ export interface PluginSettings {
   readonly twoPagesByDefault?: boolean;
   /** Pad 沉浸模式默认开关 */
   readonly immersiveOnTablet?: boolean;
-  /** 默认笔记创建行为 */
-  readonly autoCreateNoteOnOpen?: boolean;
   /** 翻页快捷键 */
   readonly keyboardShortcuts?: KeyboardShortcuts;
   /** 关闭"记住阅读进度"。默认 true. 关闭后打开书不再自动跳转到上次位置 */
@@ -89,7 +87,6 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = Object.freeze({
   readerOpenMode: "tab",
   twoPagesByDefault: false,
   immersiveOnTablet: false,
-  autoCreateNoteOnOpen: true,
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   rememberProgress: true
 });

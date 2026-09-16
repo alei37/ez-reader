@@ -5,6 +5,8 @@ export interface SelectionMenuHandlers {
   onTranslate: () => void;
 }
 
+import { computeSelectionMenuPosition } from "./selectionMenuPosition";
+
 /**
  * Floating action menu that appears below a selection. Designed to be
  * triggered automatically by the `selection-change` event from the
@@ -72,20 +74,30 @@ export class ReaderSelectionMenu {
     document.addEventListener("selectionchange", this.documentSelectionChange);
   }
 
-  show(rect: DOMRect): void {
-    this.currentRect = rect;
+  show(rect: DOMRect, hostOffset?: { x: number; y: number }): void {
+    // P0 修复: EPUB 的 selection rect 是 iframe-viewport 相对,需要加上
+    // iframe 在 host 页面里的 offset 才能转到 host viewport 坐标. 之前
+    // 直接用 host viewport 算位置,菜单飘到屏幕左上角.
+    const adjusted: DOMRect = hostOffset
+      ? offsetRect(rect, hostOffset.x, hostOffset.y)
+      : rect;
+    this.currentRect = adjusted;
     this.root.removeClass("is-hidden");
-    // Position above the selection if it would overflow the viewport bottom;
-    // below otherwise. Pick whichever keeps the menu fully on-screen.
-    const margin = 8;
+    // 纯函数计算位置 — 测试覆盖各种 viewport / rect 组合, 见
+    // tests/core/SelectionMenuPosition.test.ts.
     const menuRect = this.root.getBoundingClientRect();
-    const below = rect.bottom + 6 + menuRect.height <= window.innerHeight - margin;
-    const top = below ? rect.bottom + window.scrollY + 6 : rect.top + window.scrollY - menuRect.height - 6;
-    let left = rect.left + window.scrollX;
-    const overflowRight = left + menuRect.width - (window.innerWidth - margin);
-    if (overflowRight > 0) left = Math.max(margin, left - overflowRight);
-    this.root.style.top = `${top}px`;
-    this.root.style.left = `${left}px`;
+    const pos = computeSelectionMenuPosition(adjusted, menuRect, {
+      width: window.innerWidth,
+      height: window.innerHeight
+    });
+    // P0 修复: 之前 `pos.top + window.scrollY` 把 viewport 坐标错误转成
+    // 文档坐标, 但 menu 元素 `position: absolute` 挂在 document.body
+    // (没有 positioned 祖先), initial containing block 是 viewport —
+    // top/left 必须是 viewport 坐标, 不需要加 scrollX/scrollY. 加了导致
+    // 用户在 main window 滚到 reader 区域时, 菜单相对选区偏 scrollY 像素
+    // (用户报告的"跳窗口"现象).
+    this.root.style.top = `${pos.top}px`;
+    this.root.style.left = `${pos.left}px`;
   }
 
   hide(): void {
@@ -103,3 +115,9 @@ export class ReaderSelectionMenu {
     this.root.remove();
   }
 }
+
+const offsetRect = (rect: DOMRect, dx: number, dy: number): DOMRect => {
+  // DOMRect is a live viewport-relative box; constructor with offsets
+  // gives us a translated copy without mutating the original.
+  return new DOMRect(rect.left + dx, rect.top + dy, rect.width, rect.height);
+};

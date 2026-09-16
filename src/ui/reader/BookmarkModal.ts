@@ -3,24 +3,29 @@ import type { App } from "obsidian";
 
 /**
  * Simple Modal that asks the user for an optional bookmark label. The host
- * resolves with the entered string (possibly empty) on submit, or
- * with an empty string on cancel / Esc / overlay click.
+ * resolves with the entered string on submit, or `null` on cancel / Esc /
+ * overlay click. Returning `null` (not empty string) is what lets the
+ * caller distinguish "user cancelled" from "user submitted blank label".
+ *
+ * Previously this returned `""` for cancellation, which made the host's
+ * `if (label === null) return` guard useless — empty-label bookmarks
+ * were being created on every cancel.
  */
 export class BookmarkModal extends Modal {
-  private resolver: ((label: string) => void) | null = null;
+  private resolver: ((label: string | null) => void) | null = null;
 
   constructor(app: App, private readonly initialLabel = "") {
     super(app);
   }
 
-  openAndWait(): Promise<string> {
-    return new Promise<string>((resolve) => {
+  openAndWait(): Promise<string | null> {
+    return new Promise<string | null>((resolve) => {
       this.resolver = resolve;
       this.open();
     });
   }
 
-  private settle(label: string): void {
+  private settle(label: string | null): void {
     const r = this.resolver;
     this.resolver = null;
     r?.(label);
@@ -38,7 +43,7 @@ export class BookmarkModal extends Modal {
     const actions = contentEl.createDiv({ cls: "ez-reader__modal-actions" });
     const cancel = actions.createEl("button", { text: "取消", attr: { type: "button" } });
     cancel.onclick = () => {
-      this.settle("");
+      this.settle(null);
       this.close();
     };
     const submit = actions.createEl("button", { text: "添加", attr: { type: "button" } });
@@ -58,8 +63,8 @@ export class BookmarkModal extends Modal {
   }
 
   onClose(): void {
-    // Esc / overlay click: 视为取消(空 label). 不调 resolver 会让
-    // openAndWait() 的 Promise 永远 pending.
-    if (this.resolver) this.settle("");
+    // Esc / overlay click: 视为取消. resolve(null) 让 caller 能区分
+    // "用户提交了空 label" 跟 "用户取消".
+    if (this.resolver) this.settle(null);
   }
 }

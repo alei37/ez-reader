@@ -1,8 +1,6 @@
-import { TFile, TFolder, Vault, EventRef } from "obsidian";
-import type { App } from "obsidian";
+import { TFile, type App } from "obsidian";
 import {
   SUPPORTED_BOOK_FORMATS,
-  mimeTypeFor,
   type BookFormat,
   type BookLocator,
   type BookMetadata,
@@ -14,15 +12,18 @@ import type {
 } from "../../core/ports/BookSource";
 import type { Disposable } from "../../core/utils/Disposable";
 
+/** Cache TTL for "file basename → metadata" snapshots. Filename-derived
+ * metadata never changes after import, so a long TTL is fine. */
+const METADATA_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 /**
  * Vault-backed implementation of `BookSource`. Reads from Obsidian's Vault
  * adapter; the metadata and cover bytes come from the same blobs the
  * reader would consume.
  */
 export class ObsidianBookSource implements BookSource {
-  private readonly disposers = new Set<() => void>();
-  private readonly handlers: BookChangeHandler[] = [];
-  private watchers = 0;
+  /** Filename-derived metadata cache keyed by path. */
+  private readonly metadataCache = new Map<string, BookMetadata>();
 
   constructor(private readonly app: App) {}
 
@@ -44,21 +45,20 @@ export class ObsidianBookSource implements BookSource {
       const format = extensionToFormat(file.extension);
       if (!format || !wanted.has(format)) continue;
       seenPaths.add(file.path);
-      yield {
-        path: file.path,
-        format,
-        sizeBytes: file.stat.size,
-        modifiedAt: file.stat.mtime
-      };
+      yield makeLocator(file, format);
     }
 
     // Fallback: vault.getFiles() may still miss files Obsidian hasn't
     // loaded yet. Walk the adapter explicitly so we surface them too.
     let acceptedFromAdapter = 0;
+    // Use an index pointer instead of shift() (O(n) per dequeue) and a
+    // Set instead of Array.includes (O(n) per check) — both were O(n²)
+    // on large vaults.
     const adapterFolders: string[] = [""];
-    const visited: string[] = [];
-    while (adapterFolders.length > 0) {
-      const folder = adapterFolders.shift() ?? "";
+    const visited = new Set<string>();
+    let head = 0;
+    while (head < adapterFolders.length) {
+      const folder = adapterFolders[head++] ?? "";
       let entries: { files: string[]; folders: string[] };
       try {
         entries = await this.app.vault.adapter.list(folder);
@@ -74,16 +74,11 @@ export class ObsidianBookSource implements BookSource {
         if (!format || !wanted.has(format)) continue;
         seenPaths.add(filePath);
         acceptedFromAdapter += 1;
-        yield {
-          path: filePath,
-          format,
-          sizeBytes: abstract.stat.size,
-          modifiedAt: abstract.stat.mtime
-        };
+        yield makeLocator(abstract, format);
       }
       for (const subFolder of entries.folders) {
-        if (visited.includes(subFolder)) continue;
-        visited.push(subFolder);
+        if (visited.has(subFolder)) continue;
+        visited.add(subFolder);
         adapterFolders.push(subFolder);
       }
     }
@@ -101,16 +96,18 @@ export class ObsidianBookSource implements BookSource {
     return this.app.vault.readBinary(file);
   }
 
+  /**
+   * Filename-derived metadata. The foliate reader populates richer metadata
+   * (real title / authors / cover) the first time the user opens the book;
+   * until then this fallback is what the shelf shows.
+   */
   async readMetadata(locator: BookLocator): Promise<BookMetadata | null> {
-    // Try the cache first so we don't reparse every time the shelf reloads.
     const cached = this.metadataCache.get(locator.path);
-    if (cached && Date.now() - cached.cachedAt < 30 * 24 * 60 * 60 * 1000) {
+    if (cached && Date.now() - cached.cachedAt < METADATA_CACHE_TTL_MS) {
       return cached;
     }
     const file = this.app.vault.getAbstractFileByPath(locator.path);
     if (!(file instanceof TFile)) return null;
-    // Fast path: fall back to filename while the heavy metadata parse
-    // runs in the background. The shelf gets to render immediately.
     const base: BookMetadata = {
       title: file.basename,
       authors: extractAuthorFromName(file.basename),
@@ -122,56 +119,36 @@ export class ObsidianBookSource implements BookSource {
       cachedAt: Date.now()
     };
     this.metadataCache.set(locator.path, base);
-    // Kick off the deeper parse asynchronously. We don't await — the shelf
-    // shows the filename-derived title immediately and updates when the
-    // real metadata lands via the `modified` watch event.
-    void this.parseAndCacheMetadata(locator);
     return base;
   }
 
-  private metadataCache = new Map<string, BookMetadata>();
-
-  private async parseAndCacheMetadata(locator: BookLocator): Promise<void> {
-    try {
-      const bytes = await this.read(locator);
-      if (locator.format === "epub") {
-        const parsed = await parseEpubMetadata(bytes);
-        if (parsed) {
-          this.metadataCache.set(locator.path, parsed);
-          this.notifyChange(locator);
-        }
-      }
-      // PDF metadata extraction is deferred — the pdfjs adapter parses
-      // it on first open. We could ship a quick outline probe here, but
-      // for the shelf the filename is enough.
-    } catch (error) {
-      console.warn(`[ez-reader] metadata parse failed for ${locator.path}`, error);
-    }
+  /** Point lookup so LibraryService.refreshBook doesn't re-walk the vault. */
+  async lookup(path: string): Promise<BookLocator | null> {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return null;
+    const format = extensionToFormat(file.extension);
+    if (!format) return null;
+    return makeLocator(file, format);
   }
 
-  private notifyChange(locator: BookLocator): void {
-    for (const handler of this.handlers) {
-      try {
-        handler({ kind: "modified", path: locator.path, format: locator.format });
-      } catch {
-        // ignore listener errors
-      }
-    }
-  }
-
+  /** Used by CoverCache — extracts the cover image bytes from the book file. */
   async readCover(locator: BookLocator): Promise<CoverImage | null> {
+    // The interface requires bytes; concrete cover extraction lives in the
+    // book-reader adapters (foliate's `getCover()`). This is a thin shim
+    // for tests / future adapters that need raw bytes via the BookSource
+    // port — the production path goes through `FoliateBookReader.extractCover`.
     const file = this.app.vault.getAbstractFileByPath(locator.path);
     if (!(file instanceof TFile)) return null;
     const bytes = await this.app.vault.readBinary(file);
     return {
       bookId: this.resolveId(locator),
       bytes,
-      mimeType: mimeTypeFor(locator.format)
+      mimeType: mimeTypeForFormat(locator.format)
     };
   }
 
   watch(handler: BookChangeHandler): Disposable {
-    const refRename = this.app.vault.on("rename", (file, oldPath) => {
+    const refRename = this.app.vault.on("rename", (file) => {
       if (file instanceof TFile) {
         const format = extensionToFormat(file.extension);
         if (format) handler({ kind: "modified", path: file.path, format });
@@ -195,19 +172,14 @@ export class ObsidianBookSource implements BookSource {
         if (format) handler({ kind: "removed", path: file.path, format });
       }
     });
-    this.watchers += 1;
-    const dispose: Disposable = {
+    return {
       dispose: () => {
         this.app.vault.offref(refRename);
         this.app.vault.offref(refCreate);
         this.app.vault.offref(refModify);
         this.app.vault.offref(refDelete);
-        this.watchers = Math.max(0, this.watchers - 1);
-        this.disposers.delete(dispose.dispose);
       }
     };
-    this.disposers.add(dispose.dispose);
-    return dispose;
   }
 
   resolveId(locator: BookLocator): string {
@@ -215,16 +187,7 @@ export class ObsidianBookSource implements BookSource {
   }
 
   async resolveLocator(id: string): Promise<BookLocator | null> {
-    const file = this.app.vault.getAbstractFileByPath(id);
-    if (!(file instanceof TFile)) return null;
-    const format = extensionToFormat(file.extension);
-    if (!format) return null;
-    return {
-      path: file.path,
-      format,
-      sizeBytes: file.stat.size,
-      modifiedAt: file.stat.mtime
-    };
+    return this.lookup(id);
   }
 }
 
@@ -247,6 +210,28 @@ const extensionToFormat = (extension: string): BookFormat | null => {
   }
 };
 
+const mimeTypeForFormat = (format: BookFormat): string => {
+  switch (format) {
+    case "epub":
+      return "application/epub+zip";
+    case "pdf":
+      return "application/pdf";
+    case "txt":
+      return "text/plain";
+    case "mobi":
+    case "azw":
+    case "azw3":
+      return "application/x-mobipocket-ebook";
+  }
+};
+
+const makeLocator = (file: TFile, format: BookFormat): BookLocator => ({
+  path: file.path,
+  format,
+  sizeBytes: file.stat.size,
+  modifiedAt: file.stat.mtime
+});
+
 /**
  * Best-effort author guess from the filename. Many PDF / EPUB dumps use
  * `Title (Author).epub` or `Author - Title.pdf`; we surface the guessed
@@ -261,19 +246,3 @@ const extractAuthorFromName = (basename: string): string[] => {
   if (dash.length >= 2 && dash[1]) return [dash[1].trim()];
   return [];
 };
-
-/**
- * Lightweight EPUB metadata probe. We unzip the OPF only — no full book
- * parse — to keep the shelf scan fast.
- */
-const parseEpubMetadata = async (_bytes: ArrayBuffer): Promise<BookMetadata | null> => {
-  // We avoid a runtime dependency on a zip library by returning null
-  // for now. The foliate BookReader will populate richer metadata the
-  // first time the user opens the book.
-  return null;
-};
-
-// Re-export EventRef type so callers can use the same vocabulary if they want.
-export type { EventRef };
-// Re-export TFolder so importers of this module get a tidy single import.
-export { TFolder };

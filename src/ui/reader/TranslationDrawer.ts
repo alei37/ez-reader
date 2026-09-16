@@ -18,6 +18,14 @@ export class TranslationDrawer {
   private currentSource = "auto";
   private currentTarget: Locale = "zh-CN";
   private abortController: AbortController | null = null;
+  /**
+   * Generation token used to drop stale results. `service.translate()` is
+   * a regular promise (we don't actually cancel the network request —
+   * AbortController on fetch is not wired through here), so a new
+   * translate() call wouldn't otherwise prevent the old one from
+   * resolving and clobbering the new loading state.
+   */
+  private translateGeneration = 0;
 
   constructor(
     handlers: TranslationDrawerHandlers,
@@ -58,6 +66,10 @@ export class TranslationDrawer {
 
   /** Translate a piece of text and render the result. */
   async translate(text: string): Promise<void> {
+    // Generation token — every call increments, the await chain only
+    // commits results for the latest generation. Old in-flight translate()
+    // calls (started before this one) silently drop their result.
+    const generation = ++this.translateGeneration;
     this.show();
     this.renderLoading(text);
     this.abortController?.abort();
@@ -68,8 +80,10 @@ export class TranslationDrawer {
     }
     try {
       const result = await this.service.translate(text, this.currentSource, this.currentTarget);
+      if (generation !== this.translateGeneration) return; // stale result
       this.renderResult(text, result.text, result.detectedSource, result.providerId);
     } catch (error) {
+      if (generation !== this.translateGeneration) return; // stale error
       const message = error instanceof Error ? error.message : String(error);
       this.renderError(text, message);
     }

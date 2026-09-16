@@ -8,6 +8,8 @@ export interface ShelfToolbarHandlers {
   onViewModeChange: (mode: ViewMode) => void;
   onSortChange: (sort: SortCriterion) => void;
   onAddToLibrary: () => void;
+  /** Bulk-add every discovered-but-unadded book. */
+  onAddAllToLibrary?: () => void;
 }
 
 export interface ShelfToolbarState {
@@ -38,6 +40,7 @@ export class ShelfToolbar {
   private readonly countLabel: HTMLElement;
   private readonly gridButton: HTMLButtonElement;
   private readonly listButton: HTMLButtonElement;
+  private readonly addAllButton: HTMLButtonElement;
 
   constructor(handlers: ShelfToolbarHandlers, initial: ShelfToolbarState) {
     this.handlers = handlers;
@@ -57,10 +60,26 @@ export class ShelfToolbar {
 
     const addButton = this.root.createEl("button", {
       text: "+ 加入",
-      attr: { type: "button", title: "从 Vault 选书加入个人图书馆" }
+      attr: { type: "button", title: "挑选 Vault 中的书加入个人图书馆" }
     });
     addButton.addClass("ez-reader__shelf-toolbar__add");
     addButton.addEventListener("click", () => this.handlers.onAddToLibrary());
+
+    // "全部加入" — 把 vault 里所有发现的书一次性加入, 比逐个挑选快得多.
+    // 没传入 handler 时不显示 (避免点空 handler).
+    this.addAllButton = this.root.createEl("button", {
+      text: "全部加入",
+      attr: { type: "button", title: "把所有发现的电子书都加入图书馆" }
+    });
+    this.addAllButton.addClass("ez-reader__shelf-toolbar__add-all");
+    if (this.handlers.onAddAllToLibrary) {
+      this.addAllButton.addEventListener("click", () => {
+        if (this.addAllButton.disabled) return;
+        this.handlers.onAddAllToLibrary!();
+      });
+    } else {
+      this.addAllButton.addClass("is-hidden");
+    }
 
     this.sortSelect = this.root.createEl("select");
     this.sortSelect.addClass("ez-reader__shelf-toolbar__sort");
@@ -87,6 +106,8 @@ export class ShelfToolbar {
     this.listButton.toggleClass("is-active", state.mode === "list");
     const filterActive = countActiveFilters(state.filter) > 0;
     this.filterBadge.toggleClass("is-active", filterActive);
+    // availableCount > 0 才显示"全部加入" — 否则点了没效果, 误导用户.
+    this.addAllButton.toggleClass("is-hidden", state.availableCount <= 0);
     if (state.availableCount > 0) {
       this.countLabel.setText(`${state.visibleCount} / ${state.totalCount} · ${state.availableCount} 本未加入`);
     } else {
@@ -96,6 +117,17 @@ export class ShelfToolbar {
 
   focus(): void {
     this.searchInput.focus();
+  }
+
+  /** Clear the search input field. Called from shortcuts / Esc clear flow. */
+  setQuery(value: string): void {
+    this.searchInput.value = value;
+  }
+
+  /** Toggle the "全部加入" button's disabled state. */
+  setAddAllBusy(busy: boolean): void {
+    this.addAllButton.disabled = busy;
+    this.addAllButton.toggleClass("is-busy", busy);
   }
 }
 

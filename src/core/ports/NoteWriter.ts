@@ -27,11 +27,24 @@ export interface ExcerptInput {
     readonly page?: number;
   };
   readonly chapterTitle?: string;
-  readonly format: "epub" | "pdf";
+  /**
+   * Source format. Originally restricted to "epub" | "pdf" before the
+   * TXT/MOBI/AZW3 readers shipped — now reflects every format that can
+   * produce excerpts. The NoteWriter formats the "📖 来源" line
+   * differently per format (EPUB shows the chapter, PDF shows the page).
+   */
+  readonly format: import("../entities/Book").BookFormat;
   readonly createdAt: number;
 }
 
 export interface ThoughtInput {
+  /**
+   * Stable id for the thought. Used as the markdown block-id (`^<thoughtId>`)
+   * — must be globally unique so multiple thoughts saved in the same
+   * millisecond don't dedupe-collide. The reader generates this with
+   * `crypto.randomUUID()`; the NoteWriter just propagates it.
+   */
+  readonly thoughtId: string;
   readonly text: string;
   readonly locator: string;
   readonly createdAt: number;

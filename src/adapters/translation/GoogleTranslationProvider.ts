@@ -1,9 +1,6 @@
 import type { Locale } from "../../core/types/Locale";
-import type {
-  TranslationProvider,
-  TranslationRequest,
-  TranslationResult
-} from "../../core/ports/TranslationProvider";
+import type { TranslationRequest, TranslationResult } from "../../core/ports/TranslationProvider";
+import { BaseTranslationProvider } from "./BaseTranslationProvider";
 
 /**
  * Google Cloud Translation v3 implementation. Authentication uses a service
@@ -49,11 +46,21 @@ interface TokenCacheEntry {
 const TOKEN_CACHE = new Map<string, TokenCacheEntry>();
 const SAFETY_WINDOW_MS = 5 * 60 * 1000;
 
-export class GoogleTranslationProvider implements TranslationProvider {
+export class GoogleTranslationProvider extends BaseTranslationProvider {
   readonly id = "google-translation-v3";
   readonly displayName = "Google Translate (Cloud v3)";
   readonly signupUrl = "https://console.cloud.google.com/apis/credentials";
   readonly signupHint = "Google Cloud 控制台 → 创建项目 → 启用 Cloud Translation API → 创建 Service Account → 下载 JSON 密钥文件,整段 JSON 粘贴到 key 字段。Translation API 按字符量计费,有 500K 字符/月免费额度";
+
+  protected readonly providerName = "Google";
+
+  /**
+   * `formatHttpError` needs the project id to give a precise "missing project"
+   * error. `translate` writes it here before the first HTTP call so the error
+   * formatter can read it. Only used by `formatHttpError`, never read from
+   * outside this class.
+   */
+  private currentProjectId = "";
 
   async validateKey(apiKey: string): Promise<{ ok: true } | { ok: false; reason: string }> {
     try {
@@ -79,6 +86,7 @@ export class GoogleTranslationProvider implements TranslationProvider {
     if (!projectId) {
       throw new Error("Service account JSON 缺少 project_id 字段。");
     }
+    this.currentProjectId = projectId;
     const sourceCode = this.toGoogleLocale(request.source);
     const targetCode = this.toGoogleLocale(request.target);
 
@@ -92,32 +100,17 @@ export class GoogleTranslationProvider implements TranslationProvider {
     // Google treats an omitted sourceLanguageCode as "auto-detect".
     if (sourceCode) body.sourceLanguageCode = sourceCode;
 
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${accessToken}`,
-          "Content-Type": "application/json; charset=utf-8",
-          "x-goog-user-project": projectId
-        },
-        body: JSON.stringify(body)
-      });
-    } catch (error) {
-      throw new Error(`网络请求失败: ${this.formatError(error)}`);
-    }
+    const success = await this.fetchJson<GoogleTranslateResponse>(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${accessToken}`,
+        "Content-Type": "application/json; charset=utf-8",
+        "x-goog-user-project": projectId
+      },
+      body: JSON.stringify(body)
+    });
 
-    let payload: GoogleTranslateResponse | GoogleErrorResponse;
-    try {
-      payload = (await response.json()) as GoogleTranslateResponse | GoogleErrorResponse;
-    } catch (error) {
-      throw new Error(`Google 返回了非 JSON 响应 (HTTP ${response.status}): ${this.formatError(error)}`);
-    }
-    if (!response.ok) {
-      throw new Error(this.formatHttpError(response.status, payload, projectId));
-    }
-    const ok = payload as GoogleTranslateResponse;
-    const first = ok.translations?.[0];
+    const first = success.translations?.[0];
     if (!first) {
       throw new Error("Google 返回了空的翻译结果。");
     }
@@ -150,6 +143,9 @@ export class GoogleTranslationProvider implements TranslationProvider {
    * Exchange a freshly-signed JWT for a Cloud Translation access token. The
    * JWT is the standard RS256 service-account grant with a 1-hour lifetime;
    * we cache the resulting token per service-account email.
+   *
+   * Auth call uses a custom error prefix ("Google 鉴权") to distinguish
+   * 401/403 from translation 401/403 — different remediation.
    */
   private async getAccessToken(creds: GoogleServiceAccount): Promise<string> {
     const cached = TOKEN_CACHE.get(creds.client_email);
@@ -158,28 +154,22 @@ export class GoogleTranslationProvider implements TranslationProvider {
       return cached.token;
     }
     const jwt = await this.signServiceAccountJwt(creds);
-    let response: Response;
-    try {
-      response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+    const payload = await this.fetchJson<GoogleTokenResponse>(
+      GOOGLE_TOKEN_ENDPOINT,
+      {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
           grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
           assertion: jwt
         }).toString()
-      });
-    } catch (error) {
-      throw new Error(`Google 鉴权请求失败: ${this.formatError(error)}`);
-    }
-    let payload: GoogleTokenResponse;
-    try {
-      payload = (await response.json()) as GoogleTokenResponse;
-    } catch (error) {
-      throw new Error(`Google 鉴权返回了非 JSON 响应 (HTTP ${response.status}): ${this.formatError(error)}`);
-    }
-    if (!response.ok || !payload.access_token) {
-      const detail = payload.error_description ?? payload.error ?? "unknown";
-      throw new Error(`Google 鉴权失败 (HTTP ${response.status}): ${detail}`);
+      },
+      { providerName: "Google 鉴权" }
+    );
+    if (!payload.access_token) {
+      throw new Error(
+        `Google 鉴权失败: ${payload.error_description ?? payload.error ?? "unknown"}`
+      );
     }
     const ttlMs = (payload.expires_in ?? 3600) * 1000;
     TOKEN_CACHE.set(creds.client_email, {
@@ -233,9 +223,12 @@ export class GoogleTranslationProvider implements TranslationProvider {
     return locale;
   }
 
-  private formatHttpError(status: number, body: GoogleTranslateResponse | GoogleErrorResponse, projectId: string): string {
+  protected formatHttpError(status: number, body: unknown): string {
     const message =
-      "error" in body && body.error?.message ? body.error.message : "Unknown error from Google Cloud Translation.";
+      body && typeof body === "object" && "error" in body
+        ? ((body as { error?: { message?: string } }).error?.message ?? "Unknown error from Google Cloud Translation.")
+        : "Unknown error from Google Cloud Translation.";
+    const projectId = this.currentProjectId;
     switch (status) {
       case 400:
         return `Google 请求参数错误: ${message}`;
@@ -255,10 +248,6 @@ export class GoogleTranslationProvider implements TranslationProvider {
         return `Google HTTP 错误 ${status}: ${message}`;
     }
   }
-
-  private formatError(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
 }
 
 interface GoogleTranslateResponse {
@@ -267,14 +256,6 @@ interface GoogleTranslateResponse {
     readonly detectedLanguageCode?: string;
     readonly model?: string;
   }>;
-}
-
-interface GoogleErrorResponse {
-  readonly error?: {
-    readonly code?: number;
-    readonly message?: string;
-    readonly status?: string;
-  };
 }
 
 /**

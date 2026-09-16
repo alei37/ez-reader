@@ -11,12 +11,12 @@ importers:
 
   .:
     dependencies:
+      '@lingo-reader/mobi-parser':
+        specifier: ^0.4.6
+        version: 0.4.6
       foliate-js:
         specifier: 1.0.1
         version: 1.0.1(patch_hash=28d2bb19077d5b1f553b4ac3232da14d10a8efe9b6f4fcee2ebdc8ea9299a3ea)
-      pdfjs-dist:
-        specifier: 6.1.200
-        version: 6.1.200
     devDependencies:
       '@types/node':
         specifier: ^22.15.2
@@ -258,83 +258,14 @@ packages:
       '@noble/hashes':
         optional: true
 
+  '@lingo-reader/mobi-parser@0.4.6':
+    resolution: {integrity: sha512-/TDhO4IuKI04Ci5Bg8294GBhg5tnYzRM+RDlZQFE4HW2hvQHYb03dObZsOIE5gg7huwRovxpso/sWTWoZVHD7A==}
+
+  '@lingo-reader/shared@0.4.6':
+    resolution: {integrity: sha512-h3PhmidyYabbO5k74H9bUkMJS9Zy2YqCTod8ssZ+/oQ48+/hhS3KSqOkwQks2hrDY7nHqjniNysvzJzukedEkA==}
+
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
-
-  '@napi-rs/canvas-android-arm64@1.0.9':
-    resolution: {integrity: sha512-4LGXk2/0HVzE29K8SzML5WubgCp++B1FH3qgl35XmSZE+lLdr6P9VRQEnZ0MCLZMTSuJP41yyhtoiVNEuvrTIA==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [android]
-
-  '@napi-rs/canvas-darwin-arm64@1.0.9':
-    resolution: {integrity: sha512-YNdfLBzY0W/Pep9fo2L6RmoNlNksnn05LRnX66W63R3ij58S25QOTcjdtEt2v8+PnCESzqZsYzUo+QPeIR44NA==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@napi-rs/canvas-darwin-x64@1.0.9':
-    resolution: {integrity: sha512-ceZQSknTEcy3dOXoekv59LTCkXjvnLsq+VW5PeNNDHEPQbRS5Ervkm1EaDa7WLAjiYWMLuSQTRTHao1dEX4prg==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [darwin]
-
-  '@napi-rs/canvas-linux-arm-gnueabihf@1.0.9':
-    resolution: {integrity: sha512-XhfI0Wwv4llhd6nnWDtY3kQKjq0r+y1i91PlJlJI24ag2U9WrnwbG1qS3+fDLEyouwEVFchiKkTEHozK+5iUNA==}
-    engines: {node: '>= 10'}
-    cpu: [arm]
-    os: [linux]
-
-  '@napi-rs/canvas-linux-arm64-gnu@1.0.9':
-    resolution: {integrity: sha512-012oiYtKaE7i9oxc8q7nraT7kDOpLcaCmFLzVe9Ty34RHDdoDzbWLrVh827CNxYh/EADX1eSikA3ymLjo/nNuw==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  '@napi-rs/canvas-linux-arm64-musl@1.0.9':
-    resolution: {integrity: sha512-Ls5UWYFFn63casTZEczbeyEg3vRDRkv9lscuGwfchtY5yLLQhgOB8SN4YGxmfJ5vTaBwZ2YUxBS3NtmjJmFXdA==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [linux]
-    libc: [musl]
-
-  '@napi-rs/canvas-linux-riscv64-gnu@1.0.9':
-    resolution: {integrity: sha512-hLKEGxV7ZiRHqndePTokgDMdBlo/rDfzg7P4p4QIv9pUhuYobnu3R2NIFLCRghG0nwfo+s2sw+c1xZFeCmEAsw==}
-    engines: {node: '>= 10'}
-    cpu: [riscv64]
-    os: [linux]
-    libc: [glibc]
-
-  '@napi-rs/canvas-linux-x64-gnu@1.0.9':
-    resolution: {integrity: sha512-6kaz3w0QMy77PDWk6rJ1ksIihdad3qzEyX2o2oGT8GwCaypfT5mhjr8buOO5hstyLxcWXDScuz56RsINLtBPIQ==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  '@napi-rs/canvas-linux-x64-musl@1.0.9':
-    resolution: {integrity: sha512-xrGvmS3v55hmZ86ls/kBLVNMUTYio3f6Ik0DireemG994VfPAwiA3ZXA0Uf1bByctkB3NQ1Sfb+H5bkdUnnzfQ==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [linux]
-    libc: [musl]
-
-  '@napi-rs/canvas-win32-arm64-msvc@1.0.9':
-    resolution: {integrity: sha512-yjmVS3ArZeRVCP7jqbPq4rpZa/BhTeI7ELE2XqJg3snICQBDevLZyArxswHkiTnT34KRic33/4fLirrHI+SY8A==}
-    engines: {node: '>= 10'}
-    cpu: [arm64]
-    os: [win32]
-
-  '@napi-rs/canvas-win32-x64-msvc@1.0.9':
-    resolution: {integrity: sha512-QlSYQdMQslB81nlABo9wNfQ6npFhE7/O+saCZdqVGueGanyRk4jCogD5EwQenfP3kIq9e+mm6GreQBjX5MrA8g==}
-    engines: {node: '>= 10'}
-    cpu: [x64]
-    os: [win32]
-
-  '@napi-rs/canvas@1.0.9':
-    resolution: {integrity: sha512-QviPdJImDi/jMAvBfqaw+19BndMd/sizXVW3NnpMd3VJGz++QXkOHcP9kWR/smHG0hNjHeyuHFyrx/5lD0oNcQ==}
-    engines: {node: '>= 10'}
 
   '@types/codemirror@5.60.8':
     resolution: {integrity: sha512-VjFgDF/eB+Aklcy15TtOTLQeMjTo07k7KAjql8OK5Dirr7a6sJY4T1uVBDuTVG9VEmn1uUsohOpYnVfgC6/jyw==}
@@ -377,6 +308,13 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  events@3.3.0:
+    resolution: {integrity: sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==}
+    engines: {node: '>=0.8.x'}
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
+
   foliate-js@1.0.1:
     resolution: {integrity: sha512-Cj4h2ub5aVA+yUgbhvVhCyxwi0GPF4pyNBa6Lw9+6WKY1ReBxipItn2kEBO6u7Vu/xYXjK711R74+t+yW/0u5w==}
 
@@ -415,9 +353,8 @@ packages:
   parse5@8.0.1:
     resolution: {integrity: sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==}
 
-  pdfjs-dist@6.1.200:
-    resolution: {integrity: sha512-o8MolyzirkkLrcdsae/HEOiIcXWI7DS5zGpvqW8xTC2YUsW30rltFw2bDGvw/fskUdEMrQm2br68jzDS5BH2vw==}
-    engines: {node: '>=22.13.0 || >=24'}
+  path-browserify@1.0.1:
+    resolution: {integrity: sha512-b7uo2UCUOYZcnF/3ID0lulOJi/bafxa1xPe7ZPsammBSpjSWQkjNxlt635YGS2MiR9GjvuXCtz2emr3jbsz98g==}
 
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
@@ -426,6 +363,10 @@ packages:
   require-from-string@2.0.2:
     resolution: {integrity: sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==}
     engines: {node: '>=0.10.0'}
+
+  sax@1.6.1:
+    resolution: {integrity: sha512-42tBVwLWnaQvW5zc4HbZrTuWccECCZfBi92FDuwtqxasH+JbPB3/FOKb1m222K42R4WxuxzzMsTswfzgtSu64Q==}
+    engines: {node: '>=11.0.0'}
 
   saxes@6.0.0:
     resolution: {integrity: sha512-xAg7SOnEhrm5zI3puOOKyy1OMcMlIJZYNJY7xLBwSze0UjhPLnWfj2GF2EpT0jmzaJKIWKHLsaSSajf35bcYnA==}
@@ -637,55 +578,18 @@ snapshots:
 
   '@exodus/bytes@1.15.1': {}
 
+  '@lingo-reader/mobi-parser@0.4.6':
+    dependencies:
+      '@lingo-reader/shared': 0.4.6
+      fflate: 0.8.3
+
+  '@lingo-reader/shared@0.4.6':
+    dependencies:
+      events: 3.3.0
+      path-browserify: 1.0.1
+      sax: 1.6.1
+
   '@marijn/find-cluster-break@1.0.4': {}
-
-  '@napi-rs/canvas-android-arm64@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-darwin-arm64@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-darwin-x64@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-linux-arm-gnueabihf@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-linux-arm64-gnu@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-linux-arm64-musl@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-linux-riscv64-gnu@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-linux-x64-gnu@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-linux-x64-musl@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-win32-arm64-msvc@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas-win32-x64-msvc@1.0.9':
-    optional: true
-
-  '@napi-rs/canvas@1.0.9':
-    optionalDependencies:
-      '@napi-rs/canvas-android-arm64': 1.0.9
-      '@napi-rs/canvas-darwin-arm64': 1.0.9
-      '@napi-rs/canvas-darwin-x64': 1.0.9
-      '@napi-rs/canvas-linux-arm-gnueabihf': 1.0.9
-      '@napi-rs/canvas-linux-arm64-gnu': 1.0.9
-      '@napi-rs/canvas-linux-arm64-musl': 1.0.9
-      '@napi-rs/canvas-linux-riscv64-gnu': 1.0.9
-      '@napi-rs/canvas-linux-x64-gnu': 1.0.9
-      '@napi-rs/canvas-linux-x64-musl': 1.0.9
-      '@napi-rs/canvas-win32-arm64-msvc': 1.0.9
-      '@napi-rs/canvas-win32-x64-msvc': 1.0.9
-    optional: true
 
   '@types/codemirror@5.60.8':
     dependencies:
@@ -754,6 +658,10 @@ snapshots:
       '@esbuild/win32-ia32': 0.25.12
       '@esbuild/win32-x64': 0.25.12
 
+  events@3.3.0: {}
+
+  fflate@0.8.3: {}
+
   foliate-js@1.0.1(patch_hash=28d2bb19077d5b1f553b4ac3232da14d10a8efe9b6f4fcee2ebdc8ea9299a3ea):
     dependencies:
       construct-style-sheets-polyfill: 3.1.0
@@ -809,13 +717,13 @@ snapshots:
     dependencies:
       entities: 8.1.0
 
-  pdfjs-dist@6.1.200:
-    optionalDependencies:
-      '@napi-rs/canvas': 1.0.9
+  path-browserify@1.0.1: {}
 
   punycode@2.3.1: {}
 
   require-from-string@2.0.2: {}
+
+  sax@1.6.1: {}
 
   saxes@6.0.0:
     dependencies:

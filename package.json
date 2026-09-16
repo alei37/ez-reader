@@ -42,7 +42,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "foliate-js": "1.0.1",
-    "pdfjs-dist": "6.1.200"
+    "@lingo-reader/mobi-parser": "^0.4.6",
+    "foliate-js": "1.0.1"
   }
 }

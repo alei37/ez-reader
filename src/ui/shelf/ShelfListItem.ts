@@ -1,5 +1,6 @@
 import type { LibraryEntry } from "../../core/services/LibraryService";
 import { progressFraction } from "../../core/entities/ReadingState";
+import { extractAuthorFallback, statusLabel } from "./shelfFormatters";
 
 export interface ShelfListHandlers {
   onOpen: (entry: LibraryEntry) => void;
@@ -30,6 +31,16 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
   const info = row.createDiv({ cls: "ez-reader__shelf-list__info" });
   const titleText = entry.book.metadata?.title ?? entry.book.locator.path;
   const authorText = (entry.book.metadata?.authors ?? []).join("、") || extractAuthorFallback(entry.book.locator.path);
+  const fraction = progressFraction(entry.reading);
+  let progressText = "—";
+  let progressFractionValue = 0;
+  if (entry.reading.position?.kind === "pdf") {
+    progressText = `第 ${entry.reading.position.page} 页`;
+    // PDF 没分母 — 不画 bar (避免 bar 显示成 100% 让用户误以为读完了)
+  } else if (fraction > 0) {
+    progressText = `${Math.round(fraction * 100)}%`;
+    progressFractionValue = fraction;
+  }
   info.createEl("span", {
     text: titleText,
     cls: "ez-reader__shelf-list__title"
@@ -38,20 +49,19 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
     text: authorText,
     cls: "ez-reader__shelf-list__author"
   });
+  // 进度条 (EPUB 等可计算 fraction 的格式). PDF 没分母所以不画 —
+  // 画了反而误导用户以为读到 30% 而其实是 30/200 页.
+  if (progressFractionValue > 0) {
+    const bar = info.createDiv({ cls: "ez-reader__shelf-list__bar" });
+    const fill = bar.createDiv({ cls: "ez-reader__shelf-list__bar-fill" });
+    fill.style.width = `${Math.min(100, Math.round(progressFractionValue * 100))}%`;
+  }
   // Hover tooltip 同样给出路径信息, 帮用户识别未解析 metadata 的书
   const tip = [titleText];
   if (entry.book.metadata?.publisher) tip.push(entry.book.metadata.publisher);
   if (entry.book.metadata?.published) tip.push(entry.book.metadata.published);
   tip.push(entry.book.locator.path);
   row.setAttribute("title", tip.join(" · "));
-
-  const fraction = progressFraction(entry.reading);
-  let progressText = "—";
-  if (entry.reading.position?.kind === "pdf") {
-    progressText = `第 ${entry.reading.position.page} 页`;
-  } else if (fraction > 0) {
-    progressText = `${Math.round(fraction * 100)}%`;
-  }
   // aria-label 让屏幕阅读器读出完整信息 (hover tooltip 用 title, screen reader 用 aria-label)
   row.setAttribute("aria-label", `${titleText} · ${authorText} · ${progressText} · ${statusLabel(entry.reading.status)}`);
   row.createEl("span", {
@@ -62,7 +72,7 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
     text: statusLabel(entry.reading.status),
     cls: `ez-reader__status-pill is-${entry.reading.status}`
   });
-  // 与 ShelfGridItem 保持一致: 平台标签 + 语种
+  // 与 ShelfGridItem 保持一致: 平台标签 + 语种 + favorite ★
   row.createEl("span", {
     text: entry.book.locator.format.toUpperCase(),
     cls: "ez-reader__shelf-list__format"
@@ -70,6 +80,13 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
   const lang = entry.book.metadata?.languages?.[0];
   if (lang) {
     row.createEl("span", { text: lang, cls: "ez-reader__shelf-list__lang" });
+  }
+  if (entry.reading.favorite) {
+    row.createEl("span", { text: "★", cls: "ez-reader__shelf-list__favorite", title: "已收藏" });
+  }
+  // P1 新功能: 列表视图也显示置顶 — 放最前, 跟 grid 的📌保持一致.
+  if (entry.book.pinnedAt !== null) {
+    row.createEl("span", { text: "📌", cls: "ez-reader__shelf-list__pin", title: "已置顶 — 右键菜单可取消" });
   }
 
   row.addEventListener("click", () => handlers.onOpen(entry));
@@ -84,23 +101,4 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
     handlers.onContextMenu(entry, event);
   });
   return row;
-};
-
-const statusLabel = (status: string): string => {
-  switch (status) {
-    case "reading":
-      return "在读";
-    case "finished":
-      return "已读完";
-    case "abandoned":
-      return "暂弃";
-    default:
-      return "未开始";
-  }
-};
-
-const extractAuthorFallback = (path: string): string => {
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length >= 2) return parts.slice(0, -1).join(" / ");
-  return "未知作者";
 };

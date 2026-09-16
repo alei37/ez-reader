@@ -21,8 +21,34 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   // otherwise each read the same base snapshot, both build a delta on
   // top, and the later save would clobber the earlier one.
   private writeChain: Promise<void> = Promise.resolve();
+  /**
+   * Called after every settings mutation (saveSettings / patchSettings)
+   * with the freshly-persisted PluginSettings. Used by Plugin to bust
+   * downstream caches (e.g. TranslationCoordinator's 30s settings TTL).
+   */
+  private settingsListeners = new Set<(settings: PluginSettings) => void>();
 
   constructor(private readonly plugin: Plugin) {}
+
+  /**
+   * Subscribe to settings changes. Returns a disposer that unsubscribes.
+   * Used by Plugin to wire TranslationCoordinator.invalidate() and other
+   * downstream caches without making them part of the AnnotationStore port.
+   */
+  onSettingsChanged(listener: (settings: PluginSettings) => void): () => void {
+    this.settingsListeners.add(listener);
+    return () => this.settingsListeners.delete(listener);
+  }
+
+  private notifySettingsChanged(settings: PluginSettings): void {
+    for (const listener of this.settingsListeners) {
+      try {
+        listener(settings);
+      } catch (error) {
+        console.warn("[ez-reader] settings change listener threw", error);
+      }
+    }
+  }
 
   async load(): Promise<AnnotationSnapshot> {
     if (this.cache) return this.cache;
@@ -37,7 +63,14 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       reading: this.sanitizeReadingArray(raw?.reading),
       bookmarks: this.sanitizeBookmarkArray(raw?.bookmarks),
       excerpts: this.sanitizeExcerptArray(raw?.excerpts),
-      coverPaths: this.sanitizeRecord(raw?.coverPaths)
+      coverPaths: this.sanitizeRecord(raw?.coverPaths),
+      addedAtByBookId: this.sanitizeAddedAtMap(raw?.addedAtByBookId),
+      // 镜像 sanitizeAddedAtMap 的逻辑: 数字映射, 过滤非有限正值.
+      pinnedAtByBookId: this.sanitizeAddedAtMap(raw?.pinnedAtByBookId),
+      // P0 修复: 之前漏读 onboardingDismissed, hasOnboardingBeenDismissed
+      // 永远返回 false, modal 每次启动都弹. markOnboardingDismissed 写的
+      // 标志其实在 data.json 里, 只是 load() 没拷到 cache.
+      onboardingDismissed: raw?.onboardingDismissed === true
     };
     return this.cache;
   }
@@ -96,6 +129,15 @@ export class ObsidianAnnotationStore implements AnnotationStore {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(input)) {
       if (typeof v === "string") out[k] = v;
+    }
+    return out;
+  }
+
+  private sanitizeAddedAtMap(input: unknown): Record<string, number> {
+    if (!input || typeof input !== "object") return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(input)) {
+      if (typeof v === "number" && Number.isFinite(v) && v > 0) out[k] = v;
     }
     return out;
   }
@@ -198,6 +240,24 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       const snapshot = await this.load();
       return { ...snapshot, settings };
     });
+    this.notifySettingsChanged(settings);
+  }
+
+  /**
+   * Atomic settings update. The read-modify-write runs inside the write
+   * chain so two concurrent patches can't both read the same base and
+   * overwrite each other's fields. Use this from any debounced caller
+   * (slider drag, text input) to avoid the read-modify-write race that
+   * `listSettings()` + `saveSettings()` would create.
+   */
+  async patchSettings(patch: (settings: PluginSettings) => PluginSettings): Promise<void> {
+    let nextSettings: PluginSettings | undefined;
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      nextSettings = patch(snapshot.settings);
+      return { ...snapshot, settings: nextSettings };
+    });
+    if (nextSettings) this.notifySettingsChanged(nextSettings);
   }
 
   async loadCoverPaths(): Promise<Readonly<Record<string, string>>> {
@@ -210,6 +270,83 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       const snapshot = await this.load();
       return { ...snapshot, coverPaths };
     });
+  }
+
+  async markOnboardingDismissed(): Promise<void> {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.onboardingDismissed === true) return snapshot;
+      return { ...snapshot, onboardingDismissed: true };
+    });
+  }
+
+  async getAddedAt(bookId: BookId): Promise<number | null> {
+    const snapshot = await this.load();
+    return snapshot.addedAtByBookId?.[bookId] ?? null;
+  }
+
+  async setAddedAt(bookId: BookId, addedAt: number): Promise<void> {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.addedAtByBookId ?? {};
+      // Don't downgrade an existing timestamp — once a book is added, its
+      // "first added" moment stays stable across reopens.
+      if (current[bookId] !== undefined && current[bookId]! <= addedAt) return snapshot;
+      return { ...snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
+    });
+  }
+
+  async getPinnedAt(bookId: BookId): Promise<number | null> {
+    const snapshot = await this.load();
+    return snapshot.pinnedAtByBookId?.[bookId] ?? null;
+  }
+
+  async setPinnedAt(bookId: BookId, pinnedAt: number | null): Promise<void> {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.pinnedAtByBookId ?? {};
+      const next = { ...current };
+      if (pinnedAt === null) {
+        delete next[bookId];
+      } else {
+        next[bookId] = pinnedAt;
+      }
+      return { ...snapshot, pinnedAtByBookId: next };
+    });
+  }
+
+  /**
+   * P0 修复: 之前 `Promise.all([...addToLibrary, ...setAddedAt])` 让每个
+   * book 都触发 2 个串行 mutate (writeChain 串行化). 100 本书 = 200 个
+   * saveData, 用户报告"加入所选"体感 ~10s 甚至卡死. 现在 1 个 mutate
+   * 把所有 ids 一起加上 + 一起 stamp, 一次 saveData 落盘.
+   */
+  async addToLibraryBatchWithStamp(bookIds: ReadonlyArray<BookId>, addedAt: number): Promise<void> {
+    if (bookIds.length === 0) return;
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const existingLibrary = new Set(snapshot.library);
+      const existingAddedAt = snapshot.addedAtByBookId ?? {};
+      // Filter out ids that are already in the library — for those, their
+      // original addedAt must NOT be downgraded (first-added wins).
+      const newIds = bookIds.filter((id) => !existingLibrary.has(id));
+      if (newIds.length === 0) return snapshot;
+      const library = [...snapshot.library, ...newIds];
+      // Build the new addedAt map once; only stamp ids that don't already
+      // have a (larger-or-equal) entry.
+      const addedAtByBookId = { ...existingAddedAt };
+      for (const id of newIds) {
+        if (addedAtByBookId[id] === undefined || addedAtByBookId[id]! > addedAt) {
+          addedAtByBookId[id] = addedAt;
+        }
+      }
+      return { ...snapshot, library, addedAtByBookId };
+    });
+  }
+
+  async hasOnboardingBeenDismissed(): Promise<boolean> {
+    const snapshot = await this.load();
+    return snapshot.onboardingDismissed === true;
   }
 
   private normalizeSettings(input: PluginSettings | undefined): PluginSettings {

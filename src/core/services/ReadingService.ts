@@ -79,6 +79,17 @@ export class ReadingService {
   async listExcerpts(bookId: BookId): Promise<ReadonlyArray<Excerpt>> {
     return this.annotations.listExcerpts(bookId);
   }
+
+  /** Read the configured translation target locale, with sensible default. */
+  async getTranslationLocale(): Promise<string> {
+    try {
+      const settings = await this.annotations.listSettings();
+      const locale = settings.translation?.targetLocale;
+      return typeof locale === "string" && locale ? locale : "zh-CN";
+    } catch {
+      return "zh-CN";
+    }
+  }
 }
 
 const computeFraction = (position: ReadingPosition): number => {

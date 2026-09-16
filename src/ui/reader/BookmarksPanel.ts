@@ -3,6 +3,8 @@ import type { Bookmark } from "../../core/entities/Bookmark";
 export interface BookmarksPanelHandlers {
   onJump: (bookmark: Bookmark) => void;
   onRemove: (bookmark: Bookmark) => void;
+  /** Close button on panel header — user-facing escape hatch. */
+  onClose?: () => void;
 }
 
 export class BookmarksPanel {
@@ -35,7 +37,19 @@ export class BookmarksPanel {
 
   private render(): void {
     this.root.empty();
-    this.root.createEl("h3", { text: "书签" });
+    const headerRow = this.root.createDiv({ cls: "ez-reader__panel-header" });
+    const titleRow = headerRow.createDiv({ cls: "ez-reader__panel-header-title" });
+    titleRow.createEl("h3", { text: "书签" });
+    // P0 修复: 之前 panel 只能通过 toolbar 上的 toggle 按钮关闭, 沉浸模式
+    // 下 toolbar 隐藏 → 用户完全卡住. 现在每个 panel header 加显式 × 按钮.
+    if (this.handlers.onClose) {
+      const close = titleRow.createEl("button", {
+        text: "×",
+        attr: { type: "button", title: "关闭面板 (Esc)", "aria-label": "关闭面板" }
+      });
+      close.addClass("ez-reader__panel-close");
+      close.addEventListener("click", () => this.handlers.onClose?.());
+    }
     if (this.bookmarks.length === 0) {
       this.root.createDiv({ cls: "ez-reader__reader-panel__empty", text: "本书还没有书签。" });
       return;

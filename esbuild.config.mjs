@@ -1,6 +1,5 @@
 import esbuild from "esbuild";
 import process from "process";
-import { readFile } from "node:fs/promises";
 
 const production = process.argv[2] === "production";
 
@@ -13,21 +12,8 @@ const context = await esbuild.context({
   logLevel: "info",
   sourcemap: production ? false : "inline",
   treeShaking: true,
-  plugins: [
-    {
-      name: "inline-pdf-worker",
-      setup(build) {
-        build.onResolve({ filter: /^pdfjs-dist\/legacy\/build\/pdf\.worker\.min\.mjs$/ }, () => ({
-          path: "pdf.worker.min.mjs",
-          namespace: "ez-reader-pdf-worker"
-        }));
-        build.onLoad({ filter: /.*/, namespace: "ez-reader-pdf-worker" }, async () => ({
-          contents: await readFile("node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs", "utf8"),
-          loader: "text"
-        }));
-      }
-    }
-  ],
+  // P1 之后: ez-reader 不再打包 pdfjs-dist / pdf.worker, PDF 走 Obsidian 内置 viewer
+  plugins: [],
   outfile: "main.js"
 });
 

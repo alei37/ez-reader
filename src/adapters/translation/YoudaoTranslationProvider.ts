@@ -1,9 +1,6 @@
 import type { Locale } from "../../core/types/Locale";
-import type {
-  TranslationProvider,
-  TranslationRequest,
-  TranslationResult
-} from "../../core/ports/TranslationProvider";
+import type { TranslationRequest, TranslationResult } from "../../core/ports/TranslationProvider";
+import { BaseTranslationProvider } from "./BaseTranslationProvider";
 
 /**
  * Youdao (有道智云) text translation API.
@@ -86,11 +83,13 @@ const parseDetectedSource = (l: string | undefined, requestedFrom: string): Loca
   return requestedFrom;
 };
 
-export class YoudaoTranslationProvider implements TranslationProvider {
+export class YoudaoTranslationProvider extends BaseTranslationProvider {
   readonly id = "youdao";
   readonly displayName = "有道智云 · 文本翻译";
   readonly signupUrl = "https://ai.youdao.com/console/#/service-singleton/text";
   readonly signupHint = "注册有道智云账号 → 创建应用 → 选「文本翻译」 → 拿到 appKey + appSecret,JSON 格式粘贴到 key 字段";
+
+  protected readonly providerName = "有道";
 
   /**
    * Youdao expects the key as JSON `{"appKey": "...", "appSecret": "..."}` so
@@ -118,7 +117,7 @@ export class YoudaoTranslationProvider implements TranslationProvider {
     const from = toYoudaoLocale(request.source);
     const to = toYoudaoLocale(request.target);
     if (!creds) {
-      throw new Error("有道 API key 格式不正确,需要 {\"appKey\":\"...\",\"appSecret\":\"...\"}。");
+      throw new Error('有道 API key 格式不正确,需要 {"appKey":"...","appSecret":"..."}。');
     }
     const salt = crypto.randomUUID();
     const curtime = Math.floor(Date.now() / 1000);
@@ -137,26 +136,12 @@ export class YoudaoTranslationProvider implements TranslationProvider {
       signType: "v3"
     });
 
-    let response: Response;
-    try {
-      response = await fetch(YOUDAO_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
-        body: body.toString()
-      });
-    } catch (error) {
-      throw new Error(`网络请求失败: ${this.formatError(error)}`);
-    }
+    const payload = await this.fetchJson<YoudaoResponse>(YOUDAO_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+      body: body.toString()
+    });
 
-    let payload: YoudaoResponse;
-    try {
-      payload = (await response.json()) as YoudaoResponse;
-    } catch (error) {
-      throw new Error(`有道返回了非 JSON 响应 (HTTP ${response.status}): ${this.formatError(error)}`);
-    }
-    if (!response.ok) {
-      throw new Error(`有道 HTTP 错误 ${response.status}: ${payload.errorCode ?? "未知"}`);
-    }
     const code = payload.errorCode ?? "unknown";
     if (code !== "0" && code !== "00") {
       throw new Error(`有道 API 错误 ${code}: ${YOUDAO_ERROR_MESSAGES[code] ?? "未知错误"}`);
@@ -212,8 +197,17 @@ export class YoudaoTranslationProvider implements TranslationProvider {
     return hex;
   }
 
-  private formatError(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
+  /**
+   * Youdao 把 HTTP 错误跟业务错误(errorCode)拆开: HTTP 4xx/5xx 时 body 仍
+   * 是 JSON, 错误消息从 `message` 字段拿 — 而 200 OK + errorCode != "0"
+   * 是另一种错误 (translate 里处理)。这里只覆盖 HTTP 错误。
+   */
+  protected formatHttpError(status: number, body: unknown): string {
+    const message =
+      body && typeof body === "object" && "errorCode" in body
+        ? String((body as { errorCode?: unknown }).errorCode)
+        : "未知";
+    return `有道 HTTP 错误 ${status}: ${message}`;
   }
 }
 
