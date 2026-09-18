@@ -74,7 +74,11 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       // P0 修复: 之前漏读 onboardingDismissed, hasOnboardingBeenDismissed
       // 永远返回 false, modal 每次启动都弹. markOnboardingDismissed 写的
       // 标志其实在 data.json 里, 只是 load() 没拷到 cache.
-      onboardingDismissed: raw?.onboardingDismissed === true
+      onboardingDismissed: raw?.onboardingDismissed === true,
+      // P2: 跟 pinnedAtByBookId / addedAtByBookId 同样的 fallback 模式 —
+      // 旧 data.json 没这个字段就给空 map, 不会因为 undefined 让
+      // loadVisitedTocIds 炸掉.
+      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId)
     };
     return this.cache;
   }
@@ -169,6 +173,33 @@ export class ObsidianAnnotationStore implements AnnotationStore {
         languages: [],
         cachedAt
       };
+    }
+    return out;
+  }
+
+  /**
+   * P2: 验证 visited toc ids map. 每本书的 value 是 string array; 元素
+   * 不是 string 过滤掉, 整个 entry 损坏 (非 array) 也丢, 不让坏数据
+   * 整个阻塞 load.
+   */
+  private sanitizeVisitedTocIdsMap(
+    input: unknown
+  ): Record<string, ReadonlyArray<string>> {
+    if (!input || typeof input !== "object") return {};
+    const out: Record<string, ReadonlyArray<string>> = {};
+    for (const [k, v] of Object.entries(input)) {
+      if (!Array.isArray(v)) continue;
+      const ids: string[] = [];
+      const seen = new Set<string>();
+      for (const id of v) {
+        if (typeof id !== "string" || !id) continue;
+        // 去重 — 同一本书的 visited ids 不应有重复, 但损坏数据可能
+        // 有, sanitize 时清掉.
+        if (seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      if (ids.length > 0) out[k] = ids;
     }
     return out;
   }
@@ -437,6 +468,33 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   async hasOnboardingBeenDismissed(): Promise<boolean> {
     const snapshot = await this.load();
     return snapshot.onboardingDismissed === true;
+  }
+
+  /**
+   * P2: 读 visited toc ids. 旧 data.json 没 visitedTocIdsByBookId 字段
+   * 时 load() 已 fallback 到空 map, 这里直接读.
+   */
+  async loadVisitedTocIds(bookId: BookId): Promise<ReadonlyArray<string>> {
+    const snapshot = await this.load();
+    return snapshot.visitedTocIdsByBookId?.[bookId] ?? [];
+  }
+
+  /**
+   * P2: 写 visited toc ids. 在 write chain 内做 (跟 setPinnedAt 同样的
+   * mutate 模式) — 避免两个并发 caller (relocate 触发多个 chapter
+   * visited) 各 load 一份旧 array 后互相覆盖. caller 自己负责去重
+   * (ReaderView.schedulePersistVisited 维护本地 Set).
+   */
+  async saveVisitedTocIds(bookId: BookId, ids: ReadonlyArray<string>): Promise<void> {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.visitedTocIdsByBookId ?? {};
+      // ids 是 caller 的完整数组 (ReaderView 把 tocFractions.keys() 拼出来),
+      // 直接 overwrite. 如果 caller 想增量 append 也行 — 这里不强制去重,
+      // 但 saveVisitedTocIds 之前 caller 自己保证不重复 (用 Set 维护).
+      const next = { ...current, [bookId]: [...ids] };
+      return { ...snapshot, visitedTocIdsByBookId: next };
+    });
   }
 
   private normalizeSettings(input: PluginSettings | undefined): PluginSettings {

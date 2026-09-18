@@ -118,6 +118,10 @@ class InMemoryStore implements AnnotationStore {
   async hasOnboardingBeenDismissed(): Promise<boolean> {
     return false;
   }
+
+  // P2: visited toc ids mock — noop stub.
+  async loadVisitedTocIds(): Promise<ReadonlyArray<string>> { return []; }
+  async saveVisitedTocIds(): Promise<void> { /* no-op */ }
 }
 
 class FakeSource implements BookSource {

@@ -152,6 +152,9 @@ class StaticStore implements AnnotationStore {
   async setAddedAt(): Promise<void> {}
   async markOnboardingDismissed(): Promise<void> {}
   async hasOnboardingBeenDismissed(): Promise<boolean> { return true; }
+  // P2: visited toc ids mock — noop stub.
+  async loadVisitedTocIds(): Promise<ReadonlyArray<string>> { return []; }
+  async saveVisitedTocIds(): Promise<void> { /* noop */ }
 }
 
 const settingsWithTranslation = (providerId: string, apiKey: string, source: Locale, target: Locale): PluginSettings => ({

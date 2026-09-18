@@ -14023,7 +14023,11 @@ var ObsidianAnnotationStore = class {
       // P0 修复: 之前漏读 onboardingDismissed, hasOnboardingBeenDismissed
       // 永远返回 false, modal 每次启动都弹. markOnboardingDismissed 写的
       // 标志其实在 data.json 里, 只是 load() 没拷到 cache.
-      onboardingDismissed: raw?.onboardingDismissed === true
+      onboardingDismissed: raw?.onboardingDismissed === true,
+      // P2: 跟 pinnedAtByBookId / addedAtByBookId 同样的 fallback 模式 —
+      // 旧 data.json 没这个字段就给空 map, 不会因为 undefined 让
+      // loadVisitedTocIds 炸掉.
+      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId)
     };
     return this.cache;
   }
@@ -14103,6 +14107,28 @@ var ObsidianAnnotationStore = class {
         languages: [],
         cachedAt
       };
+    }
+    return out;
+  }
+  /**
+   * P2: 验证 visited toc ids map. 每本书的 value 是 string array; 元素
+   * 不是 string 过滤掉, 整个 entry 损坏 (非 array) 也丢, 不让坏数据
+   * 整个阻塞 load.
+   */
+  sanitizeVisitedTocIdsMap(input) {
+    if (!input || typeof input !== "object") return {};
+    const out = {};
+    for (const [k3, v3] of Object.entries(input)) {
+      if (!Array.isArray(v3)) continue;
+      const ids = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const id of v3) {
+        if (typeof id !== "string" || !id) continue;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      if (ids.length > 0) out[k3] = ids;
     }
     return out;
   }
@@ -14324,6 +14350,28 @@ var ObsidianAnnotationStore = class {
   async hasOnboardingBeenDismissed() {
     const snapshot = await this.load();
     return snapshot.onboardingDismissed === true;
+  }
+  /**
+   * P2: 读 visited toc ids. 旧 data.json 没 visitedTocIdsByBookId 字段
+   * 时 load() 已 fallback 到空 map, 这里直接读.
+   */
+  async loadVisitedTocIds(bookId) {
+    const snapshot = await this.load();
+    return snapshot.visitedTocIdsByBookId?.[bookId] ?? [];
+  }
+  /**
+   * P2: 写 visited toc ids. 在 write chain 内做 (跟 setPinnedAt 同样的
+   * mutate 模式) — 避免两个并发 caller (relocate 触发多个 chapter
+   * visited) 各 load 一份旧 array 后互相覆盖. caller 自己负责去重
+   * (ReaderView.schedulePersistVisited 维护本地 Set).
+   */
+  async saveVisitedTocIds(bookId, ids) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.visitedTocIdsByBookId ?? {};
+      const next = { ...current, [bookId]: [...ids] };
+      return { ...snapshot, visitedTocIdsByBookId: next };
+    });
   }
   normalizeSettings(input) {
     if (!input) return DEFAULT_PLUGIN_SETTINGS;
@@ -17603,6 +17651,22 @@ var ReadingService = class {
       return "zh-CN";
     }
   }
+  /**
+   * P2: 读取这本书用户翻过的 toc item id 列表. ReaderView 在 openSession
+   * 完成后立即调, 把结果传给 TocPanel.setVisited, 让进度点从第一次
+   * 打开就有绿色 (而不是要等下次 relocate 才填).
+   */
+  async getVisitedTocIds(bookId) {
+    return this.annotations.loadVisitedTocIds(bookId);
+  }
+  /**
+   * P2: 写这本书的 visited toc ids (覆盖). ReaderView 在 debounce 后调,
+   * 跟 progress 持久化一样 300ms 兜底, 不每次 relocate 都写盘. ids 是
+   * 当前 user 翻过的所有 toc id (caller 自己维护 Set 去重).
+   */
+  async saveVisitedTocIds(bookId, ids) {
+    await this.annotations.saveVisitedTocIds(bookId, ids);
+  }
 };
 var computeFraction = (position) => {
   if (position.kind === "reflow" || position.kind === "text" || position.kind === "pdf") {
@@ -20508,7 +20572,6 @@ var TocPanel = class {
     this.searchExpanded = /* @__PURE__ */ new Set();
     this.focusedId = null;
     this.scrolledIds = /* @__PURE__ */ new Set();
-    this.visitedIds = /* @__PURE__ */ new Set();
     this.renderHeader();
     this.renderList();
   }
@@ -20668,19 +20731,26 @@ var TocPanel = class {
         this.renderList();
       });
     }
-    headerRow.createDiv({ cls: "ez-reader__toc-breadcrumb" });
     title.setAttribute("data-toc-header-title", "1");
+    this.root.createDiv({ cls: "ez-reader__toc-breadcrumb-row" });
   }
   renderBreadcrumb() {
-    const slot = this.root.querySelector(".ez-reader__toc-breadcrumb");
+    const slot = this.root.querySelector(".ez-reader__toc-breadcrumb-row");
     if (!slot) return;
     slot.empty();
-    if (!this.activeId) return;
+    if (!this.activeId) {
+      slot.addClass("is-empty");
+      return;
+    }
+    slot.removeClass("is-empty");
     const ancestors = ancestorPathOf(this.tree, this.activeId);
     const chain = [...ancestors];
     const activeNode = this.findNodeById(this.tree, this.activeId);
     if (activeNode) chain.push(activeNode.item);
-    if (chain.length === 0) return;
+    if (chain.length === 0) {
+      slot.addClass("is-empty");
+      return;
+    }
     chain.forEach((item, idx) => {
       const isLast = idx === chain.length - 1;
       if (idx > 0) {
@@ -21511,6 +21581,15 @@ var ReaderView = class extends import_obsidian15.ItemView {
    */
   persistProgressTimer;
   persistProgressPending;
+  /**
+   * P2: visited toc ids 持久化 debounce — 跟 progress 同样 300ms. 每次
+   * tocFractions 新增 id 时 schedule 一次 (relocate 触发频繁, 直接同步写
+   * IO 会刷屏). 跟 progress 不共用 timer — 两件事独立, 一个延迟不影响
+   * 另一个 flush.
+   */
+  persistVisitedTimer;
+  /** 上次已 flush 的 visited ids 数组 — 避免重复写相同内容. */
+  persistVisitedLastSnapshot = [];
   constructor(leaf, deps) {
     super(leaf);
     this.deps = deps;
@@ -21685,6 +21764,11 @@ var ReaderView = class extends import_obsidian15.ItemView {
       const pending = this.persistProgressPending;
       this.persistProgressPending = void 0;
       if (pending) await this.persistProgress(pending.fraction, pending.locator);
+    }
+    if (this.persistVisitedTimer !== void 0) {
+      globalThis.clearTimeout(this.persistVisitedTimer);
+      this.persistVisitedTimer = void 0;
+      await this.flushVisited();
     }
     this.selectionMenu?.destroy();
     this.selectionMenu = void 0;
@@ -22158,6 +22242,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
         if (activeTocId && !this.tocFractions.has(activeTocId)) {
           this.tocFractions.set(activeTocId, detail.fraction);
           this.tocPanel?.setVisited(this.tocFractions.keys());
+          this.schedulePersistVisited();
         }
         this.toolbar?.update(this.toolbarState());
         this.schedulePersistProgress(detail.fraction, detail.locator);
@@ -22220,6 +22305,18 @@ var ReaderView = class extends import_obsidian15.ItemView {
     if (this.session.tableOfContents) {
       try {
         this.tocItems = await this.session.tableOfContents();
+        if (this.entry) {
+          try {
+            const persistedIds = await this.deps.reading.getVisitedTocIds(this.entry.book.id);
+            for (const id of persistedIds) {
+              if (!this.tocFractions.has(id)) {
+                this.tocFractions.set(id, 0);
+              }
+            }
+          } catch (error) {
+            console.warn("[ez-reader] failed to load visited toc ids", error);
+          }
+        }
         this.tocPanel?.setToc(this.tocItems);
         this.tocPanel?.setVisited(this.tocFractions.keys());
       } catch (error) {
@@ -22472,6 +22569,39 @@ var ReaderView = class extends import_obsidian15.ItemView {
         this.lastProgressFailureNoticeAt = now;
         new import_obsidian15.Notice("\u4FDD\u5B58\u9605\u8BFB\u8FDB\u5EA6\u5931\u8D25,\u7A0D\u540E\u91CD\u8BD5");
       }
+    }
+  }
+  /**
+   * P2: schedule visited toc ids 写盘 — 每次 tocFractions 新增 id 时
+   * 调一次, debounce 300ms 后真写. 跟 schedulePersistProgress 用同一个
+   * 时间常量但独立 timer, 两件事互不影响. 如果 300ms 内没有新 id 进来,
+   * timer 自然到期写一次; 反复 schedule 重复就 reset timer.
+   */
+  schedulePersistVisited() {
+    if (this.persistVisitedTimer !== void 0) {
+      globalThis.clearTimeout(this.persistVisitedTimer);
+    }
+    this.persistVisitedTimer = globalThis.setTimeout(() => {
+      this.persistVisitedTimer = void 0;
+      void this.flushVisited();
+    }, 300);
+  }
+  /**
+   * P2: 把当前 tocFractions keys 跟上次 flush 过的 snapshot 比对, 不
+   * 同才写盘. 没 entry 直接返回. 失败只 warn (跟 persistProgress 一
+   * 样不弹 Notice, 避免刷屏).
+   */
+  async flushVisited() {
+    if (!this.entry) return;
+    const ids = Array.from(this.tocFractions.keys());
+    if (ids.length === this.persistVisitedLastSnapshot.length && ids.every((id, i3) => id === this.persistVisitedLastSnapshot[i3])) {
+      return;
+    }
+    try {
+      await this.deps.reading.saveVisitedTocIds(this.entry.book.id, ids);
+      this.persistVisitedLastSnapshot = ids;
+    } catch (error) {
+      console.warn("[ez-reader] flushVisited failed", error);
     }
   }
   // ---- 书签 ----

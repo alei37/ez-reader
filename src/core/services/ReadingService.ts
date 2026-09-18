@@ -144,6 +144,24 @@ export class ReadingService {
       return "zh-CN";
     }
   }
+
+  /**
+   * P2: 读取这本书用户翻过的 toc item id 列表. ReaderView 在 openSession
+   * 完成后立即调, 把结果传给 TocPanel.setVisited, 让进度点从第一次
+   * 打开就有绿色 (而不是要等下次 relocate 才填).
+   */
+  async getVisitedTocIds(bookId: BookId): Promise<ReadonlyArray<string>> {
+    return this.annotations.loadVisitedTocIds(bookId);
+  }
+
+  /**
+   * P2: 写这本书的 visited toc ids (覆盖). ReaderView 在 debounce 后调,
+   * 跟 progress 持久化一样 300ms 兜底, 不每次 relocate 都写盘. ids 是
+   * 当前 user 翻过的所有 toc id (caller 自己维护 Set 去重).
+   */
+  async saveVisitedTocIds(bookId: BookId, ids: ReadonlyArray<string>): Promise<void> {
+    await this.annotations.saveVisitedTocIds(bookId, ids);
+  }
 }
 
 const computeFraction = (position: ReadingPosition): number => {

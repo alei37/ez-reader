@@ -289,6 +289,15 @@ export class ReaderView extends ItemView {
    */
   private persistProgressTimer: ReturnType<typeof setTimeout> | undefined;
   private persistProgressPending: { fraction: number; locator: string | undefined } | undefined;
+  /**
+   * P2: visited toc ids 持久化 debounce — 跟 progress 同样 300ms. 每次
+   * tocFractions 新增 id 时 schedule 一次 (relocate 触发频繁, 直接同步写
+   * IO 会刷屏). 跟 progress 不共用 timer — 两件事独立, 一个延迟不影响
+   * 另一个 flush.
+   */
+  private persistVisitedTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 上次已 flush 的 visited ids 数组 — 避免重复写相同内容. */
+  private persistVisitedLastSnapshot: ReadonlyArray<string> = [];
 
   constructor(leaf: WorkspaceLeaf, deps: ReaderViewDeps) {
     super(leaf);
@@ -502,6 +511,14 @@ export class ReaderView extends ItemView {
       const pending = this.persistProgressPending;
       this.persistProgressPending = undefined;
       if (pending) await this.persistProgress(pending.fraction, pending.locator);
+    }
+    // P2: 同样 flush visited ids — 关 view 时如果 300ms 内新增的 id
+    // 还没写盘, 立即 flush. 防止 "刚翻的章节没保存 → 关 view → 重启
+    // 丢失" 的边角 case.
+    if (this.persistVisitedTimer !== undefined) {
+      globalThis.clearTimeout(this.persistVisitedTimer);
+      this.persistVisitedTimer = undefined;
+      await this.flushVisited();
     }
     this.selectionMenu?.destroy();
     this.selectionMenu = undefined;
@@ -1090,6 +1107,9 @@ private async showFontSettings(): Promise<void> {
           // 圆点从灰变绿. 没必要每次 relocate 都调, 只在 tocFractions 真
           // 增加时同步一次.
           this.tocPanel?.setVisited(this.tocFractions.keys());
+          // P2: 持久化新 visited id — debounce 300ms 后写盘. 跟 progress
+          // 同样的 debounce 策略, 不每次 relocate 都 flush.
+          this.schedulePersistVisited();
         }
         this.toolbar?.update(this.toolbarState());
         this.schedulePersistProgress(detail.fraction, detail.locator);
@@ -1169,6 +1189,25 @@ private async showFontSettings(): Promise<void> {
     if (this.session.tableOfContents) {
       try {
         this.tocItems = await this.session.tableOfContents();
+        // P2: 在 setToc 之前从 store 拉取历史 visited ids, 注入 tocFractions
+        // + 直接传给 TocPanel. 这样 panel 第一次就能渲染 visited 圆点 (而非
+        // 等到下次 relocate). 用户重开同一本书, 之前翻过的章节立即可见绿色.
+        if (this.entry) {
+          try {
+            const persistedIds = await this.deps.reading.getVisitedTocIds(this.entry.book.id);
+            for (const id of persistedIds) {
+              if (!this.tocFractions.has(id)) {
+                // 没 fraction 信息, 用 0 占位 — toolbar 章节标记条只在
+                // user 本次实际滚过的章节上有意义, 历史的 visited 没有
+                // fraction 数据; 占位 0 让 tocFractions.has(id) 判断成立.
+                this.tocFractions.set(id, 0);
+              }
+            }
+          } catch (error) {
+            // 加载 visited 失败不应阻塞 TOC — 仅警告.
+            console.warn("[ez-reader] failed to load visited toc ids", error);
+          }
+        }
         this.tocPanel?.setToc(this.tocItems);
         // 加载 TOC 后, 把已记录的 visited ids 同步给 panel — 进度点
         // 从加载好就反映用户的阅读进度 (而不是要等下一次 relocate).
@@ -1468,6 +1507,45 @@ private async showFontSettings(): Promise<void> {
         this.lastProgressFailureNoticeAt = now;
         new Notice("保存阅读进度失败,稍后重试");
       }
+    }
+  }
+
+  /**
+   * P2: schedule visited toc ids 写盘 — 每次 tocFractions 新增 id 时
+   * 调一次, debounce 300ms 后真写. 跟 schedulePersistProgress 用同一个
+   * 时间常量但独立 timer, 两件事互不影响. 如果 300ms 内没有新 id 进来,
+   * timer 自然到期写一次; 反复 schedule 重复就 reset timer.
+   */
+  private schedulePersistVisited(): void {
+    if (this.persistVisitedTimer !== undefined) {
+      globalThis.clearTimeout(this.persistVisitedTimer);
+    }
+    this.persistVisitedTimer = globalThis.setTimeout(() => {
+      this.persistVisitedTimer = undefined;
+      void this.flushVisited();
+    }, 300);
+  }
+
+  /**
+   * P2: 把当前 tocFractions keys 跟上次 flush 过的 snapshot 比对, 不
+   * 同才写盘. 没 entry 直接返回. 失败只 warn (跟 persistProgress 一
+   * 样不弹 Notice, 避免刷屏).
+   */
+  private async flushVisited(): Promise<void> {
+    if (!this.entry) return;
+    const ids = Array.from(this.tocFractions.keys());
+    // 没变化就不写 — 减少无意义的 data.json IO.
+    if (
+      ids.length === this.persistVisitedLastSnapshot.length &&
+      ids.every((id, i) => id === this.persistVisitedLastSnapshot[i])
+    ) {
+      return;
+    }
+    try {
+      await this.deps.reading.saveVisitedTocIds(this.entry.book.id, ids);
+      this.persistVisitedLastSnapshot = ids;
+    } catch (error) {
+      console.warn("[ez-reader] flushVisited failed", error);
     }
   }
 

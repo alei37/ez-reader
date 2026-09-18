@@ -46,6 +46,13 @@ export interface AnnotationSnapshot {
    * own copy).
    */
   readonly onboardingDismissed?: boolean;
+  /**
+   * P2: 用户翻过的 toc item id 集合, 按 bookId 索引. 关闭 / 重启 Obsidian
+   * 后用户再打开同一本书, TocPanel 的进度点还能保留绿色.
+   * 用 array 而不是 Set — JSON 序列化用 array, 顺序无关 (O(1) 查找走
+   * includes 即可). 默认空对象 `{}`, 旧 data.json 没这字段也能 load.
+   */
+  readonly visitedTocIdsByBookId?: Readonly<Record<string, ReadonlyArray<string>>>;
 }
 
 /** Read/write access to annotation data, independent of how it's persisted. */
@@ -98,6 +105,20 @@ export interface AnnotationStore {
    * Used by ShelfView to decide whether to surface the modal again.
    */
   hasOnboardingBeenDismissed(): Promise<boolean>;
+
+  /**
+   * P2: 读取用户翻过的 toc item id 列表 (按书). 用于在 openSession 完
+   * 成时给 TocPanel.setVisited 注入历史 visited ids, 进度点能保留
+   * 绿色. 缺字段 (旧 data.json) 返回空数组.
+   */
+  loadVisitedTocIds(bookId: BookId): Promise<ReadonlyArray<string>>;
+  /**
+   * P2: 原子地 read-modify-write visited toc ids. 在 write chain 内读
+   * 最新 cache, append 新 id (去重), 一次性 save. 比 caller 先
+   * loadVisitedTocIds 再写整个 array 少一次 race window. debounce 由
+   * ReaderView 负责 (跟 progress 一样 300ms).
+   */
+  saveVisitedTocIds(bookId: BookId, ids: ReadonlyArray<string>): Promise<void>;
 
   loadCoverPaths(): Promise<Readonly<Record<string, string>>>;
   saveCoverPaths(coverPaths: Record<string, string>): Promise<void>;

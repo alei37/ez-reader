@@ -152,7 +152,11 @@ export class TocPanel {
     this.searchExpanded = new Set();
     this.focusedId = null;
     this.scrolledIds = new Set();
-    this.visitedIds = new Set();
+    // P2 polish: 不要重置 visitedIds — ReaderView 在 openSession 完成后
+    // 会先调 readingService.getVisitedTocIds() → setVisited, 接着才调
+    // setToc. 如果 setToc 把 visitedIds 清掉, 刚才 setVisited 写的就丢了,
+    // 进度点全变灰. 让 visited 状态自然延续, 跨 setToc (如重新加载同
+    // 一本书) 不丢.
     this.renderHeader();
     this.renderList();
   }
@@ -306,6 +310,9 @@ export class TocPanel {
 
   private renderHeader(): void {
     this.root.empty();
+    // P2 polish: header 拆成两行 — 第一行 = 标题 + count + close + search,
+    // 第二行 = 面包屑 (独立 row). 之前挤在一行, items ≥ 8 时 search 被
+    // 挤掉 / 标题被截断; 现在布局更稳定.
     const headerRow = this.root.createDiv({ cls: "ez-reader__toc-header" });
     const titleRow = headerRow.createDiv({ cls: "ez-reader__panel-header-title" });
     const title = titleRow.createEl("h3", { text: "目录" });
@@ -341,23 +348,33 @@ export class TocPanel {
         this.renderList();
       });
     }
-    // 面包屑占位 — renderBreadcrumb 在 setActive 里填.
-    headerRow.createDiv({ cls: "ez-reader__toc-breadcrumb" });
     // 占位 div 之后, 给 title 加 click 锚点 (无操作, 保留 layout 槽位)
     title.setAttribute("data-toc-header-title", "1");
+
+    // 面包屑独立一行 — 之前放在 header 里挤掉 search input, 现在单独
+    // 占一行, 没 active 时 hidden (height: 0). renderBreadcrumb 只填内容.
+    this.root.createDiv({ cls: "ez-reader__toc-breadcrumb-row" });
   }
 
   private renderBreadcrumb(): void {
-    const slot = this.root.querySelector<HTMLElement>(".ez-reader__toc-breadcrumb");
+    const slot = this.root.querySelector<HTMLElement>(".ez-reader__toc-breadcrumb-row");
     if (!slot) return;
     slot.empty();
-    if (!this.activeId) return;
+    if (!this.activeId) {
+      // 没 active 时整行 hidden (避免占视觉空间)
+      slot.addClass("is-empty");
+      return;
+    }
+    slot.removeClass("is-empty");
     const ancestors = ancestorPathOf(this.tree, this.activeId);
     const chain: TocItem[] = [...ancestors];
     // 把 active item 自己也算进链 (最右边一级, 不可点).
     const activeNode = this.findNodeById(this.tree, this.activeId);
     if (activeNode) chain.push(activeNode.item);
-    if (chain.length === 0) return;
+    if (chain.length === 0) {
+      slot.addClass("is-empty");
+      return;
+    }
     chain.forEach((item, idx) => {
       const isLast = idx === chain.length - 1;
       if (idx > 0) {

@@ -106,6 +106,80 @@ test("buildTocTree: 空数组 → 空根列表", () => {
   assert.equal(tree.length, 0);
 });
 
+// P2 polish: 用户截图反馈 "The Linear Stress-Strain Relations" (depth 1)
+// 的 children 没有竖线. 排查怀疑 foliate 给某些章节错误的 depth — 比如
+// 章节 A 标 depth=2 但其实是 chapter 子节点. 这套测试覆盖以下 4 种深度
+// 跳级场景, 确保栈算法算的 parent 正确 (CSS 竖线是否显示取决于正确的
+// tree 结构).
+test("buildTocTree: 深度倒退 (depth=2 → depth=1 → depth=2 → depth=1)", () => {
+  const tree = buildTocTree([
+    toc("c1", "Chapter 1", 0),
+    toc("c1.1", "Section 1.1", 1),
+    toc("c1.1.1", "Sub 1.1.1", 2),
+    toc("c1.2", "Section 1.2", 1),
+    toc("c1.2.1", "Sub 1.2.1", 2),
+    toc("c1.2.2", "Sub 1.2.2", 2),
+    toc("c2", "Chapter 2", 0)
+  ]);
+  assert.equal(tree.length, 2, "Chapter 1 + Chapter 2 是两个根");
+  assert.equal(tree[0].children.length, 2, "Chapter 1 下 2 个 section");
+  assert.equal(tree[0].children[1].children.length, 2, "Section 1.2 下 2 个 sub");
+  assert.equal(tree[1].children.length, 0, "Chapter 2 没 children");
+});
+
+test("buildTocTree: 混合跳级 (depth 0/2/1/3) — 确保所有非根节点挂到正确的父", () => {
+  // foliate 实际数据偶尔出现: depth 字段不严格单递增.
+  // 这个测试验证 buildTocTree 在混乱深度下仍能正确归类.
+  const tree = buildTocTree([
+    toc("c1", "Chapter 1", 0),
+    toc("c1.deep", "Deep section (depth=2)", 2),  // 跳过 depth=1
+    toc("c1.normal", "Normal section (depth=1)", 1),
+    toc("c1.normal.subsub", "SubSub (depth=3)", 3), // 跳 depth=2
+    toc("c2", "Chapter 2", 0)
+  ]);
+  assert.equal(tree.length, 2);
+  // Chapter 1 下应该有 2 个 children: c1.deep (跳级挂 root) + c1.normal
+  assert.equal(tree[0].children.length, 2);
+  // c1.normal 下应该有 c1.normal.subsub
+  const c1Normal = tree[0].children.find((n) => n.item.id === "c1.normal");
+  assert.ok(c1Normal, "c1.normal 应作为 Chapter 1 的 child");
+  assert.equal(c1Normal!.children.length, 1);
+  assert.equal(c1Normal!.children[0].item.id, "c1.normal.subsub");
+  // c1.deep (depth=2) 应直接挂到 Chapter 1
+  const c1Deep = tree[0].children.find((n) => n.item.id === "c1.deep");
+  assert.ok(c1Deep, "c1.deep 应直接挂到 Chapter 1 (跳过 depth=1)");
+});
+
+test("TocPanel: 深度跳级时 children 容器仍然渲染 (垂直竖线 + toggle)", () => {
+  // 用户反馈: "2.3 The Linear Stress-Strain Relations" (depth=1) 的
+  // children 容器没显示竖线. CSS 已统一 solid, 这套测试确保 buildTocTree
+  // 算出的 parent 树形结构跟视觉一致 — 每个有 children 的 node 都有
+  // 对应的 .ez-reader__toc-children div.
+  const { panel } = mountPanel();
+  panel.setToc([
+    toc("c1", "Chapter 1", 0),
+    toc("c1.normal", "Normal", 1),
+    toc("c1.normal.deep", "Deep (skip 1 level)", 2),
+    toc("c2", "Chapter 2", 0)
+  ]);
+  // c1.normal 有 1 个 child (c1.normal.deep) → 应该有 1 个 children container
+  const c1NormalChildren = panel.root.querySelector<HTMLElement>(
+    '[data-toc-children-of="c1.normal"]'
+  );
+  assert.ok(c1NormalChildren, "c1.normal 应该有 children 容器");
+  assert.equal(c1NormalChildren?.children.length, 1);
+  // c2 是叶子 → 没有 children 容器
+  const c2Children = panel.root.querySelector('[data-toc-children-of="c2"]');
+  assert.equal(c2Children, null, "叶子节点不应有 children 容器");
+  // c1.normal 是 parent → row 有 is-parent class + toggle 非 is-empty
+  const c1NormalRow = panel.root.querySelector<HTMLElement>(
+    '[data-toc-id="c1.normal"]'
+  );
+  assert.ok(c1NormalRow?.classList.contains("is-parent"), "c1.normal 是 parent");
+  const toggle = c1NormalRow?.querySelector<HTMLElement>(".ez-reader__toc-row__toggle");
+  assert.ok(toggle && !toggle.classList.contains("is-empty"), "toggle 应可见");
+});
+
 // =========================================================
 // TocPanel DOM 渲染测试
 // =========================================================
@@ -637,7 +711,8 @@ test("TocPanel v5: 面包屑显示当前章节的祖先链", () => {
     toc("c1.1.1", "Subsection 1.1.1", 2)
   ]);
   panel.setActive("c1.1.1");
-  const bc = panel.root.querySelector(".ez-reader__toc-breadcrumb");
+  // P2: 面包屑独立成行, 跟 header 解耦 — 选择器改成 .ez-reader__toc-breadcrumb-row
+  const bc = panel.root.querySelector(".ez-reader__toc-breadcrumb-row");
   assert.ok(bc);
   // 顺序: c1 › c1.1 › c1.1.1
   const items = bc?.querySelectorAll(".ez-reader__toc-breadcrumb__item");
@@ -652,6 +727,8 @@ test("TocPanel v5: 面包屑显示当前章节的祖先链", () => {
   // 前两个是 is-link
   assert.ok(items?.[0]?.classList.contains("is-link"));
   assert.ok(items?.[1]?.classList.contains("is-link"));
+  // P2: 有 active 时 breadcrumb row 不应有 is-empty class
+  assert.ok(!bc?.classList.contains("is-empty"));
 });
 
 test("TocPanel v5: 面包屑点非当前节 → 触发 onJump", () => {
@@ -677,12 +754,14 @@ test("TocPanel v5: 面包屑点非当前节 → 触发 onJump", () => {
   assert.equal(jumped?.id, "c1");
 });
 
-test("TocPanel v5: 无 active 时面包屑为空 (display:none via :empty)", () => {
+test("TocPanel v5: 无 active 时面包屑行为 (整行 hidden via is-empty)", () => {
   const { panel } = mountPanel();
   panel.setToc([toc("c1", "Chapter 1", 0)]);
   // 无 setActive
-  const bc = panel.root.querySelector<HTMLElement>(".ez-reader__toc-breadcrumb");
+  const bc = panel.root.querySelector<HTMLElement>(".ez-reader__toc-breadcrumb-row");
   assert.ok(bc);
+  // P2: 整行 hidden 走 is-empty class (display:none), 不再靠 :empty 检测.
+  assert.ok(bc.classList.contains("is-empty"));
   assert.equal(bc.children.length, 0);
 });
 
@@ -825,19 +904,24 @@ test("TocPanel v5: 未访问 active id 也拿 is-current", () => {
   assert.ok(d1?.classList.contains("is-current"));
 });
 
-test("TocPanel v5: setToc 重置 visitedIds", () => {
+test("TocPanel v5: setToc 保留 visitedIds (跨 setToc 不重置, 让持久化路径 work)", () => {
   const { panel } = mountPanel();
   panel.setToc([toc("c1", "Chapter 1", 0)]);
   panel.setVisited(["c1"]);
   let d1 = panel.root.querySelector<HTMLElement>(
     '[data-toc-id="c1"] .ez-reader__toc-progress-dot'
   );
-  assert.ok(d1?.classList.contains("is-visited"));
+  assert.ok(d1?.classList.contains("is-visited"), "首次 setVisited 后变绿");
+  // P2: 持久化路径 — ReaderView 先调 setVisited (从 store 读历史) 再调
+  // setToc. 如果 setToc 清掉 visitedIds, 刚才注入的就丢了. 现在保留.
   panel.setToc([toc("c1", "Chapter 1", 0)]);
   d1 = panel.root.querySelector<HTMLElement>(
     '[data-toc-id="c1"] .ez-reader__toc-progress-dot'
   );
-  assert.ok(d1?.classList.contains("is-unvisited"));
+  assert.ok(
+    d1?.classList.contains("is-visited"),
+    "setToc 后 visitedIds 应保留, 圆点继续是绿色"
+  );
 });
 
 // =========================================================

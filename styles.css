@@ -2004,7 +2004,7 @@
 
 /* === TOC 面板 (左侧边栏, 树状 v4) === */
 .ez-reader__reader-panel--toc-sidebar {
-  flex: 0 0 320px;
+  flex: 0 0 380px;
   border-right: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
   display: flex;
@@ -2043,6 +2043,7 @@
   padding: 10px 12px 8px;
   border-bottom: 1px solid var(--background-modifier-border);
   flex: 0 0 auto;
+  flex-wrap: wrap;
 }
 
 .ez-reader__toc-header h3 {
@@ -2123,7 +2124,9 @@
   background: var(--interactive-accent-hover, var(--interactive-accent));
 }
 
-/* 折叠/展开 toggle — 固定宽度让 label 起点对齐 */
+/* 折叠/展开 toggle — 固定宽度让 label 起点对齐. 叶子节点 (.is-empty)
+   占位宽度 (用 visibility: hidden 而非 display:none) 让 label 起点
+   对齐父/叶子行; 不占视觉空间但保留 layout 槽位. */
 .ez-reader__toc-row__toggle {
   border: none;
   background: transparent;
@@ -2131,7 +2134,7 @@
   width: 18px;
   height: 22px;
   padding: 0;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   flex: 0 0 18px;
@@ -2139,6 +2142,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  user-select: none;
 }
 .ez-reader__toc-row__toggle:hover:not(:disabled) {
   background: var(--background-modifier-border);
@@ -2160,7 +2164,7 @@
   border: 0;
   color: inherit;
   cursor: pointer;
-  padding: 3px 6px;
+  padding: 3px 4px;
   border-radius: 3px;
   font: inherit;
   line-height: 1.4;
@@ -2170,18 +2174,19 @@
   min-width: 0;
 }
 
-/* 子节点容器 — 折叠时收起; 默认展开 */
+/* 子节点容器 — 折叠时收起; 默认展开
+   缩进: 8px margin + 6px padding = 14px/层 (从 18px 缩到 14px 让 panel
+   380px 也有足够空间显示 label). 左边竖线始终是 solid (depth=0 也
+   显示), 用户反馈 "2.3 The Linear Stress-Strain Relations" 这种
+   depth-1 父项的竖线在某些情况下消失 — 推测是 Obsidian 主题里
+   dashed 跟 solid 颜色对比度太低看不出来, 现在统一用 solid. */
 .ez-reader__toc-children {
-  margin-left: 12px;
+  margin-left: 8px;
   border-left: 1px solid var(--background-modifier-border);
   padding-left: 6px;
 }
 .ez-reader__toc-children.is-collapsed {
   display: none;
-}
-/* 顶层 (depth=0) 节点的 children 不显示左边竖线, 看起来更干净 */
-.ez-reader__toc-row[data-toc-depth="0"] + .ez-reader__toc-children {
-  border-left: 1px dashed var(--background-modifier-border);
 }
 
 /* === TOC 面板 v5 增强 (Tier 1 + Tier 2) === */
@@ -2198,27 +2203,25 @@
   flex: 0 0 auto;
 }
 
-/* 面包屑 — header 下方一行, 显示当前章节的祖先链 */
-.ez-reader__toc-breadcrumb {
+/* 面包屑独立行 — 在 header 下方占独立一行, 显示当前章节的祖先链.
+   P2 polish: 之前挤在 header 里, search 被挤掉; 现在独立一行, 高度 28px,
+   没 active 时整行 hidden (is-empty, height:0). */
+.ez-reader__toc-breadcrumb-row {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
-  padding: 4px 12px 6px;
+  padding: 0 12px;
+  height: 28px;
   border-bottom: 1px solid var(--background-modifier-border);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   overflow: hidden;
   flex: 0 0 auto;
-  min-height: 24px;
-  /* 整个 header-row 是 flex column, 面包屑是第二行. 隐藏面包屑里的内容
-     通过 :empty 检测实现 — 但 :empty 在有非空子节点时才生效, 这里用
-     display: none fallback. */
+  background: var(--background-secondary);
 }
-.ez-reader__toc-breadcrumb:empty {
+.ez-reader__toc-breadcrumb-row.is-empty {
   display: none;
-  padding: 0;
-  border-bottom: 0;
 }
 .ez-reader__toc-breadcrumb__item {
   white-space: nowrap;
@@ -2274,8 +2277,8 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  margin-right: 8px;
-  margin-left: 4px;
+  margin-right: 4px;
+  margin-left: 2px;
   transition: background 0.15s ease;
 }
 .ez-reader__toc-progress-dot.is-unvisited {

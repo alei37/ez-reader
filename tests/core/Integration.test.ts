@@ -126,6 +126,17 @@ class InMemoryStore implements AnnotationStore {
   async hasOnboardingBeenDismissed(): Promise<boolean> {
     return this.snapshot.onboardingDismissed === true;
   }
+  // P2: visited toc ids mock — 跟 ObsidianAnnotationStore 同样的 in-memory 实现.
+  async loadVisitedTocIds(bookId: string): Promise<ReadonlyArray<string>> {
+    return this.snapshot.visitedTocIdsByBookId?.[bookId] ?? [];
+  }
+  async saveVisitedTocIds(bookId: string, ids: ReadonlyArray<string>): Promise<void> {
+    const current = this.snapshot.visitedTocIdsByBookId ?? {};
+    this.snapshot = {
+      ...this.snapshot,
+      visitedTocIdsByBookId: { ...current, [bookId]: [...ids] }
+    };
+  }
 }
 
 class FakeSource implements BookSource {

@@ -114,6 +114,17 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async hasOnboardingBeenDismissed(): Promise<boolean> {
     return this.snapshot.onboardingDismissed === true;
   }
+  // P2: visited toc ids mock — 跟 ObsidianAnnotationStore 同样的 in-memory 实现.
+  async loadVisitedTocIds(bookId: string): Promise<ReadonlyArray<string>> {
+    return this.snapshot.visitedTocIdsByBookId?.[bookId] ?? [];
+  }
+  async saveVisitedTocIds(bookId: string, ids: ReadonlyArray<string>): Promise<void> {
+    const current = this.snapshot.visitedTocIdsByBookId ?? {};
+    this.snapshot = {
+      ...this.snapshot,
+      visitedTocIdsByBookId: { ...current, [bookId]: [...ids] }
+    };
+  }
 }
 
 test("ReadingService.openBook transitions unread -> reading and stamps lastOpenedAt", async () => {
@@ -214,4 +225,52 @@ test("ReadingService.addExcerpt stores with tags", async () => {
   const list = await service.listExcerpts("a.epub");
   assert.equal(list.length, 1);
   assert.deepEqual(list[0]?.tags, ["important", "reread"]);
+});
+
+// =========================================================
+// P2: visited toc ids 包装 — 验证 ReadingService.getVisitedTocIds /
+// saveVisitedTocIds 正确透传到 AnnotationStore.
+// =========================================================
+
+test("ReadingService.getVisitedTocIds: 空 store → 空 array", async () => {
+  const store = new InMemoryAnnotationStore();
+  const service = new ReadingService(store);
+  const ids = await service.getVisitedTocIds("a.epub");
+  assert.deepEqual(ids, []);
+});
+
+test("ReadingService.saveVisitedTocIds + getVisitedTocIds round-trip", async () => {
+  const store = new InMemoryAnnotationStore();
+  const service = new ReadingService(store);
+  await service.saveVisitedTocIds("a.epub", ["toc-0", "toc-3", "toc-7"]);
+  // 同一个 service instance 应该看到自己刚写的
+  const ids = await service.getVisitedTocIds("a.epub");
+  assert.deepEqual(ids, ["toc-0", "toc-3", "toc-7"]);
+  // 不同的 service instance (模拟重启) 也应能读 — 因为 store 持久化层
+  // 是 InMemoryAnnotationStore, snapshot 是共享的.
+  const service2 = new ReadingService(store);
+  const ids2 = await service2.getVisitedTocIds("a.epub");
+  assert.deepEqual(ids2, ["toc-0", "toc-3", "toc-7"]);
+});
+
+test("ReadingService.saveVisitedTocIds: overwrite (replace, 不 merge)", async () => {
+  // ReaderView schedulePersistVisited 每次 flush 都把当前 tocFractions.keys()
+  // 全发过来 — store 端是 overwrite 语义. 验证不会因为旧 ids 残留.
+  const store = new InMemoryAnnotationStore();
+  const service = new ReadingService(store);
+  await service.saveVisitedTocIds("a.epub", ["toc-0", "toc-1"]);
+  await service.saveVisitedTocIds("a.epub", ["toc-1", "toc-2"]);
+  const ids = await service.getVisitedTocIds("a.epub");
+  assert.deepEqual(ids, ["toc-1", "toc-2"], "旧 toc-0 应被新 array 覆盖掉");
+});
+
+test("ReadingService.saveVisitedTocIds: 不同 book 互不影响", async () => {
+  const store = new InMemoryAnnotationStore();
+  const service = new ReadingService(store);
+  await service.saveVisitedTocIds("a.epub", ["toc-0"]);
+  await service.saveVisitedTocIds("b.epub", ["toc-5", "toc-6"]);
+  const a = await service.getVisitedTocIds("a.epub");
+  const b = await service.getVisitedTocIds("b.epub");
+  assert.deepEqual(a, ["toc-0"]);
+  assert.deepEqual(b, ["toc-5", "toc-6"]);
 });

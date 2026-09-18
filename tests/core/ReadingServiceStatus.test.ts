@@ -73,6 +73,9 @@ class InMemoryStore implements AnnotationStore {
   async setAddedAt(): Promise<void> {}
   async markOnboardingDismissed(): Promise<void> {}
   async hasOnboardingBeenDismissed(): Promise<boolean> { return false; }
+  // P2: visited toc ids mock — 这套测试不验证 visited 行为, 给 noop 即可.
+  async loadVisitedTocIds(): Promise<ReadonlyArray<string>> { return []; }
+  async saveVisitedTocIds(): Promise<void> { /* noop */ }
 }
 
 const newService = async (): Promise<ReadingService> => {
