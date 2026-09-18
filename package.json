@@ -1,6 +1,6 @@
 {
   "name": "ez-reader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Obsidian plugin for reading local ebooks in the active Vault, with progress, bookmarks, excerpts, research notes, and optional online translation.",
   "main": "main.js",
   "author": {
@@ -33,11 +33,6 @@
     "translation"
   ],
   "license": "MIT",
-  "pnpm": {
-    "patchedDependencies": {
-      "foliate-js@1.0.1": "patches/foliate-js@1.0.1.patch"
-    }
-  },
   "devDependencies": {
     "@types/node": "^22.15.2",
     "esbuild": "^0.25.2",

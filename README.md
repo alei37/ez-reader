@@ -279,7 +279,16 @@ pnpm run dev:web     # watch 模式 (client-plugin)
 - 扫描版 PDF 没有 OCR (EzReader 不解析扫描图)。
 - 不做自动分类 / 重命名 / 移动 / 合并 / 删除书文件。
 - PDF 跨页选区不支持 — 每页独立保存,跨页选区按可见页分别高亮。
-- Android 老 WebView 偶尔有 foliate-js polyfill 覆盖不全的白屏 (我们尽量补,无法保证)。
+- **PDF "回到原文" 链接** 只跳到页 (`#page=N`),不支持跳到页内精确 subpath
+  (4-tuple begin/end offset)。需要等 Obsidian PDFView 暴露内部 API 才能精确。
+  当前行为:跳到页 + highlight 画在正确位置,可能要手动 scroll 一下看到。
+- **PDF++ / 接管 PDF 的第三方插件** 可能改 Obsidian PDFView 的 DOM 结构,
+  EzReader 的 PdfOverlay 挂不上 → 跳页走 fallback `setEphemeralState`
+  (会有 `handleProtocol: PdfOverlay not found` console 警告)。不影响阅读。
+- **MOBI 大文件 (>5 MB)** `createParser` 同步解压 2-5 秒,UI 短暂假死。
+  已知问题,下次重写用 Web Worker 异步解压。
+- **TXT 跨页摘录** 不支持 — 单页渲染架构下浏览器 selection 只在可见 DOM。
+- **Android 端未测**。foliate iframe 在 Android WebView 行为可能有差异。
 - AZW 暂未实现 reader — 类型已声明,书架扫描过滤,等以后补 reader 时只改一行 `READER_CAPABLE_FORMATS`。
 - TXT 默认假设 UTF-8 编码;GBK / GB18030 文件需要用户先重新存为 UTF-8 才能正常打开。
 - 翻译 provider 看到用户选中的内容,敏感文本请勿选中翻译。

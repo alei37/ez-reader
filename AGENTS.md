@@ -9,7 +9,7 @@
 **项目**: Obsidian 社区市场插件 `ez-reader`(从零重写,非 fork)。
 **位置**: `/home/ljl/dsh/ezreader/`
 **远程仓库**: `git@github.com:alei37/ez-reader.git`,分支 `main`
-**当前 HEAD**: `3a4de46` — "fix: 真进度持久化 + foliate patch 清 CSP/script + reader/shelf polish + 笔记 note 折叠"
+**当前 HEAD**: `58f8e63` — "refactor: PagedTextSession dispose 精修 — off() self-remove + close() 发 event"
 **测试/部署路径**: `/home/ljl/obsidian/obsidian_alei/.obsidian/plugins/ez-reader/`
 **架构**: 分层端口-适配器(Port/Adapter) + 严格 core/adapters/ui 分层。
 **支持格式**:
@@ -303,25 +303,27 @@ Obsidian 桌面版支持插件热重载(在设置里打开),改了代码后:
 
 ## 7. 已知 P1/P2 polish 项(不阻塞,留作下一轮)
 
-> 同步到 commit `3a4de46` (2026-09-16)。3a4de46 修掉了几条:
-> - MOBI spine → TOC label 映射 (toolbar 章节标题有了)
-> - PagedTextSession.applyAppearance 完整接通 (fontFamily/theme/typography)
-> - buildAppearanceCss / buildPagedTextCss 重构为统一的 themeColors + readerShortcuts
-> - AGENTS.md 路径 outdated
+> 同步到 commit `58f8e63` (2026-09-18)。最近一轮修了:
+> - MOBI 内部 `<a href>` link-click 闭环 (`goToSpineId` + ReaderView handler)
+> - PagedTextSession dispose 精修 (off() self-remove + close() dispatch close event)
+> - PagedTextSession.selectionCleanup 翻页前解绑 (无 listener 累积)
+> - guessTitleFromText 5 类强信号 + 弱信号兜底(古文不误识别)
+> - sanitizeHtml 把 `<a href>` 改写到 `data-ez-reader-href`(避免 navigate away)
+> - foliate-js patch: inline `@import blob:` + 删除 `<script>` + 删 on* + javascript: URL
+> - cover cache race fix + patchCoverPaths 原子化
+> - 真进度持久化(ReadingService.onChange → LibraryService.updateReading 同步)
 > - 笔记 note 字段可折叠
 
 ### P1(用户体验)
-- **MOBI `<a href>` 内部跳转未拦截** — 章节内 cross-ref 点击无反应
-- **MOBI 大文件 parser 阻塞主线程** — 2-5s 同步解压,UI 假死
-- **PagedTextSession `disposers` Set 每次翻页增长** — 理论性能问题,实际未必可见
-- **`guessTitleFromText` 误判古文** — 第一行 ≤80 字符的启发式对古文失效
-- **跨页摘录不支持** — 选中跨页的文本只高亮第一页
-- **PDF selection-level jump 不精确** — `PdfOverlay.jumpToExcerpt` 只 scrollIntoView 到 page, 没真正跳到 4-tuple subpath (需要 PDFView 暴露内部 API; P2-5 TODO 在 `pdfOverlay.ts:445`)
+- **MOBI 大文件 parser 阻塞主线程** — 2-5s 同步解压,UI 假死(需要 Web Worker 化)
+- **跨页摘录不支持** — TXT/MOBI 单页渲染, 浏览器 selection 只在可见 DOM
+- **PDF selection-level jump 不精确** — `PdfOverlay.jumpToExcerpt` 只 scrollIntoView 到 page, 缺 4-tuple subpath (需要 PDFView 暴露内部 API; P2-5 TODO 在 `pdfOverlay.ts:445`, **user 已确认留作 follow-up**)
 
 ### P2(代码质量)
-- **`LICENSES/` 缺 3 个 MIT notice**: `@lingo-reader/mobi-parser`, `@lingo-reader/shared`, `fflate` (Apache-2.0)
-- **`manifest.json` version 仍是 0.1.0** — 即使改了大量,public 前需 bump
 - **CI/release workflow** — 没 `.github/workflows/release.yml` 自动打 zip
+- **Manifest description / README 截图** — 准备 public release 前可补
+- **`AGENTS.md` 行数仍偏 stale** — pdfOverlay/ReaderView/ReadingService 实际行数已变
+- **`buildAppearanceCss` / `buildPagedTextCss` 还存在** — 共享 `themeColors` 已拆, 但 buildAppearanceCss / buildPagedTextCss 各自仍有颜色变量重复, 进一步可统一
 
 ### 已知用户体验细节
 - 用户偏好中文 UI(label 用中文:`想法`、`摘录`、`翻译`、`复制`)
