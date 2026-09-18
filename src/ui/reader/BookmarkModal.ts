@@ -93,9 +93,15 @@ export class BookmarkModal extends Modal {
       }
     });
     window.setTimeout(() => {
-      input.focus();
-      // 全选 label 让用户立即覆盖 default
-      input.select();
+      try {
+        input.focus();
+        // 全选 label 让用户立即覆盖 default
+        input.select();
+      } catch (error) {
+        // C5 修复: modal 在 timer fire 前已关闭 — input 被 detach, focus
+        // 抛 InvalidStateError. 静默吞: 用户体验: modal 已关, 不是错误.
+        console.debug("[ez-reader] bookmark focus skipped — modal closed", error);
+      }
     }, 0);
   }
 

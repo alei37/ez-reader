@@ -50,6 +50,15 @@ class FakeBookSource implements BookSource {
   async resolveLocator(id: string): Promise<BookLocator | null> {
     return this.files.find((f) => f.locator.path === id)?.locator ?? null;
   }
+
+  /**
+   * A1 测试配套: lookup 跟 resolveLocator 行为一致 (按 path 找 file).
+   * 实现在 ObsidianBookSource 里也是 O(1) 走 vault.getAbstractFileByPath,
+   * 测试 mock 用 Array.find 行为对齐.
+   */
+  async lookup(path: string): Promise<BookLocator | null> {
+    return this.files.find((f) => f.locator.path === path)?.locator ?? null;
+  }
 }
 
 class InMemoryAnnotationStore implements AnnotationStore {
@@ -74,6 +83,9 @@ class InMemoryAnnotationStore implements AnnotationStore {
       excerpts: initial.excerpts ?? [],
       coverPaths: initial.coverPaths,
       addedAtByBookId: initial.addedAtByBookId,
+      // A1 测试配套: 之前构造器没拷 pinnedAtByBookId, getPinnedAt 始终
+      // 返回 null, 跟持久化路径上 A1 修复同步 — 让测试也能验证恢复逻辑.
+      pinnedAtByBookId: initial.pinnedAtByBookId,
       onboardingDismissed: initial.onboardingDismissed
     };
   }
@@ -469,6 +481,32 @@ test("addToLibraryBatchWithStamp preserves original addedAt for books already in
   assert.equal(addedAtB, newerTimestamp, "new book's addedAt should be the new stamp");
 });
 
+test("addToLibraryBatchWithStamp keeps older first-added timestamp when re-adding (re-add path)", async () => {
+  // P1 回归: 用户先 addToLibrary → removeFromLibrary(注意 removeFromLibrary
+  // 不删 addedAtByBookId, 因为该字段语义是 "first 加入时间" 而非 "当前在
+  // 库时间") → 再次 addAllToLibrary. 此时如果走旧的 batch 逻辑,新加的书
+  // 之前的 addedAt 会被覆盖为 batch 传入的 now — 违反 first-added wins 语义.
+  const files = [
+    { locator: makeLocator("a.epub"), metadata: makeMetadata("A") }
+  ];
+  const source = new FakeBookSource(files);
+  const originalAddedAt = 1_000_000_000_000;
+  const reAddedAt = 2_000_000_000_000;
+  const store = new InMemoryAnnotationStore({
+    library: [], // 已从库移除, 但 addedAtByBookId 还留着
+    addedAtByBookId: { "a.epub": originalAddedAt }
+  });
+  const service = new LibraryService(source, store);
+  await service.initialize();
+  await service.addAllToLibrary(reAddedAt);
+  const addedAt = (await store.getAddedAt("a.epub"))!;
+  assert.equal(
+    addedAt,
+    originalAddedAt,
+    "first-added timestamp must survive a remove+re-add round trip"
+  );
+});
+
 test("LibraryService.togglePin flips pinnedAt and persists", async () => {
   const files = [
     { locator: makeLocator("a.epub"), metadata: makeMetadata("A") },
@@ -587,4 +625,77 @@ test("LibraryService.refreshMetadata is a no-op when reader returns null", async
   const entry = service.get("broken.epub");
   assert.equal(entry?.book.metadata?.title, "fallback title", "filename-derived metadata preserved");
   assert.equal(await store.loadRichMetadata("broken.epub"), null, "no rich metadata persisted");
+});
+
+test("refreshBook recovers addedToLibraryAt / pinnedAt from persisted store when re-discovered", async () => {
+  // A1 回归: 用户把书加入 library + 置顶 → 从 vault 删文件 → 重新放回
+  // 同路径文件. Obsidian 触发 'added' 事件 → LibraryService.refreshBook
+  // → doRefreshBook 走"新书"路径. 之前 entries 里这条书的 addedToLibraryAt
+  // 写死 null, 但 annotations.store 仍然记得它"在 library 里 + pinned",
+  // 用户重启 vault 之前 shelf 不显示这条书, 跟持久化 library 列表
+  // 不一致. 现在从 store 读 addedAt + isInLibrary + pinnedAt 同步.
+  //
+  // 两条书, 删其中一条; entries.size > 0 让 'added' 事件走 refreshBook
+  // 路径而不是 initialize (initialize 路径会从 store 重新读一切, 不
+  // 覆盖本测试的目标).
+  const files = [
+    { locator: makeLocator("book.epub"), metadata: makeMetadata("Book") },
+    { locator: makeLocator("other.epub"), metadata: makeMetadata("Other") }
+  ];
+  const source = new FakeBookSource(files);
+  // 持久化状态: 两本都在 library, 都加过时间戳, book.epub 已置顶
+  const originalAddedAt = 1_700_000_000_000;
+  const store = new InMemoryAnnotationStore({
+    library: ["book.epub", "other.epub"],
+    addedAtByBookId: {
+      "book.epub": originalAddedAt,
+      "other.epub": 1_700_000_000_100
+    },
+    pinnedAtByBookId: { "book.epub": 1_700_000_000_500 }
+  });
+  const service = new LibraryService(source, store);
+  await service.initialize();
+  // 模拟用户删了 book.epub → entries.delete 走 watch event "removed" 路径
+  const watchHandler = source.handlers[0];
+  if (!watchHandler) throw new Error("watch handler not registered");
+  watchHandler({ kind: "removed", path: "book.epub", format: "epub" });
+  // 此时 entries 里没有 book.epub 但有 other.epub (size > 0)
+  assert.equal(service.get("book.epub"), undefined, "removed from entries after delete");
+  assert.equal(service.list().length, 1, "other book still in entries");
+  // 模拟用户重新放回 book.epub → 'added' 事件触发 refreshBook (因为
+  // entries.size > 0, 不会走 initialize 全量重新扫描)
+  watchHandler({ kind: "added", path: "book.epub", format: "epub" });
+  // refreshBook 是 fire-and-forget (调 void this.refreshBook(event.path)),
+  // 等 microtask 跑完才完成 entries.set + emit. 用一个小 await 让
+  // promise chain 跑完.
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  // 现在 entries 里应该有 book.epub, 且 addedToLibraryAt / pinnedAt 都恢复了
+  const entry = service.get("book.epub");
+  assert.ok(entry, "re-discovered book must reappear in entries");
+  assert.equal(
+    entry?.book.addedToLibraryAt,
+    originalAddedAt,
+    "addedToLibraryAt must recover from persisted store, not be reset to null"
+  );
+  assert.equal(
+    entry?.book.pinnedAt,
+    1_700_000_000_500,
+    "pinnedAt must recover from persisted store, not be reset to null"
+  );
+});
+
+test("refreshBook for unadded file sets addedToLibraryAt: null", async () => {
+  // A1 反向测试: 持久化不在 library 的书重新被发现, 应该 addedToLibraryAt: null
+  const files = [{ locator: makeLocator("new.epub"), metadata: makeMetadata("New") }];
+  const source = new FakeBookSource(files);
+  const store = new InMemoryAnnotationStore(); // empty library
+  const service = new LibraryService(source, store);
+  await service.initialize();
+  const watchHandler = source.handlers[0];
+  if (!watchHandler) throw new Error("watch handler not registered");
+  watchHandler({ kind: "added", path: "new.epub", format: "epub" });
+  const entry = service.get("new.epub");
+  assert.ok(entry);
+  assert.equal(entry?.book.addedToLibraryAt, null, "unadded book stays unadded after re-discovery");
+  assert.equal(entry?.book.pinnedAt, null, "unpinned book stays unpinned");
 });

@@ -163,8 +163,26 @@ export class CoverCache {
   }
 
   private async writeCover(book: Book, bytes: ArrayBuffer, mimeType: string): Promise<string> {
+    // P0 修复: mkdir 竞态. ensureCoversBatch 用 3 个 worker 并发, 每个 worker
+    // 调 ensureCoverFor → writeCover. exists() + mkdir() 是经典 TOCTOU:
+    // worker A 看到目录不存在 → mkdir; worker B 同一瞬间也看到不存在 → mkdir
+    // 第二次抛 "Folder already exists", 整个 cover 提取失败且 inFlight.delete
+    // 之后下一次再调还是同样的失败窗口.
+    //
+    // 修复: mkdir 自身包 try/catch — Obsidian vault adapter.mkdir 对目录已存在
+    // 会抛错, 我们把这种错误吞掉, 把 writeCover 跟目录状态解耦. exists() 检查
+    // 仍保留 (避免每次都进 mkdir 异常分支, 性能).
     if (!(await this.app.vault.adapter.exists(this.coversDir))) {
-      await this.app.vault.adapter.mkdir(this.coversDir);
+      try {
+        await this.app.vault.adapter.mkdir(this.coversDir);
+      } catch (error) {
+        // Race: 另一个 worker 抢先 mkdir 成功了. exists() 再 check 一次确认.
+        const message = error instanceof Error ? error.message : String(error);
+        if (!(await this.app.vault.adapter.exists(this.coversDir))) {
+          // 不是 "already exists" 类的 race — 真错误, 重新抛.
+          throw new Error(`mkdir(${this.coversDir}) failed: ${message}`);
+        }
+      }
     }
     const extension = extensionForMime(mimeType);
     const safeId = book.id.replace(/[^A-Za-z0-9._-]/g, "_");

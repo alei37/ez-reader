@@ -25,6 +25,8 @@ export class SearchBar {
   private readonly input: HTMLInputElement;
   private currentQuery = "";
   private isVisible = false;
+  // C5 修复: show() 里 50ms 延迟 focus 的 setTimeout handle, 让 destroy() clear.
+  private focusTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly documentKeydown: (event: KeyboardEvent) => void;
   private readonly inputKeydown: (event: KeyboardEvent) => void;
 
@@ -104,11 +106,21 @@ export class SearchBar {
     this.isVisible = true;
     this.root.removeClass("is-hidden");
     this.input.value = this.currentQuery;
-    // 100ms 延迟 focus — 让 CSS transition 跑完, 否则动画期间的 focus
-    // 在某些 WebView 上会让动画卡顿。
-    globalThis.setTimeout(() => {
-      this.input.focus();
-      this.input.select();
+    // C5 修复: 存 setTimeout handle 让 destroy() clear. show → 立即 destroy()
+    // 序列 (例如 user 在 50ms 内切到笔记) 不会让 focus 在 detached input
+    // 上 throw DOMException. 同 100ms 延迟 — 让 CSS transition 跑完, 否则
+    // 动画期间的 focus 在某些 WebView 上会让动画卡顿。
+    if (this.focusTimer !== undefined) {
+      globalThis.clearTimeout(this.focusTimer);
+    }
+    this.focusTimer = globalThis.setTimeout(() => {
+      this.focusTimer = undefined;
+      try {
+        this.input.focus();
+        this.input.select();
+      } catch (error) {
+        console.debug("[ez-reader] search bar focus skipped — destroyed", error);
+      }
     }, 50);
   }
 
@@ -127,6 +139,10 @@ export class SearchBar {
   }
 
   destroy(): void {
+    if (this.focusTimer !== undefined) {
+      globalThis.clearTimeout(this.focusTimer);
+      this.focusTimer = undefined;
+    }
     document.removeEventListener("keydown", this.documentKeydown, true);
     this.root.remove();
   }

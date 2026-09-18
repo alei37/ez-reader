@@ -194,7 +194,12 @@ export const composeQuickBookmarkLabel = (
   chapter: string | null | undefined,
   fraction: number
 ): string => {
-  const pct = `${Math.round(fraction * 100)}%`;
+  // clamp 到 [0, 1] — `fraction` 在 relocate 异常时可能漂出范围, 直接输出
+  // "-10%" 或 "150%" 让用户困惑. 跟 ReaderToolbar.clampFraction 同样的语义.
+  const safeFraction = Number.isFinite(fraction)
+    ? Math.max(0, Math.min(1, fraction))
+    : 0;
+  const pct = `${Math.round(safeFraction * 100)}%`;
   const trimmedChapter = chapter?.trim();
   if (trimmedChapter) {
     // 截到 60 字符防止 chapter title 太长
@@ -274,6 +279,16 @@ export class ReaderView extends ItemView {
    * (每翻页一次),连续失败时不能让 Notice 刷屏. 5s 内只展示一次.
    */
   private lastProgressFailureNoticeAt = 0;
+  /**
+   * C1 修复: relocate 风暴 debounce. foliate 滚动模式下 relocate 触发频繁
+   * (60Hz 滚动里 5-10 次/秒), 每次都 await exportLocator + await
+   * updatePosition → data.json IO 风暴. PdfOverlay 同位置已经做了 250ms
+   * debounce (pdfOverlay.ts:312-323), ReaderView 漏掉. 现在 debounce 300ms,
+   * 配合 1% 距离阈值避免跨页定位 race (用户翻到第 N 页,debounce 期间又翻
+   * 到 N+1,旧 timer 会写 N 的 fraction 覆盖 — 距离阈值让最后一次保留).
+   */
+  private persistProgressTimer: ReturnType<typeof setTimeout> | undefined;
+  private persistProgressPending: { fraction: number; locator: string | undefined } | undefined;
 
   constructor(leaf: WorkspaceLeaf, deps: ReaderViewDeps) {
     super(leaf);
@@ -473,6 +488,17 @@ export class ReaderView extends ItemView {
       await this.session.close();
       this.session = undefined;
     }
+    // C1 修复: persistProgress debounce timer 必须 clear. 关闭 view 时
+    // 如果还有未 flush 的进度, 立即同步 flush (用户期望 "我翻到的位置"
+    // 在关闭时被记住). flush 完清 pending, 让 onClose 之后即便 timer
+    // 误 fire 也不写盘.
+    if (this.persistProgressTimer !== undefined) {
+      globalThis.clearTimeout(this.persistProgressTimer);
+      this.persistProgressTimer = undefined;
+      const pending = this.persistProgressPending;
+      this.persistProgressPending = undefined;
+      if (pending) await this.persistProgress(pending.fraction, pending.locator);
+    }
     this.selectionMenu?.destroy();
     this.selectionMenu = undefined;
     this.searchBar?.destroy();
@@ -487,6 +513,12 @@ export class ReaderView extends ItemView {
 
   setEntry(entry: LibraryEntry): void {
     this.entry = entry;
+    // C7 修复: bump session token — 让正在 await 旧 session 的 caller
+    // (主要是 obsidian:// 协议 handler 调的 openExcerptById) 知道等错
+    // 了 session, 重新对当前 token await. bump 必须在任何 await 之前
+    // (包括 pendingClosePromise 的发起) — 否则旧 caller 拿到 token 后
+    // session 已经被关, 旧 caller 还在新 session 上跳旧 excerpt.
+    this.currentSessionToken += 1;
     // 切换书时: 关闭上一个 session 释放 worker / iframe, 重置 ready promise.
     // P0-7 修复: 之前 fire-and-forget, 旧 foliate iframe / PDF.js worker
     // 还没释放就立刻在 host 上挂新 session, 极端情况下两份 reader 同时
@@ -525,9 +557,15 @@ export class ReaderView extends ItemView {
   /** Public entry point used by the obsidian:// protocol handler. */
   async openExcerptById(excerptId: string): Promise<void> {
     if (!this.entry) return;
-    // 等 session 就绪(openSession 是 fire-and-forget,但 session 字段会立即被赋值;
-    // session 内部的 goTo / highlight 需要 await engine.open 完成)
+    // C7 修复: 抓 token 在 await 之前. await 之后如果 token 变了, 说明
+    // 在 await 期间 setEntry 切书了, 旧 promise resolve 后我们要重新等新
+    // session, 而不是在新 session 上跳旧 excerpt locator.
+    const tokenAtEntry = this.currentSessionToken;
     await this.whenReady();
+    if (tokenAtEntry !== this.currentSessionToken) {
+      // session 在我们等的时候换了 — 重新对当前 session 来一次.
+      return this.openExcerptById(excerptId);
+    }
     const all = await this.deps.reading.listExcerpts(this.entry.book.id);
     const target = all.find((e) => e.id === excerptId);
     if (target) await this.jumpToExcerpt(target);
@@ -559,6 +597,11 @@ export class ReaderView extends ItemView {
   // P0-7 修复: setEntry 是 sync, 旧 session.close() 不能 fire-and-forget
   // (见 setEntry 注释). 这里存 promise 让后续 openSession / onClose await.
   private pendingClosePromise: Promise<void> | undefined;
+  // C7 修复: setEntry / openSession 生成一个 token. whenReady / openExcerptById
+  // await 完后, 还要检查 token 是不是还是当前 — 否则 await 的是旧 session,
+  // 新 session 已经挂上去, 旧 awaiter 在新 session 上调 jumpToExcerpt 跳到
+  // 错位置 (obsidian:// 协议 "回到原文" 链接的最常见 root cause).
+  private currentSessionToken = 0;
 
   private markReady(): void {
     if (this.readyFallbackTimer !== undefined) {
@@ -773,18 +816,31 @@ export class ReaderView extends ItemView {
         return;
       case "escape":
         // 优先级: search bar → 选区菜单 → 抽屉 → panel → 不动 reader (防止误关)
+        //
+        // C3 修复: 之前 case "escape" 不调 preventDefault,事件冒泡到 Obsidian
+        // 内部 handler → 关 leaf. 用户开 notes panel 想 Esc 关 panel,结果
+        // 整个 reader 被关掉. 现在命中任何 UI 元素时 preventDefault,Obsidian
+        // 内部 handler 看不到这个事件,只关我们的 panel;没命中任何东西时
+        // 不 preventDefault,让 Obsidian 自己关 leaf (符合"无 panel 时 Esc
+        // 退出"的默认行为).
+        let escapeHandled = false;
         if (this.searchBarVisible) {
           this.closeSearchBar();
+          escapeHandled = true;
         } else if (this.selectionMenu?.isVisible()) {
           this.selectionMenu.hide();
+          escapeHandled = true;
         } else if (this.translationDrawer?.isVisible()) {
           this.translationDrawer.hide();
+          escapeHandled = true;
         } else if (this.tocPanel?.isVisible() || this.bookmarksPanel?.isVisible() || this.excerptsPanel?.isVisible() || this.notesPanel?.isVisible()) {
           // P0 修复: 之前 Esc 只关 tocPanel, 其他三个 panel (书签/摘录/笔记) Esc
           // 没反应. 现在统一通过 hideAllPanels 关闭所有可见 panel, 任何可见 panel
           // 上的 × 按钮和 Esc 都走同一条路径.
           this.hideAllPanels();
+          escapeHandled = true;
         }
+        if (escapeHandled) event.preventDefault();
         return;
     }
   }
@@ -1020,7 +1076,7 @@ private async showFontSettings(): Promise<void> {
           this.tocFractions.set(activeTocId, detail.fraction);
         }
         this.toolbar?.update(this.toolbarState());
-        void this.persistProgress(detail.fraction, detail.locator);
+        this.schedulePersistProgress(detail.fraction, detail.locator);
       }
     });
 
@@ -1320,6 +1376,35 @@ private async showFontSettings(): Promise<void> {
       return;
     }
     console.warn("[ez-reader] link click unhandled", href);
+  }
+
+  /**
+   * C1 修复: 把 `void this.persistProgress(...)` 改成 schedule + debounce.
+   * relocate 风暴期间只保留最后一次;fraction 跨过 0.01 (1%) 阈值时也会
+   * 立即 flush (防止用户拖到底部,debounce 期间关 vault 丢最后一段进度).
+   */
+  private schedulePersistProgress(fraction: number, locator: string | undefined): void {
+    const pending = this.persistProgressPending;
+    // 1% 阈值 — 跨页跳转 / 翻书 / 跳目录都过这个阈值, 走立即 flush.
+    const distance = pending ? Math.abs(pending.fraction - fraction) : 0;
+    if (pending === undefined || distance >= 0.01) {
+      // 替换 pending, timer 重置 (300ms)
+      this.persistProgressPending = { fraction, locator };
+      if (this.persistProgressTimer !== undefined) {
+        globalThis.clearTimeout(this.persistProgressTimer);
+      }
+      this.persistProgressTimer = globalThis.setTimeout(() => {
+        this.persistProgressTimer = undefined;
+        const next = this.persistProgressPending;
+        if (next) {
+          this.persistProgressPending = undefined;
+          void this.persistProgress(next.fraction, next.locator);
+        }
+      }, 300);
+    } else {
+      // 距离近 (同一页内), 只更新 pending, timer 复用
+      this.persistProgressPending = { fraction, locator };
+    }
   }
 
   private async persistProgress(fraction: number, locator?: string): Promise<void> {

@@ -135,7 +135,17 @@ export class FoliateBookReader implements BookReader {
     }
 
     const session = new FoliateSession(view, onTransformData, transformTarget);
-    await session.applyAppearance(appearance);
+    try {
+      await session.applyAppearance(appearance);
+    } catch (error) {
+      // B1 修复: 之前 applyAppearance 抛错时 view + listener 已挂但没回滚,
+      // host 累积多个 foliate-view element + 它们的 transformTarget listener
+      // (shared EventTarget 跨书复用, 旧 listener 干扰下一次 open).
+      // 现在跟 view.open 失败路径对称清理.
+      view.remove();
+      if (transformTarget) transformTarget.removeEventListener("data", onTransformData);
+      throw error;
+    }
 
     // 翻页动画: 在 foliate 的 `load` 事件触发时按方向加 class。
     // 三个方向 — forward (向右滑入) / backward (向左滑入) / initial (淡入),
@@ -261,6 +271,11 @@ class FoliateSession implements ReaderSession {
   private onIframeKeydown: ((event: KeyboardEvent) => void) | undefined;
   private highlights: HighlightSpec[] = [];
   private closed = false;
+  /** B4 修复: bindSelectionChange 在 this.view 上挂的 `load` listener
+   *  需要在 close() 里也清 (disposeOn 之前 session.close() 可能先跑,
+   *  ReaderView.onClose 直接 await session.close 不先 offSelect, load
+   *  listener 还在 view 上). 把 handle 提到实例字段让 close() 能拿到. */
+  private selectionLoadListener: ((event: Event) => void) | undefined;
   /**
    * 上次导航方向, 供 `load` 事件读取以决定翻页动画的方向 class。
    * - "initial"  — 首次加载 + TOC / 进度条 / 书签跳转 (直接淡入)
@@ -314,6 +329,15 @@ class FoliateSession implements ReaderSession {
     this.docListeners.clear();
     for (const off of this.disposers) off();
     this.disposers.clear();
+    // B4 修复: 兜底清理 selection-change 的 load listener. bindSelectionChange
+    // 的 off() 也清这个字段 (重复 removeEventListener 同一 handler 是
+    // no-op, 安全). 解决 ReaderView.onClose 直接 await session.close()
+    // 但没调 disposeOn → offSelect 的路径下, listener 挂到 detach view
+    // 上等 GC 的"短命 leak".
+    if (this.selectionLoadListener) {
+      this.view.removeEventListener("load", this.selectionLoadListener);
+      this.selectionLoadListener = undefined;
+    }
     this.transformCleanup();
     try {
       this.view.close();
@@ -465,6 +489,10 @@ class FoliateSession implements ReaderSession {
       this.findMatches = [];
       const needle = trimmed.toLocaleLowerCase();
       for (let i = 0; i < sections.length; i++) {
+        // B3 修复: closed 标志可能在我们 await sec.load() 之间被翻起
+        // (用户快速按 Esc 关 reader leaf), 提前退出. 之前跑完整个循环
+        // 才检查 closed, 浪费 CPU + 短暂持有 findMatches / findCursor.
+        if (this.closed) return 0;
         const sec = sections[i];
         if (!sec || typeof sec.load !== "function") continue;
         let html: string | Document;
@@ -473,6 +501,8 @@ class FoliateSession implements ReaderSession {
         } catch {
           continue;
         }
+        // await 后再 check 一次, 防止 sec.load() 期间被 close
+        if (this.closed) return 0;
         // foliate section.load() 可能返回 string 也可能返回 Document (取决于打包方式).
         const text = extractTextFromSection(html).toLocaleLowerCase();
         let from = 0;
@@ -547,6 +577,7 @@ class FoliateSession implements ReaderSession {
       if (loadListener) {
         this.view.removeEventListener("load", loadListener);
         loadListener = undefined;
+        this.selectionLoadListener = undefined;
       }
     };
 
@@ -690,6 +721,13 @@ class FoliateSession implements ReaderSession {
       attach(detail.doc, detail.index);
     };
     this.view.addEventListener("load", loadListener);
+    // B4 修复: 把 handle 存到实例字段, 让 close() 兜底清理. 之前
+    // session.close() 不碰 this.view 上的 loadListener — 如果
+    // ReaderView.onClose 直接 await session.close() 而没先调
+    // disposeOn / offSelect, listener 闭包会一直挂在已 detach 的
+    // view 上, 直到 view GC 才释放. 实测触发概率低, 但 GC 之前
+    // closure 持有 attach 闭包 (含 docListeners / view 引用).
+    this.selectionLoadListener = loadListener;
 
     return off;
   }

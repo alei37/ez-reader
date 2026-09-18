@@ -6,6 +6,11 @@ import { placeholderCoverStyle } from "./placeholderCover";
 export interface ShelfItemHandlers {
   onOpen: (entry: LibraryEntry) => void;
   onContextMenu: (entry: LibraryEntry, event: MouseEvent) => void;
+  /**
+   * D8 修复: 用户点 📌 期望直接 toggle 置顶, 不弹右键菜单. handler
+   * 不传时退回旧的 "📌 点击弹右键菜单" 行为 — 兼容旧测试.
+   */
+  onTogglePin?: (entry: LibraryEntry) => void;
 }
 
 export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers, coverResourcePath?: string): HTMLElement => {
@@ -59,10 +64,17 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   // 注入 setIcon; 这里直接画 fallback 字符 (Obsidian 在 1.5+ 内置
   // lucide, 但为了兼容先 unicode 字符, 后续可以替换成 SVG).
   if (entry.book.pinnedAt !== null) {
-    const pin = cover.createDiv({ cls: "ez-reader__shelf-grid__pin", attr: { title: "已置顶 — 在右键菜单中可取消", "aria-label": "已置顶" }, text: "📌" });
+    // D8 修复: 默认 📌 点击直接 toggle 置顶, 弹右键菜单会让用户多
+    // 操作一步 (点 → 等菜单 → 点"已置顶"). 旧行为保留 — 调用方不传
+    // onTogglePin 时退回 "弹右键菜单".
+    const pin = cover.createDiv({ cls: "ez-reader__shelf-grid__pin", attr: { title: handlers.onTogglePin ? "点击取消置顶" : "已置顶 — 右键菜单可取消", "aria-label": "已置顶" }, text: "📌" });
     pin.addEventListener("click", (event) => {
       event.stopPropagation();
-      handlers.onContextMenu(entry, event as MouseEvent);
+      if (handlers.onTogglePin) {
+        handlers.onTogglePin(entry);
+      } else {
+        handlers.onContextMenu(entry, event as MouseEvent);
+      }
     });
   }
 

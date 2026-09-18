@@ -419,13 +419,16 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       const newIds = bookIds.filter((id) => !existingLibrary.has(id));
       if (newIds.length === 0) return snapshot;
       const library = [...snapshot.library, ...newIds];
-      // Build the new addedAt map once; only stamp ids that don't already
-      // have a (larger-or-equal) entry.
+      // P1 修复: 跟 `setAddedAt` 保持一致 — 保留较大旧值. 之前
+      // `addedAtByBookId[id] > addedAt → 写 addedAt` 在书已有较晚时间戳时
+      // 会回退到当前 now (例如用户改系统时间, 或 data.json 里手动写入
+      // 了未来时间戳), 违反 first-added wins 语义. 现在统一:
+      // "保留较大值" = current 已是较大 → 跳过; 否则 → 写.
       const addedAtByBookId = { ...existingAddedAt };
       for (const id of newIds) {
-        if (addedAtByBookId[id] === undefined || addedAtByBookId[id]! > addedAt) {
-          addedAtByBookId[id] = addedAt;
-        }
+        const current = addedAtByBookId[id];
+        if (typeof current === "number" && current >= addedAt) continue;
+        addedAtByBookId[id] = addedAt;
       }
       return { ...snapshot, library, addedAtByBookId };
     });

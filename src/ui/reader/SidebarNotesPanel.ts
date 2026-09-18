@@ -340,7 +340,14 @@ export class SidebarNotesPanel {
           const onBlur = (): void => {
             void finish(true);
           };
-          note.addEventListener("keydown", onKeyDown);
+          // C4 修复: keydown listener 用 { once: true } — 一次编辑模式结束后
+          // (finish 内部置 contentEditable=false) listener 自动解除. 之前
+          // 每次 beginEdit 都挂新 listener 不清, view 生命周期内一直累积
+          // (100 条笔记 × 20 次编辑 = 2000 个 closure 挂在同一个 `<p>`).
+          // blur 已有 once, keydown 漏掉. 用 once: true 后, 第一次
+          // 触发 (Esc / Cmd+Enter) 后自动 removeEventListener, 接着
+          // 再 beginEdit 时 beginEdit 会重新挂 — 等价于原来行为但不再累积.
+          note.addEventListener("keydown", onKeyDown, { once: true });
           note.addEventListener("blur", onBlur, { once: true });
         };
         const flip = (): void => {

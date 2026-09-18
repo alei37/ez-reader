@@ -108,6 +108,15 @@ export class Setting {}
 export class Notice {
   constructor() {}
 }
+/**
+ * P1: 额外补齐几个 ReaderView.ts 用的类型. 测试 import ReaderView
+ * 测纯函数 (composeQuickBookmarkLabel / truncateExcerptText) 时会顺带
+ * 拽进整个 UI 类. 这些 stub class 不会被实际调用, 只让 esbuild 解析
+ * 名字通过. 如果后续某个测试真要 instantiate 这些, 需要扩展 stub.
+ */
+export class ItemView {}
+export class WorkspaceLeaf {}
+export class TFile {}
 export const Platform = {};
 export const setIcon = () => {};
 export const setTooltip = () => {};

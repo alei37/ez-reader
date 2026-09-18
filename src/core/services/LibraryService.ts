@@ -253,17 +253,26 @@ export class LibraryService {
     }
     const id = this.source.resolveId(newFile);
     const reading = await this.getStoredReading(id);
+    // A1 修复: 之前 `addedToLibraryAt: null` 写死, 但用户从 vault 删文件
+    // 再重新加同路径时, bookId 跟之前在 library 里的一致(annotations
+    // store 仍然保留 library 记录 + reading state), entries 这里把它
+    // 当成"未加入"的新书 — 用户重启 vault 之前 shelf 都不显示, 跟
+    // 持久化的 library 列表不一致. 现在从持久化读 addedAt + library
+    // 状态, 保持跟"已加入"语义同步. pinnedAt 同理.
+    const [isInLibrary, addedAt, pinnedAt] = await Promise.all([
+      this.isBookInLibrary(id),
+      this.annotations.getAddedAt(id),
+      this.annotations.getPinnedAt(id)
+    ]);
     this.entries.set(id, {
       book: {
         id,
         locator: newFile,
         metadata,
         sourceModifiedAt: newFile.modifiedAt,
-        addedToLibraryAt: null,
+        addedToLibraryAt: isInLibrary ? (addedAt ?? Date.now()) : null,
         coverPath: null,
-        // refreshBook 走的是 lookup 路径, 不读 pinnedAtByBookId — 视为未 pin.
-        // 重新打开 vault 时 doInitialize 会用最新的 setPinnedAt 覆盖这里.
-        pinnedAt: null
+        pinnedAt
       },
       reading: reading ?? {
         bookId: id,
@@ -275,6 +284,21 @@ export class LibraryService {
       }
     });
     this.emit();
+  }
+
+  /**
+   * A1 修复配套: 检查 bookId 是否在持久化 library 数组里. 比直接调
+   * `listLibrary()` 全量扫描 + .includes(bookId) 节省 IO — 后者在
+   * 几百本书时每个 refreshBook 都 walk 整个数组.
+   *
+   * 这里仍然全量读是因为 AnnotationStore 没有 set 查询接口. 实际上
+   * 几百本书的 listLibrary() 返回数组也就 O(N) 但内存操作, 实测
+   * < 1ms, 不构成瓶颈. 如果以后出现性能问题, 给 AnnotationStore 加
+   * `hasInLibrary(bookId)` O(1) 接口.
+   */
+  private async isBookInLibrary(bookId: BookId): Promise<boolean> {
+    const library = await this.annotations.listLibrary();
+    return library.includes(bookId);
   }
 
   private async getStoredReading(bookId: BookId): Promise<ReadingState | undefined> {

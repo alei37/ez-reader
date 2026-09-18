@@ -73,7 +73,12 @@ export class AddToLibraryModal extends Modal {
     const list = contentEl.createDiv({ cls: "ez-reader__add-modal__list" });
     this.renderList(list);
 
-    this.searchInput.addEventListener("input", () => this.renderList(list));
+    // D1 修复: searchInput 之前每次 onOpen 都 addEventListener 但从来不
+    // removeEventListener. 旧 searchInput 节点被 contentEl.empty() detach,
+    // 但 listener 还挂在孤儿 DOM 上 + 闭包持有 (this, list). 反复开关
+    // modal 会让 Detached HTMLInputElement + 闭包一直不被 GC. 现在用
+    // 一次性命名 handler, 在 onClose 里显式 removeEventListener.
+    this.searchInput.addEventListener("input", this.onSearchInput);
     // 初始触发可见候选的封面提取
     this.maybeExtractCovers(this.filteredCandidates());
 
@@ -104,7 +109,16 @@ export class AddToLibraryModal extends Modal {
     // 但如果有 worker promise 还没 resolve, set 一直占着, 内存中多个 modal
     // 实例化会导致 leak. 显式清空 + 拒绝新启动.
     this.coverFetchInFlight.clear();
+    // D1 修复: 移除 searchInput listener — modal 关闭后不依赖 GC 回收.
+    this.searchInput.removeEventListener("input", this.onSearchInput);
   }
+
+  // D1 修复: 命名 handler 让 addEventListener / removeEventListener 配对.
+  // 注意 this.lastRendered 在 onOpen 之后才设置, 这里依赖 onSearchInput
+  // 只在 modal open 期间被触发.
+  private readonly onSearchInput = (): void => {
+    if (this.lastRendered) this.renderList(this.lastRendered);
+  };
 
   private filteredCandidates(): LibraryEntry[] {
     const query = this.searchInput.value.trim().toLocaleLowerCase();
@@ -216,7 +230,9 @@ export class AddToLibraryModal extends Modal {
   private async confirmSelection(setActionsBusy: (busy: boolean) => void = () => {}): Promise<void> {
     const ids = [...this.selected];
     if (ids.length === 0) {
-      this.close();
+      // D7 修复: 之前静默关闭 modal, 用户以为"我点了没反应". 现在弹
+      // Notice 提示用户先勾选. 不关闭 modal — 让用户继续勾选.
+      new Notice("请先勾选要加入的书", 2000);
       return;
     }
     setActionsBusy(true);
@@ -233,32 +249,55 @@ export class AddToLibraryModal extends Modal {
     try {
       // 并行 addToLibrary: ObsidianAnnotationStore.writeChain 内部串行化
       // write,但读 + 准备可以并行 — N 本书的 IO 不再 N 倍耗时.
-      await this.raceWithTimeout(
-        Promise.all(ids.map((id) => this.service.addToLibrary(id))),
+      //
+      // P0 修复: 之前 `Promise.all(...)` 在一条 reject 时立即短路,其余
+      // in-flight 的 addToLibrary 仍在跑 + 写 data.json, 但用户会看到
+      // "加入失败" Notice 并以为啥都没干 — 实际 N-1 本已成功加入,
+      // 后面 extractCoversFor 也会跑(因为 books 通过 this.service.get
+      // 仍能查到), 静默"幽灵进度". 改用 `Promise.allSettled` 让所有
+      // 路径跑完, 然后从 fulfilled 结果里挑成功加入的 ids, 只对
+      // rejected 发 Notice.
+      const settled = await this.raceWithTimeout(
+        Promise.allSettled(ids.map((id) => this.service.addToLibrary(id))),
         timeoutMs,
         "confirmSelection.addToLibrary"
       );
       if (timedOut) throw new Error("addToLibrary 超时");
+      const fulfilled = (settled ?? []).filter(
+        (r): r is PromiseFulfilledResult<void> => r.status === "fulfilled"
+      );
+      const rejected = (settled ?? []).filter(
+        (r): r is PromiseRejectedResult => r.status === "rejected"
+      );
+      // 只对真正成功的 book 跑 cover 提取. 但 `this.service.get(id)?.book`
+      // 在 addToLibrary 内部也会跑 (内部取 addedToLibraryAt 同步设置),
+      // 失败路径不会更新 entries,所以 .get() 返回 undefined — 我们用
+      // addToLibrary 调前的快照(候选列表)而不是 .get().
       const books = ids
-        .map((id) => this.service.get(id)?.book)
+        .filter((_id, idx) => settled?.[idx]?.status === "fulfilled")
+        .map((id) => this.candidates.find((entry) => entry.book.id === id)?.book)
         .filter((b): b is Book => Boolean(b));
       await this.raceWithTimeout(this.extractCoversFor(books), timeoutMs, "confirmSelection.extractCoversFor");
       if (timedOut) throw new Error("extractCoversFor 超时");
+      if (rejected.length > 0) {
+        const firstReason = rejected[0]?.reason;
+        const message = firstReason instanceof Error ? firstReason.message : String(firstReason);
+        const total = totalRejectedMessage(rejected.length, ids.length);
+        new Notice(`${total}: ${message}`);
+      }
     } catch (error) {
       console.error("[ez-reader] confirmSelection failed", error);
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`加入失败: ${message}`);
-      setActionsBusy(false);
+      // 不需要 setActionsBusy(false) — finally 会跑. 但 explicit early-return
+      // 避免 finally 后又调到 this.close().
       return;
     } finally {
       globalThis.clearTimeout(timeoutHandle);
       // 即使 timeout 触发或 throw, 也要解锁按钮 + 关 modal — 不让 UI 卡死.
       setActionsBusy(false);
-      // 二次防御: 在 finally 里强制 close, 避免任何漏掉的 return 路径让 modal 留着.
-      // close() 是 idempotent (Obsidian 内部已经处理), 重复调用安全.
-      if (timedOut) this.close();
+      this.close();
     }
-    this.close();
   }
 
   private async confirmAddAll(setActionsBusy: (busy: boolean) => void = () => {}): Promise<void> {
@@ -283,14 +322,13 @@ export class AddToLibraryModal extends Modal {
       console.error("[ez-reader] confirmAddAll failed", error);
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`全部加入失败: ${message}`);
-      setActionsBusy(false);
+      // finally 仍会跑 (解锁 + close), explicit return 避免跳过 finally.
       return;
     } finally {
       globalThis.clearTimeout(timeoutHandle);
       setActionsBusy(false);
-      if (timedOut) this.close();
+      this.close();
     }
-    this.close();
   }
 
   /**
@@ -331,3 +369,9 @@ export class AddToLibraryModal extends Modal {
     await this.covers.ensureCoversBatch(books, this.loader);
   }
 }
+
+/** 提示用户部分失败时的可读消息。 */
+const totalRejectedMessage = (rejected: number, total: number): string => {
+  if (rejected === total) return `加入失败 (${total} 本全部失败)`;
+  return `部分加入失败 (${rejected} / ${total} 本失败, 其余已加入)`;
+};

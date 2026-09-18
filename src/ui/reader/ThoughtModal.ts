@@ -87,7 +87,14 @@ export class ThoughtModal extends Modal {
       }
     });
 
-    window.setTimeout(() => noteInput.focus(), 0);
+    // C5 修复: focus 失败时静默 (modal 可能被立即关, input 已被 detach).
+    window.setTimeout(() => {
+      try {
+        noteInput.focus();
+      } catch (error) {
+        console.debug("[ez-reader] thought modal focus skipped", error);
+      }
+    }, 0);
   }
 
   onClose(): void {

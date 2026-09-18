@@ -150,6 +150,7 @@ export class ShelfView extends ItemView {
 
   private async cycleShelfDensity(): Promise<void> {
     const next = nextShelfDensity(this.shelfDensity);
+    const previous = this.shelfDensity;
     this.shelfDensity = next;
     this.applyShelfDensityToDom();
     this.toolbar.update(this.toolbarState());
@@ -157,7 +158,14 @@ export class ShelfView extends ItemView {
     try {
       await this.deps.settingsStore.patchSettings((s) => ({ ...s, shelfDensity: next }));
     } catch (error) {
+      // D6 修复: 之前 patchSettings 失败时只 warn, 本地状态已经更新.
+      // 用户重启 vault 后看到旧值, 以为"我没点过". 现在回滚本地状态 +
+      // DOM + toolbar, 并显示 Notice 让用户知道为什么回退了.
       console.warn("[ez-reader] failed to persist shelfDensity", error);
+      this.shelfDensity = previous;
+      this.applyShelfDensityToDom();
+      this.toolbar.update(this.toolbarState());
+      new Notice(`保存封面密度失败, 已回滚到 ${previous}`, 3000);
     }
   }
 
@@ -317,11 +325,16 @@ export class ShelfView extends ItemView {
       this.emptyState.addClass("is-hidden");
       for (const entry of entries) {
         const coverPath = entry.book.coverPath ?? undefined;
+        // D8 修复: 📌 直接 toggle 置顶, 不用弹右键菜单再点一次.
+        const onTogglePin = (item: LibraryEntry): void => {
+          void this.togglePin(item);
+        };
         const node =
           this.mode === "grid"
             ? renderGridItem(entry, {
                 onOpen: (item) => void this.openBook(item),
-                onContextMenu: (item, event) => this.openItemMenu(item, event)
+                onContextMenu: (item, event) => this.openItemMenu(item, event),
+                onTogglePin
               }, coverPath)
             : renderListItem(entry, {
                 onOpen: (item) => void this.openBook(item),
@@ -569,16 +582,20 @@ export class ShelfView extends ItemView {
    * P1 修复: 没有 annotationStore (测试场景) 时, 用 module-level flag 而
    * 不是 instance flag 避免热重载反复弹 picker. 已 dismiss 的 vault 也不
    * 再自动开 picker (dismiss = "我已经知道, 别再打扰我").
+   *
+   * D5 修复: 之前 static `promptedForFirstImportWithoutStore` flag 想防热
+   * 重载反复弹 picker, 但 static 字段属于类 — esbuild rebuild 重新加载
+   * 类时整个 static 被重置, flag 失去作用. 实例字段 `promptedForFirstImport`
+   * 已经守了一次创建, 不需要重复防. 删掉 static 字段.
    */
-  private static promptedForFirstImportWithoutStore = false;
   private maybePromptForFirstImport(): void {
     if (this.promptedForFirstImport) return;
     this.promptedForFirstImport = true;
     const store = this.deps.annotationStore;
     if (!store) {
-      // 测试 / 旧调用方不带 annotationStore — module-level flag 防热重载反复弹.
-      if (ShelfView.promptedForFirstImportWithoutStore) return;
-      ShelfView.promptedForFirstImportWithoutStore = true;
+      // 测试 / 旧调用方不带 annotationStore — instance flag 已守过,
+      // 不需要额外的 module-level 守卫: prompt 本来就是 best-effort,
+      // 即使热重载或多次 new ShelfView 都重弹也只是 UX 噪音.
       return;
     }
     void this.runOnboarding(store);
