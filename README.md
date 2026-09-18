@@ -251,16 +251,6 @@ pnpm run build     # 产出 main.js / styles.css / manifest.json
 cp main.js styles.css manifest.json /path/to/<Vault>/.obsidian/plugins/ez-reader/
 ```
 
-### 从 Local Book Reader 迁移
-
-EzReader 是独立插件,**不**自动导入旧数据。手动迁移:
-
-1. 旧插件 Settings → 导出核心数据备份,得到 JSON 文件。
-2. 卸载旧插件 (保留备份 + `data/` 目录以防回滚)。
-3. 安装 EzReader 到 `<Vault>/.obsidian/plugins/ez-reader/`。
-4. 启用 EzReader → Settings → 从备份恢复核心数据,选 JSON。
-5. 书架上点重新扫描,把书文件 re-bind 到新书记录。
-
 ## 开发工作流
 
 ```bash
@@ -296,6 +286,5 @@ pnpm run dev:web     # watch 模式 (client-plugin)
 ## 作者与许可
 
 - 作者:[alei37](https://github.com/alei37)
-- 起源:fork 自 [Sunny D's Local Book Reader](https://github.com/SunnyD0697/local-book-reader) v0.3.6
 - License:[MIT](LICENSE)
 - 第三方组件保留各自许可,见 [LICENSES/](LICENSES)

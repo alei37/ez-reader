@@ -31,7 +31,7 @@
 ## 1. 用户是谁,要做什么
 
 ### 用户信息
-- **GitHub**: `alei37`(fork 自 `SunnyD0697/local-book-reader` v0.3.6,后重写)
+- **GitHub**: `alei37`(EzReader 由其从零开发)
 - **使用设备**: Linux 桌面 + Android 平板(Syncthing 同步 vault)
 - **Obsidian vault**: `/home/ljl/obsidian/obsidian_alei/`
 - **语言**: 中文(代码注释混合中英文)
