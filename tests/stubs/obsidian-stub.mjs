@@ -68,6 +68,11 @@ const factoryMethods = {
     for (const c of classes) if (c) this.classList.remove(c);
     return this;
   },
+  hasClass: function (cls) {
+    if (!cls) return false;
+    // Obsidian: supports space-separated list of classes (all must match).
+    return String(cls).split(/\s+/).every((c) => c && this.classList.contains(c));
+  },
   toggleClass: function (cls, force) {
     if (force === true) this.classList.add(cls);
     else if (force === false) this.classList.remove(cls);

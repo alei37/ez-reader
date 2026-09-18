@@ -428,12 +428,14 @@ export class ReaderView extends ItemView {
 
     this.host = body.createDiv({ cls: "ez-reader__reader__stage" });
 
+    // TocPanel 现在是左侧边栏 (320px), 跟 notesPanel 同侧互斥显示 —
+    // v4 UX: 树状结构 + ▶/▼ 折叠, 不再是顶部下拉.
     this.tocPanel = new TocPanel(
       {
         onJump: (item) => void this.jumpToTocItem(item),
         onClose: () => this.hideAllPanels()
       },
-      container
+      body
     );
 
     this.translationDrawer = new TranslationDrawer(
@@ -740,6 +742,14 @@ export class ReaderView extends ItemView {
     const handler = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       if (isEditableTarget(event.target)) return;
+      // P2 polish: 焦点在 visible TocPanel 内时, 让 TocPanel 自己的
+      // capture handler 接管键盘 (箭头 / Enter / Home/End / ←/→ / Space).
+      // ReaderView 的容器层 capture handler 在 ancestor 阶段先跑, 但
+      // tocPanel 已经 stopPropagation, 这里再加一次保险 — 不让 Home/End
+      // / Space 触发翻页.
+      if (this.tocPanel?.isVisible() && this.tocPanel.contains(event.target)) {
+        return;
+      }
       if (!this.session) return;
       const action = routeShortcut(event, this.shortcuts);
       if (action === null) return;
@@ -1074,6 +1084,10 @@ private async showFontSettings(): Promise<void> {
         // 在翻页 / scroll 都触发, 同一章节可能触发多次 — 写同样的 fraction 没意义).
         if (activeTocId && !this.tocFractions.has(activeTocId)) {
           this.tocFractions.set(activeTocId, detail.fraction);
+          // P2 polish: 同步 visited ids 给 TocPanel — 让 panel 内的进度点
+          // 圆点从灰变绿. 没必要每次 relocate 都调, 只在 tocFractions 真
+          // 增加时同步一次.
+          this.tocPanel?.setVisited(this.tocFractions.keys());
         }
         this.toolbar?.update(this.toolbarState());
         this.schedulePersistProgress(detail.fraction, detail.locator);
@@ -1154,6 +1168,9 @@ private async showFontSettings(): Promise<void> {
       try {
         this.tocItems = await this.session.tableOfContents();
         this.tocPanel?.setToc(this.tocItems);
+        // 加载 TOC 后, 把已记录的 visited ids 同步给 panel — 进度点
+        // 从加载好就反映用户的阅读进度 (而不是要等下一次 relocate).
+        this.tocPanel?.setVisited(this.tocFractions.keys());
       } catch (error) {
         console.warn("[ez-reader] failed to load TOC", error);
       }

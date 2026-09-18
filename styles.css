@@ -2002,7 +2002,23 @@
   }
 }
 
-/* === TOC 面板 === */
+/* === TOC 面板 (左侧边栏, 树状 v4) === */
+.ez-reader__reader-panel--toc-sidebar {
+  flex: 0 0 320px;
+  border-right: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 100%;
+  min-height: 0;
+}
+
+.ez-reader__reader-panel--toc-sidebar.is-hidden {
+  display: none;
+}
+
+/* 旧的 top drop-down 类保留作为 fallback — 避免有第三方/旧 CSS 残留引用 */
 .ez-reader__reader-panel--toc {
   border-bottom: 1px solid var(--background-modifier-border);
   padding: 8px 12px;
@@ -2020,22 +2036,19 @@
   font-size: 13px;
 }
 
-.ez-reader__toc-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
 .ez-reader__toc-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex: 0 0 auto;
 }
 
 .ez-reader__toc-header h3 {
   margin: 0;
   font-size: 13px;
+  flex: 0 0 auto;
 }
 
 /* 所有 reader panel 共用的 header (含 × close 按钮). */
@@ -2080,30 +2093,205 @@
   background: var(--background-primary);
   color: var(--text-normal);
   font-size: 12px;
+  min-width: 0;
 }
 
-.ez-reader__toc-item {
+/* 树状列表 — 占满 panel 剩余高度, 内部滚动 */
+.ez-reader__toc-tree {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 6px 8px 12px;
+  font-size: 13px;
+}
+
+/* 单行 = toggle + label */
+.ez-reader__toc-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 4px;
+  min-height: 26px;
+}
+.ez-reader__toc-row:hover {
+  background: var(--background-modifier-hover);
+}
+.ez-reader__toc-row.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+.ez-reader__toc-row.is-active:hover {
+  background: var(--interactive-accent-hover, var(--interactive-accent));
+}
+
+/* 折叠/展开 toggle — 固定宽度让 label 起点对齐 */
+.ez-reader__toc-row__toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 18px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ez-reader__toc-row__toggle:hover:not(:disabled) {
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+}
+.ez-reader__toc-row__toggle.is-empty {
+  cursor: default;
+  visibility: hidden;
+}
+.ez-reader__toc-row.is-active .ez-reader__toc-row__toggle {
+  color: var(--text-on-accent);
+}
+
+/* 章节 label — flex 1 占满剩余宽度, 文字溢出省略 */
+.ez-reader__toc-row__label {
+  flex: 1 1 auto;
   text-align: left;
   background: transparent;
   border: 0;
-  color: var(--text-normal);
+  color: inherit;
   cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 13px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font: inherit;
   line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
-.ez-reader__toc-item:hover {
+/* 子节点容器 — 折叠时收起; 默认展开 */
+.ez-reader__toc-children {
+  margin-left: 12px;
+  border-left: 1px solid var(--background-modifier-border);
+  padding-left: 6px;
+}
+.ez-reader__toc-children.is-collapsed {
+  display: none;
+}
+/* 顶层 (depth=0) 节点的 children 不显示左边竖线, 看起来更干净 */
+.ez-reader__toc-row[data-toc-depth="0"] + .ez-reader__toc-children {
+  border-left: 1px dashed var(--background-modifier-border);
+}
+
+/* === TOC 面板 v5 增强 (Tier 1 + Tier 2) === */
+
+/* 章节计数 chip — header 标题右边, 灰色小字 */
+.ez-reader__toc-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--background-modifier-border);
+  font-weight: normal;
+  flex: 0 0 auto;
+}
+
+/* 面包屑 — header 下方一行, 显示当前章节的祖先链 */
+.ez-reader__toc-breadcrumb {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  flex: 0 0 auto;
+  min-height: 24px;
+  /* 整个 header-row 是 flex column, 面包屑是第二行. 隐藏面包屑里的内容
+     通过 :empty 检测实现 — 但 :empty 在有非空子节点时才生效, 这里用
+     display: none fallback. */
+}
+.ez-reader__toc-breadcrumb:empty {
+  display: none;
+  padding: 0;
+  border-bottom: 0;
+}
+.ez-reader__toc-breadcrumb__item {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 24ch;
+  padding: 1px 2px;
+  border-radius: 3px;
+}
+.ez-reader__toc-breadcrumb__item.is-link {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.ez-reader__toc-breadcrumb__item.is-link:hover {
   background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.ez-reader__toc-breadcrumb__item.is-current {
+  color: var(--text-normal);
+  font-weight: 600;
+  /* 当前章节不可点 */
+  cursor: default;
+}
+.ez-reader__toc-breadcrumb__sep {
+  color: var(--text-faint, var(--text-muted));
+  flex: 0 0 auto;
+  user-select: none;
 }
 
-.ez-reader__toc-item.is-active {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
+/* 搜索高亮 — label 内的 <mark> */
+.ez-reader__toc-highlight {
+  background: var(--text-highlight-bg, rgba(255, 230, 0, 0.45));
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* 键盘焦点行 — 蓝色边框, 比 is-active 更柔和 (active 是当前章节,
+   focused 是用户键盘焦点; 可以不同). */
+.ez-reader__toc-row.is-focused {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+.ez-reader__toc-row.is-focused.is-active {
+  /* 当前章节也是 focused 时, outline 不要喧宾夺主, 用 inset shadow. */
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--text-on-accent);
+}
+
+/* 章节进度点 — row 末尾的 3px 圆点 */
+.ez-reader__toc-progress-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 8px;
+  margin-left: 4px;
+  transition: background 0.15s ease;
+}
+.ez-reader__toc-progress-dot.is-unvisited {
+  background: var(--background-modifier-border);
+}
+.ez-reader__toc-progress-dot.is-visited {
+  background: var(--color-green, #4caf50);
+}
+.ez-reader__toc-progress-dot.is-current {
+  background: var(--color-blue, #4a90e2);
+  box-shadow: 0 0 0 2px var(--background-modifier-border);
+}
+.ez-reader__toc-row.is-active .ez-reader__toc-progress-dot.is-current {
+  /* 当前章节在 active 行内, 圆点用 on-accent 颜色 (白 / 浅色) */
+  background: var(--text-on-accent);
+  box-shadow: none;
 }
 
 /* === 翻译侧边栏 === */
