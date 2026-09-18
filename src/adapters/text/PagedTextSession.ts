@@ -221,6 +221,26 @@ export class PagedTextSession implements ReaderSession {
       this.selectionCleanup();
       this.selectionCleanup = null;
     }
+    // P1 polish: fire the "close" event so any on("close", ...) listeners
+    // can react (e.g. releasing external resources). Firing before
+    // disposeOn ensures listeners are still alive when the event runs;
+    // disposeOn then removes every entry. Before this, close listeners
+    // were never called — element.remove() doesn't fire a "close" event,
+    // and disposeOn didn't dispatch one either.
+    //
+    // Use the element's own window's Event class so jsdom + esbuild
+    // tests don't trip on Node's built-in Event being incompatible with
+    // jsdom's dispatchEvent.
+    try {
+      const win = this.element.ownerDocument.defaultView;
+      const WinEvent = (win as unknown as { Event?: typeof Event } | null)?.Event;
+      const closeEvent = WinEvent
+        ? new WinEvent("close")
+        : ((win?.document?.createEvent?.("Event") as Event | undefined) ?? null);
+      if (closeEvent) this.element.dispatchEvent(closeEvent);
+    } catch (error) {
+      console.warn("[ez-reader] PagedTextSession close event dispatch failed", error);
+    }
     for (const off of this.disposers) off();
     this.disposers.clear();
     this.injectedCss.clear();
@@ -293,9 +313,21 @@ export class PagedTextSession implements ReaderSession {
         this.relocateListeners.delete(wrapped);
       };
     }
+    // Generic event path — used for link-click, close, and any future
+    // event type. P1 polish: track the disposer so off() returned to the
+    // caller removes it from `disposers`. Previously the closure stayed in
+    // disposers forever even after the listener was removed, so N off()
+    // calls left N stale entries that close() would no-op through. Each
+    // off() is now a one-shot idempotent removal.
     const wrapped = ((e: Event) => handler(e as ReaderEventMap[K])) as EventListener;
     this.element.addEventListener(event, wrapped);
-    const off = () => this.element.removeEventListener(event, wrapped);
+    let disposed = false;
+    const off = () => {
+      if (disposed) return;
+      disposed = true;
+      this.element.removeEventListener(event, wrapped);
+      this.disposers.delete(off);
+    };
     this.disposers.add(off);
     return off;
   }
