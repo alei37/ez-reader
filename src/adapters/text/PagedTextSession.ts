@@ -145,9 +145,22 @@ export class PagedTextSession implements ReaderSession {
     const href = anchor.dataset["ezReaderHref"];
     if (!href) return;
     event.preventDefault();
-    this.element.dispatchEvent(
-      new CustomEvent("link-click", { detail: { href } })
-    );
+    // Use the element's own window's CustomEvent — in the test bundle
+    // (jsdom + esbuild) the global `CustomEvent` is Node's built-in,
+    // which jsdom's dispatchEvent rejects. In the browser there's only
+    // one CustomEvent and this resolves to it.
+    const win = this.element.ownerDocument.defaultView;
+    const WinCustomEvent = (win as unknown as { CustomEvent?: typeof CustomEvent } | null)?.CustomEvent;
+    if (WinCustomEvent) {
+      this.element.dispatchEvent(new WinCustomEvent("link-click", { detail: { href } }));
+    } else {
+      // Last resort: legacy createEvent path.
+      const ev = win?.document.createEvent("CustomEvent") as (CustomEvent & { initCustomEvent?: (t: string, b: boolean, c: boolean, d: unknown) => void }) | null;
+      if (ev && typeof ev.initCustomEvent === "function") {
+        ev.initCustomEvent("link-click", false, false, { href });
+        this.element.dispatchEvent(ev);
+      }
+    }
   };
   private currentPageIndex = 0;
   private currentAppearance: ReaderAppearance;
@@ -314,6 +327,21 @@ export class PagedTextSession implements ReaderSession {
     if (typeof pageIdx === "number") {
       await this.turnTo(pageIdx, "initial");
     }
+  }
+
+  async goToSpineId(spineId: string): Promise<void> {
+    // P1 polish: MOBI chapters use <a href="000000001"> etc. to cross-link
+    // to other spine sections. Browser default would navigate away; we
+    // intercept (sanitizeHtml + stageClickHandler) and dispatch
+    // "link-click" with the original href. ReaderView routes that to this
+    // method. Strip any "#anchor" suffix — we don't yet implement intra-
+    // chapter anchor jumps, but should not crash on them either.
+    const anchorIndex = spineId.indexOf("#");
+    const target = anchorIndex >= 0 ? spineId.slice(0, anchorIndex) : spineId;
+    if (!target) return;
+    const idx = this.content.pages.findIndex((p) => p.id === target);
+    if (idx < 0) return;
+    await this.turnTo(idx, "initial");
   }
 
   listHighlights(): ReadonlyArray<HighlightSpec> {

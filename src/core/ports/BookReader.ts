@@ -55,6 +55,22 @@ export interface ReaderSession {
    */
   findInBook?(query: string, fromStart: boolean): Promise<number>;
 
+  /**
+   * Optional: jump to a chapter by its intra-book spine / file id (the
+   * string an <a href> inside the chapter content would point at —
+   * MOBI's 9-digit spine id, or a "chapter02.xhtml" path, etc.). Engines
+   * that don't have the concept (EPUB, PDF) can leave this unset; the
+   * reader falls back to `goToToc` / `goTo({kind: "identifier"})` when
+   * the link target looks like a TOC id rather than a spine id.
+   *
+   * PagedTextSession uses this for the MOBI `<a data-ez-reader-href>`
+   * click interceptor (sanitizeHtml renames href to data-ez-reader-href,
+   * stageEl click handler dispatches "link-click"). Resolves the spine id
+   * against `pages[].id` and turns to that page; no-op if the id isn't
+   * found in this book.
+   */
+  goToSpineId?(spineId: string): Promise<void>;
+
   /** Returns the current position as a fraction in [0, 1]. */
   currentFraction(): Promise<number>;
 

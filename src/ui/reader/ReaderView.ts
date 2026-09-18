@@ -928,6 +928,16 @@ private async showFontSettings(): Promise<void> {
       }
     });
 
+    // P1 polish: intra-book link clicks (MOBI chapters use <a href="000000001">
+    // etc. for cross-refs). PagedTextSession's stageClickHandler intercepts
+    // the click and dispatches "link-click"; we route it back to the
+    // session via goToSpineId / goToToc / goTo({kind:"identifier"}).
+    const offLinkClick = this.session.on("link-click", (event) => {
+      const detail = (event as CustomEvent<{ href: string }>).detail;
+      if (!detail?.href) return;
+      void this.handleLinkClick(detail.href);
+    });
+
     // 防抖: selectionchange 在用户拖拽过程中多次触发, 我们延迟 180ms
     // 等待用户真正完成选词再弹菜单
     let selectionDebounce: ReturnType<typeof setTimeout> | undefined;
@@ -1000,6 +1010,7 @@ private async showFontSettings(): Promise<void> {
     const disposeOn = () => {
       offRelocate();
       offSelect();
+      offLinkClick();
       // 清理 selectionDebounce, 否则 session 关闭后定时器还会触发,
       // 在已 detach 的 view 上调用 selectionMenu.show() (虽然 selectionMenu
       // 还活着但 host 已经 undefined, 会出错)
@@ -1155,6 +1166,48 @@ private async showFontSettings(): Promise<void> {
     if (!this.session?.goToToc) return;
     await this.session.goToToc(item.id);
     this.tocPanel?.setActive(item.id);
+  }
+
+  /**
+   * P1 polish: route intra-book link clicks (PagedTextSession dispatches
+   * "link-click" when the user clicks an `<a data-ez-reader-href>`).
+   * Resolution strategy:
+   *   1. Prefer `goToSpineId(href)` — PagedTextSession looks it up in
+   *      pages[].id. Works for MOBI 9-digit spine ids and any other
+   *      intra-book path.
+   *   2. Fall back to `goToToc(href)` — the href may already be a TOC id
+   *      like "toc-3" if the engine happens to emit one.
+   *   3. Fall back to `goTo({kind:"identifier", value: href})` — generic
+   *      engine-native routing (e.g. EPUB's own goTo accepts a CFI).
+   *   4. Last resort: numeric fraction if the href is a number.
+   * Failures are silent — the link may point outside the book (we
+   * rewrote href → data-ez-reader-href, so external URLs should already
+   * be filtered out by sanitizeHtml).
+   */
+  private async handleLinkClick(href: string): Promise<void> {
+    if (!this.session) return;
+    // Strip any "#anchor" — we don't yet implement intra-chapter anchor
+    // jumps, but a fragment alone shouldn't break navigation either.
+    const target = href.includes("#") ? href.split("#")[0]! : href;
+    if (!target) return;
+    if (this.session.goToSpineId) {
+      await this.session.goToSpineId(target);
+      return;
+    }
+    if (this.session.goToToc) {
+      const tocMatch = this.tocItems.find((t) => t.id === target);
+      if (tocMatch) {
+        await this.session.goToToc(tocMatch.id);
+        this.tocPanel?.setActive(tocMatch.id);
+        return;
+      }
+    }
+    // Numeric → fraction (some engines emit "12" for chapter 12).
+    if (/^\d+$/.test(target)) {
+      await this.session.goTo({ kind: "identifier", value: target });
+      return;
+    }
+    console.warn("[ez-reader] link click unhandled", href);
   }
 
   private async persistProgress(fraction: number, locator?: string): Promise<void> {
