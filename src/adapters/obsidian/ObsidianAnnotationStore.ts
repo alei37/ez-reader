@@ -261,6 +261,29 @@ export class ObsidianAnnotationStore implements AnnotationStore {
     });
   }
 
+  async updateExcerptNote(
+    bookId: BookId,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void> {
+    // P2: notes panel inline edit 用, 只 patch note / tags 字段. 不动
+    // locator / text / createdAt — locator 变了 highlight 也得改, 不是
+    // 用户编辑 note 的语义. 写一次 snapshot, 跟 addExcerpt 同样的 write
+    // chain 串行.
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const next = snapshot.excerpts.map((e) => {
+        if (e.bookId !== bookId || e.id !== excerptId) return e;
+        return {
+          ...e,
+          ...(patch.note !== undefined ? { note: patch.note } : {}),
+          ...(patch.tags !== undefined ? { tags: patch.tags } : {})
+        };
+      });
+      return { ...snapshot, excerpts: next };
+    });
+  }
+
   async listSettings(): Promise<PluginSettings> {
     const snapshot = await this.load();
     return snapshot.settings;

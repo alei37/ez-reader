@@ -8,6 +8,8 @@ export interface ReaderToolbarHandlers {
   onProgressChange: (fraction: number) => void;
   onAddBookmark: () => void;
   onToggleBookmarks: () => void;
+  /** P2: 用户点击进度条下方的章节标记点 — 跳到该章节. */
+  onJumpToc?: (id: string) => void;
   onToggleExcerpts: () => void;
   onToggleToc: () => void;
   onToggleNotes: () => void;
@@ -50,6 +52,17 @@ export interface ReaderToolbarState {
   readonly searchMatchCount?: number | null;
   /** P1: 累计阅读时长 (ms) — toolbar 显示 "X 分钟"。 */
   readonly totalReadingMs?: number;
+  /**
+   * P2: 进度条下方的章节标记点. 每个点对应一个 toc item 的 fraction 位置
+   * (用户滚动过程中被动记录, 不是穷举所有章节 — 第一次打开书时为空).
+   * 点击点 → 调 onJumpToc(id) 跳到该章节.
+   */
+  readonly tocMarkers?: ReadonlyArray<{ readonly id: string; readonly label: string; readonly fraction: number }>;
+}
+
+export interface ReaderToolbarChapterMarkerHandler {
+  /** P2: 用户点击进度条下方的章节标记点 — 跳到该章节. */
+  onJumpToc?: (id: string) => void;
 }
 
 /**
@@ -185,6 +198,13 @@ export class ReaderToolbar {
     this.fractionValue = navRow.createEl("span", { text: "0%" });
     this.fractionValue.addClass("ez-reader__reader-toolbar__progress-value");
 
+    // P2: 章节标记条 — 进度条正下方一行小点, 每个点对应一个 toc item.
+    // 用户滚动过程中被动记录 (ReaderView 在 relocate 时把 chapter 映射到 fraction),
+    // 第一次打开时为空 — 用户滚几屏后才出现. 点击 → onJumpToc(id) 跳到该章节.
+    // 设计: 跟 progress slider 同样宽度, 点高度 4px, 进度条上方显示完整圆点 +
+    // tooltip (label), 鼠标 hover 时弹 tooltip, 移动端 tap 长按看 label.
+    this.tocMarkersBar = navGroup.createDiv({ cls: "ez-reader__reader-toolbar__toc-markers" });
+
     // --- Right: actions ---
     const actionsGroup = this.root.createDiv({ cls: "ez-reader__reader-toolbar__group ez-reader__reader-toolbar__actions" });
 
@@ -274,6 +294,8 @@ export class ReaderToolbar {
     this.fontButton.toggleClass("is-hidden", state.showFontSettings !== true);
     this.updateBadge(this.bookmarkBadge, state.bookmarkCount);
     this.updateBadge(this.excerptBadge, state.excerptCount);
+    // P2: 章节标记条 — 同步渲染
+    this.updateTocMarkers(state.tocMarkers);
     // 搜索按钮激活态 + 命中数 badge.
     this.currentSearchOpen = state.searchOpen === true;
     this.searchButton.toggleClass("is-active", this.currentSearchOpen);
@@ -310,6 +332,8 @@ export class ReaderToolbar {
 
   /** Search badge — 命中数 0 也显示 (告诉用户没找到), null/undefined 隐藏. */
   private currentSearchOpen = false;
+  /** P2: 章节标记条容器, 详见构造函数. */
+  private tocMarkersBar: HTMLElement | undefined;
   private updateSearchBadge(count: number | null | undefined): void {
     if (typeof count !== "number") {
       this.searchBadge.addClass("is-hidden");
@@ -319,6 +343,44 @@ export class ReaderToolbar {
     this.searchBadge.removeClass("is-hidden");
     if (count > 999) this.searchBadge.setText("999+");
     else this.searchBadge.setText(String(count));
+  }
+
+  /**
+   * P2: 重渲染章节标记条. 用 innerHTML 一次性重建 — 标记数量通常 < 50,
+   * 没有性能问题; 比 diff 简单.
+   * 注: markers 是 ReadonlyArray, 元素里 fraction 必须在 0..1 范围内.
+   */
+  private updateTocMarkers(
+    markers: ReadonlyArray<{ readonly id: string; readonly label: string; readonly fraction: number }> | undefined
+  ): void {
+    if (!this.tocMarkersBar) return;
+    const bar = this.tocMarkersBar;
+    bar.empty();
+    if (!markers || markers.length === 0) {
+      bar.addClass("is-empty");
+      return;
+    }
+    bar.removeClass("is-empty");
+    for (const marker of markers) {
+      // clamp fraction 到 0..1 — 防止外部传奇怪值 (例如 NaN)
+      const frac = Math.max(0, Math.min(1, marker.fraction));
+      if (frac === 0 || frac === 1) continue; // 0 / 100% 跟 slider 端点重合, 不显示
+      const dot = bar.createEl("button", {
+        attr: {
+          type: "button",
+          "data-toc-id": marker.id,
+          title: marker.label,
+          "aria-label": `跳到 ${marker.label}`,
+          style: `left: ${frac * 100}%`
+        }
+      });
+      dot.addClass("ez-reader__reader-toolbar__toc-marker");
+      dot.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.handlers.onJumpToc?.(marker.id);
+      });
+    }
   }
 }
 

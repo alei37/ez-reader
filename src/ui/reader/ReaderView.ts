@@ -20,6 +20,7 @@ import { TocPanel } from "./TocPanel";
 import { ThoughtModal } from "./ThoughtModal";
 import { TranslationDrawer } from "./TranslationDrawer";
 import { routeShortcut, type ShortcutAction } from "./readerShortcuts";
+import { ShortcutHelpModal } from "./ShortcutHelpModal";
 import { FoliateContentDelegate } from "./foliateContentDelegate";
 import { TextContentDelegate } from "./textContentDelegate";
 import type { ContentDelegate } from "./ContentDelegate";
@@ -181,6 +182,41 @@ const maybeExpandChineseSelection = (raw: string): { text: string } => {
 };
 
 /**
+ * 自动生成 quick bookmark 的 label — 按 B 加书签没有 modal, 这里用
+ * chapter + 百分比拼一个足够辨识的 label. 比如:
+ *   "Chapter 6 · 42%" / "未命名章节 · 15%" / "15%" (没 chapter 时)
+ *
+ * 后续可以让用户在 BookmarksPanel 重命名 (TODO: 面板 inline rename).
+ *
+ * 纯函数, 容易测.
+ */
+export const composeQuickBookmarkLabel = (
+  chapter: string | null | undefined,
+  fraction: number
+): string => {
+  const pct = `${Math.round(fraction * 100)}%`;
+  const trimmedChapter = chapter?.trim();
+  if (trimmedChapter) {
+    // 截到 60 字符防止 chapter title 太长
+    const cap = trimmedChapter.length > 60 ? `${trimmedChapter.slice(0, 60)}…` : trimmedChapter;
+    return `${cap} · ${pct}`;
+  }
+  return pct;
+};
+
+/**
+ * 摘录文本截断: quick highlight 没有 modal, 用 selection 截前 30 字符作
+ * 默认 fallback label 视觉提示 (虽然 Excerpt entity 存的是完整 text,
+ * 但 side panel 用 text 的前 N 字符预览, 太长会撑破卡片). 中文按
+ * Unicode 码点切, 不切坏 surrogate pair.
+ */
+export const truncateExcerptText = (text: string, maxChars = 30): string => {
+  const trimmed = text.trim();
+  if ([...trimmed].length <= maxChars) return trimmed;
+  return `${[...trimmed].slice(0, maxChars).join("")}…`;
+};
+
+/**
  * ItemView that holds one reader session. Layout (single column on tablet,
  * two-column on desktop ≥ 1024px):
  *
@@ -206,6 +242,7 @@ export class ReaderView extends ItemView {
   private translationDrawer: TranslationDrawer | undefined;
   private selectionMenu: ReaderSelectionMenu | undefined;
   private searchBar: SearchBar | undefined;
+  private shortcutHelpModal: ShortcutHelpModal | undefined;
   private host: HTMLElement | undefined;
   private fraction = 0;
   private chapter = "";
@@ -213,6 +250,10 @@ export class ReaderView extends ItemView {
   private excerptCount = 0;
   private pendingSelection: ActiveSelection | undefined;
   private tocItems: ReadonlyArray<TocItem> = [];
+  /** P2: toc item id → 该章节的 fraction. 滚动过程中被动记录 —
+   *  chapter label 改变时, 用 label 在 tocItems 里找 id, 把 (id, 当前 fraction)
+   *  写进 map. 用于 toolbar 进度条下方的章节标记条. */
+  private tocFractions = new Map<string, number>();
   private isDesktopWide = false;
   private isImmersive = false;
   /**
@@ -293,9 +334,11 @@ export class ReaderView extends ItemView {
         onToggleNotes: () => void this.toggleNotes(),
         onCycleStatus: () => void this.cycleStatus(),
         onToggleFavorite: () => void this.toggleFavorite(),
-        onToggleImmersive: () => this.toggleImmersive(),
+        onToggleImmersive: () => void this.toggleImmersive(),
         onOpenSearch: () => void this.openSearchBar(),
-        onCloseSearch: () => void this.closeSearchBar()
+        onCloseSearch: () => void this.closeSearchBar(),
+        // P2: 进度条下方的章节标记点 — 跳到该章节
+        onJumpToc: (id) => void this.jumpToTocById(id)
       },
       {
         fraction: 0,
@@ -325,6 +368,7 @@ export class ReaderView extends ItemView {
     );
     this.excerptsPanel = new ExcerptsPanel(
       {
+        app: this.deps.app,
         onJump: (excerpt) => void this.jumpToExcerpt(excerpt),
         onRemove: (excerpt) => void this.removeExcerpt(excerpt),
         onClose: () => this.hideAllPanels()
@@ -350,7 +394,14 @@ export class ReaderView extends ItemView {
         onJump: (excerpt) => void this.jumpToExcerpt(excerpt),
         onRemove: (excerpt) => void this.removeExcerpt(excerpt),
         onEdit: (excerpt) => void this.editExcerpt(excerpt),
-        onAddThought: () => void this.openFreeThoughtModal()
+        // P2: inline note patch — 用户在 panel 里点 note 直接编辑, blur 保存.
+        // 只 patch note 字段, 不动 locator / text / tags. 比 editExcerpt
+        // (remove + add) 高效得多, 用户频繁触发.
+        onUpdateNote: (excerpt, note) => this.updateExcerptNoteInline(excerpt, note),
+        onAddThought: () => void this.openFreeThoughtModal(),
+        // P1: notes panel header × 按钮 (mobile / narrow layout only;
+        // desktop-wide 永远显示, 不需要 ×).
+        onClose: this.isDesktopWide ? undefined : () => this.hideAllPanels()
       },
       body
     );
@@ -372,7 +423,10 @@ export class ReaderView extends ItemView {
 
     this.translationDrawer = new TranslationDrawer(
       {
-        onSaveAsNote: (src, translated) => void this.saveTranslationAsNote(src, translated)
+        onSaveAsNote: (src, translated) => void this.saveTranslationAsNote(src, translated),
+        // P2: 翻译面板"复制"按钮 — 复用 navigator.clipboard.writeText 路径,
+        // 跟 selection menu 复制一致. TranslationDrawer 自己 catch 失败显示 ✓.
+        onCopy: (translated) => this.copyTextToClipboard(translated)
       },
       this.deps.translation,
       body,
@@ -384,6 +438,12 @@ export class ReaderView extends ItemView {
       onThought: () => void this.saveThoughtFromSelection(),
       onCopy: () => this.copySelectionToClipboard(),
       onTranslate: () => void this.requestTranslation()
+    }, {
+      // P2: 选区菜单快捷键提示 — 用户不用问 ? 也能发现 Shift+T / C / Shift+H
+      thought: "Shift+T",
+      excerpt: "Shift+H",
+      translate: undefined, // 翻译直接走 Shift+T 重叠, 不显示
+      copy: "C"
     });
 
     // P1: 搜索栏 — 浮在 body 之上 (跟 selection menu 同级), 用户输
@@ -685,6 +745,14 @@ export class ReaderView extends ItemView {
         event.preventDefault();
         void this.saveExcerptFromSelection();
         return;
+      case "quickHighlight":
+        event.preventDefault();
+        void this.quickHighlight();
+        return;
+      case "quickBookmark":
+        event.preventDefault();
+        void this.quickBookmark();
+        return;
       case "toggleImmersive":
         event.preventDefault();
         this.toggleImmersive();
@@ -748,22 +816,13 @@ export class ReaderView extends ItemView {
 
   /** Show keyboard shortcut help overlay. */
   private async showShortcutHelp(): Promise<void> {
-    const lines: Array<[string, string]> = [
-      ["← / PageUp", "上一页"],
-      ["→ / PageDown / Space", "下一页"],
-      ["Shift+Space", "上一页"],
-      ["Home / End", "跳到首/末"],
-      ["Shift+T", "翻译选词"],
-      ["Shift+H", "保存摘录"],
-      ["S", "切换笔记侧栏"],
-      ["T", "切换目录"],
-      ["F", "切换沉浸模式"],
-      ["C", "复制选区"],
-      ["?", "显示此帮助"],
-      ["Esc", "关闭面板"]
-    ];
-    const list = lines.map(([k, desc]) => `  ${k.padEnd(24)} ${desc}`).join("\n");
-    new Notice(`EzReader 快捷键:\n${list}`, 8000);
+    // P2: 用 ShortcutHelpModal 替代 Notice — Notice 在长列表下被截断,
+    // 用户看完也不记得. Modal 有 Esc/× 关闭, 表格更清晰.
+    if (!this.shortcutHelpModal) {
+      const { ShortcutHelpModal } = await import("./ShortcutHelpModal");
+      this.shortcutHelpModal = new ShortcutHelpModal(this.deps.app, this.shortcuts);
+    }
+    this.shortcutHelpModal.open();
   }
 
   private bindSwipeGestures(): void {
@@ -909,19 +968,56 @@ private async showFontSettings(): Promise<void> {
 
     const fraction = await this.session.currentFraction();
     this.fraction = fraction;
+    // P1 fix: foliate-js 的 `relocate` 事件 detail 没有 chapter 字段 —
+    // 必须另外通过 `currentChapter()` 同步当前章节标题, 否则 toolbar /
+    // bookmark modal / pendingSelection.chapter 一直为空, 用户看到的章节
+    // 永远是空白. 其他 reader (PagedTextSession / Mobi) 走自己的 chapter
+    // resolution, currentChapter 返回 string | null 兜底.
+    try {
+      const initialChapter = await this.session.currentChapter?.();
+      if (initialChapter && initialChapter.trim()) {
+        this.chapter = initialChapter.trim();
+      }
+    } catch (error) {
+      console.warn("[ez-reader] currentChapter (initial) failed", error);
+    }
     this.toolbar?.update(this.toolbarState());
 
     const offRelocate = this.session.on("relocate", (event) => {
       const detail = (event as CustomEvent<{ fraction?: number; locator?: string; chapter?: string }>).detail;
       if (typeof detail?.fraction === "number") {
         this.fraction = detail.fraction;
-        if (detail.chapter) {
-          this.chapter = detail.chapter;
+        // foliate / paginator 都不带 chapter; 用 session.currentChapter() 实时拿
+        // (已经在 foliate-js paginator.js 内部用 view.lastLocation.tocItem.label).
+        const liveChapter = this.session?.currentChapter?.()?.trim?.() ?? "";
+        let activeTocId: string | null = null;
+        if (liveChapter) {
+          this.chapter = liveChapter;
           // 同步更新 TocPanel 的 active 项 — 通过 label 匹配
           if (this.tocItems.length > 0) {
-            const match = this.tocItems.find((it) => it.label === detail.chapter);
-            if (match) this.tocPanel?.setActive(match.id);
+            const match = this.tocItems.find((it) => it.label === liveChapter);
+            if (match) {
+              this.tocPanel?.setActive(match.id);
+              activeTocId = match.id;
+            }
           }
+        } else if (detail.chapter) {
+          // 兜底: 某些 session (PagedTextSession) 在 relocate 里直接给 chapter.
+          this.chapter = detail.chapter;
+          if (this.tocItems.length > 0) {
+            const match = this.tocItems.find((it) => it.label === detail.chapter);
+            if (match) {
+              this.tocPanel?.setActive(match.id);
+              activeTocId = match.id;
+            }
+          }
+        }
+        // P2: 章节标记条 — 被动记录 chapter→fraction. 用户每翻一章,
+        // 就在 tocFractions 里写一条 (id, fraction), 后续 toolbar 渲染 dots.
+        // 注意只在 fraction 真变的时候写, 不每次 relocate 都 flush (relocate
+        // 在翻页 / scroll 都触发, 同一章节可能触发多次 — 写同样的 fraction 没意义).
+        if (activeTocId && !this.tocFractions.has(activeTocId)) {
+          this.tocFractions.set(activeTocId, detail.fraction);
         }
         this.toolbar?.update(this.toolbarState());
         void this.persistProgress(detail.fraction, detail.locator);
@@ -1124,6 +1220,15 @@ private async showFontSettings(): Promise<void> {
   }
 
   private toolbarState(): Parameters<NonNullable<typeof this.toolbar>["update"]>[0] {
+    // P2: 章节标记条 — 从 tocItems + tocFractions 拼出 toolbar 需要的
+    // { id, label, fraction }[] 列表. 顺序按 tocItems 的定义顺序 (通常是
+    // 文档顺序), 不按 fraction 排 — 用户在 toc 里跳的顺序跟 toc tree 一致.
+    const tocMarkers = this.tocItems
+      .map((item) => {
+        const frac = this.tocFractions.get(item.id);
+        return frac === undefined ? null : { id: item.id, label: item.label, fraction: frac };
+      })
+      .filter((m): m is { id: string; label: string; fraction: number } => m !== null);
     return {
       fraction: this.fraction,
       chapter: this.chapter,
@@ -1141,7 +1246,8 @@ private async showFontSettings(): Promise<void> {
       totalPages: this.session?.totalPages?.() ?? null,
       searchOpen: this.searchBarVisible,
       searchMatchCount: this.searchMatchCount,
-      totalReadingMs: this.entry?.reading.totalReadingMs ?? 0
+      totalReadingMs: this.entry?.reading.totalReadingMs ?? 0,
+      tocMarkers
     };
   }
 
@@ -1166,6 +1272,12 @@ private async showFontSettings(): Promise<void> {
     if (!this.session?.goToToc) return;
     await this.session.goToToc(item.id);
     this.tocPanel?.setActive(item.id);
+  }
+
+  /** P2: 进度条下方章节标记点点击 — 通过 id 直接跳. */
+  private async jumpToTocById(id: string): Promise<void> {
+    const item = this.tocItems.find((it) => it.id === id);
+    if (item) await this.jumpToTocItem(item);
   }
 
   /**
@@ -1259,11 +1371,43 @@ private async showFontSettings(): Promise<void> {
   private async addBookmarkAtCurrentPosition(): Promise<void> {
     if (!this.entry) return;
     const { BookmarkModal } = await import("./BookmarkModal");
-    const modal = new BookmarkModal(this.deps.app);
+    // P1 polish: BookmarkModal 现在显示 chapter + percentage + 当前页可见文本片段
+    // 作为 default label, 让用户立即看到"我在哪儿加书签". preview 优先用
+    // 当前选中的文字 (如果有), 否则用 toolbar 的 chapterLabel.
+    const preview = this.pendingSelection?.text
+      ?? (this.chapter ? this.chapter : "")
+      ?? "";
+    const modal = new BookmarkModal(this.deps.app, {
+      chapter: this.chapter ?? "",
+      fraction: this.fraction,
+      preview: preview.length > 80 ? `${preview.slice(0, 80)}…` : preview,
+      timestamp: Date.now()
+    });
     const label = await modal.openAndWait();
     if (label === null) return;
+    await this.addBookmarkCore(label, false);
+  }
+
+  /**
+   * "Quick bookmark" (按 B) — 不弹 modal, 用 chapter + percentage + 时间
+   * 作自动 label, 用户后续可在 BookmarksPanel 重命名 (TODO: 待面板支持
+   * inline rename 后, 体验再上一层). 设计动机: 微信读书 / Apple Books
+   * 都没有"加书签"弹窗, 都是一键加入 + 后续命名 — 弹窗打断阅读流.
+   */
+  private async quickBookmark(): Promise<void> {
+    if (!this.entry) return;
+    const autoLabel = composeQuickBookmarkLabel(this.chapter, this.fraction);
+    await this.addBookmarkCore(autoLabel, true);
+  }
+
+  /** 共享的 bookmark 保存逻辑, modal flow 和 quick flow 都走这里. */
+  private async addBookmarkCore(label: string, quick: boolean): Promise<void> {
+    if (!this.entry) return;
     const locator = await this.session?.exportLocator();
-    if (!locator) return;
+    if (!locator) {
+      new Notice("无法获取当前位置 — 书签未保存");
+      return;
+    }
     try {
       await this.deps.reading.addBookmark({
         id: generateExcerptId("bm"),
@@ -1278,21 +1422,32 @@ private async showFontSettings(): Promise<void> {
       return;
     }
     await this.refreshPanels();
-    new Notice("书签已添加", 1500);
+    new Notice(quick ? `📑 已加书签 (按 ? 看快捷键)` : "书签已添加", 1800);
   }
 
   private async toggleBookmarks(): Promise<void> {
     if (!this.bookmarksPanel) return;
-    this.bookmarksPanel.show();
-    this.excerptsPanel?.hide();
+    // P1: 切换行为 — 已显示则隐藏, 跟 toc/notes 一致. 之前永远 show,
+    // 用户点书签按钮"打开 → 再点一下什么都不发生"很别扭.
+    if (this.bookmarksPanel.isVisible()) {
+      this.bookmarksPanel.hide();
+    } else {
+      this.bookmarksPanel.show();
+      this.excerptsPanel?.hide();
+    }
     await this.refreshPanels();
     this.toolbar?.update(this.toolbarState());
   }
 
   private async toggleExcerpts(): Promise<void> {
     if (!this.excerptsPanel) return;
-    this.excerptsPanel.show();
-    this.bookmarksPanel?.hide();
+    // P1: 同上 — 切换行为, 跟 bookmarks / toc / notes 一致.
+    if (this.excerptsPanel.isVisible()) {
+      this.excerptsPanel.hide();
+    } else {
+      this.excerptsPanel.show();
+      this.bookmarksPanel?.hide();
+    }
     await this.refreshPanels();
     this.toolbar?.update(this.toolbarState());
   }
@@ -1454,44 +1609,30 @@ private async showFontSettings(): Promise<void> {
     });
     const submit = await modal.openAndWait();
     if (!submit || !this.entry) return;
-    const updated: Excerpt = {
-      ...excerpt,
-      note: submit.note,
-      tags: submit.tags
-    };
+    // 走 patch 路径 — 不重写 highlight (locator 没变), 比 remove+add 高效
     try {
-      await this.deps.reading.removeExcerpt(this.entry.book.id, excerpt.id);
-      await this.deps.reading.addExcerpt(updated);
+      await this.deps.reading.updateExcerptNote(this.entry.book.id, excerpt.id, {
+        note: submit.note,
+        tags: submit.tags
+      });
     } catch (error) {
       console.warn("[ez-reader] editExcerpt failed", error);
       new Notice("编辑摘录失败");
       return;
     }
-    // 同步到 markdown 笔记
-    if (this.deps.noteWriter && this.entry) {
-      try {
-        const ref = await this.deps.noteWriter.ensureBookNote({
-          bookId: this.entry.book.id,
-          bookTitle: this.entry.book.metadata?.title ?? this.entry.book.locator.path,
-          bookPath: this.entry.book.locator.path
-        });
-        await this.deps.noteWriter.appendExcerpt(ref, {
-          excerptId: updated.id,
-          text: updated.text,
-          note: updated.note,
-          tags: updated.tags,
-          locator: locatorForNoteWriter(updated.locator.position),
-          chapterTitle: updated.locator.chapter,
-          format: this.entry.book.locator.format,
-          createdAt: updated.createdAt
-        });
-      } catch (error) {
-        console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-        new Notice("写入笔记失败 (摘录已保存)");
-      }
-    }
     await this.refreshPanels();
     new Notice("摘录已更新", 1500);
+  }
+
+  /**
+   * P2: inline note patch — 用户在 SidebarNotesPanel 点 note 直接编辑,
+   * blur 自动保存. 只改 note 字段, 不动 locator / text / tags.
+   * 失败抛出 (UI 会回滚).
+   */
+  private async updateExcerptNoteInline(excerpt: Excerpt, note: string): Promise<void> {
+    if (!this.entry) throw new Error("no entry");
+    await this.deps.reading.updateExcerptNote(this.entry.book.id, excerpt.id, { note });
+    await this.refreshPanels();
   }
 
   private async saveExcerptFromSelection(): Promise<void> {
@@ -1500,27 +1641,55 @@ private async showFontSettings(): Promise<void> {
     const modal = new ExcerptModal(this.deps.app, { text: this.pendingSelection.text });
     const submit = await modal.openAndWait();
     if (!submit) return;
+    await this.saveExcerptCore(this.pendingSelection.text, submit.note, submit.tags, false);
+  }
+
+  /**
+   * "Quick highlight" (按 H, 不带 shift) — 选中文本后按 H 直接保存摘录
+   * + 黄色高亮, 不弹 modal. label 截断到 30 字符 (中文按字符 / 英文按词
+   * 边界), 跟 Notion / Readwise 的快速摘录一致.
+   *
+   * 注意: 只在有选词 (`pendingSelection`) 时才生效. 没有选词按 H 忽略
+   * (避免误触); 用户想要 modal 流程继续按 Shift+H.
+   */
+  private async quickHighlight(): Promise<void> {
+    if (!this.entry || !this.pendingSelection) {
+      new Notice("先选一段文字再按 H", 2000);
+      return;
+    }
+    const note = ""; // quick 不弹 modal, note 留空, 后续面板补
+    await this.saveExcerptCore(this.pendingSelection.text, note, [], true);
+  }
+
+  /** 共享 excerpt 保存逻辑, modal flow 和 quick flow 都走这里. */
+  private async saveExcerptCore(
+    text: string,
+    note: string,
+    tags: ReadonlyArray<string>,
+    quick: boolean
+  ): Promise<void> {
+    if (!this.entry) return;
     const excerptId = generateExcerptId("ex");
-    const locator = this.pendingSelection.locator ?? (await this.session?.exportLocator()) ?? undefined;
-    if (!locator) return;
-    // PDF 上保存完整 4-tuple subpath 用于精确还原高亮
+    const locator = this.pendingSelection?.locator ?? (await this.session?.exportLocator()) ?? undefined;
+    if (!locator) {
+      new Notice("无法获取选区位置 — 摘录未保存");
+      return;
+    }
     const pos: ReadingPosition = this.isPdf && this.session?.currentPage
       ? {
           kind: "pdf",
           page: this.session.currentPage() ?? 1,
           ...(typeof locator === "string" && locator.startsWith("#page=") ? { selection: locator } : {})
         }
-      // 用 frozen fraction (选词那一刻) 而非 live this.fraction — 防止
-      // 用户在 modal 里翻页后 fraction 漂到新页.
-      : { kind: "reflow", fraction: this.pendingSelection.fraction, cfi: locator };
+      : { kind: "reflow", fraction: this.pendingSelection?.fraction ?? this.fraction, cfi: locator };
 
     const excerpt: Excerpt = {
       id: excerptId,
       bookId: this.entry.book.id,
-      text: this.pendingSelection.text,
+      text,
       locator: { position: pos, chapter: this.chapter },
-      note: submit.note,
-      tags: submit.tags,
+      note,
+      tags,
       createdAt: Date.now()
     };
     try {
@@ -1534,17 +1703,15 @@ private async showFontSettings(): Promise<void> {
       try {
         await this.session.highlight({
           id: excerptId,
-          text: this.pendingSelection.text,
+          text,
           locator,
           color: "yellow",
           createdAt: excerpt.createdAt
         });
       } catch (error) {
         console.warn("[ez-reader] session.highlight failed", error);
-        // foliate 高亮失败不影响 annotation store 已经保存的摘录 — 不需要 return
       }
     }
-    // 同步到 vault md
     if (this.deps.noteWriter) {
       try {
         const ref = await this.deps.noteWriter.ensureBookNote({
@@ -1569,7 +1736,7 @@ private async showFontSettings(): Promise<void> {
     }
     await this.refreshPanels();
     this.notesPanel?.flashLast(excerptId);
-    new Notice("摘录已保存", 1500);
+    new Notice(quick ? `🖍 已高亮 (按 ? 看快捷键)` : "摘录已保存", 1800);
   }
 
   private async saveThoughtFromSelection(): Promise<void> {

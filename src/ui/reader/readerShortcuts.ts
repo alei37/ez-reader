@@ -28,6 +28,8 @@ export type ShortcutAction =
   | "toggleToc"
   | "translate"
   | "excerpt"
+  | "quickHighlight"
+  | "quickBookmark"
   | "toggleImmersive"
   | "first"
   | "last"
@@ -83,7 +85,14 @@ export const routeShortcut = (
   if (key === cfg.toggleSidebar.toLowerCase() && !event.shiftKey) return "toggleNotes";
   if (key === cfg.toggleToc.toLowerCase() && !event.shiftKey) return "toggleToc";
   if (key === cfg.translate.toLowerCase() && event.shiftKey) return "translate";
+  // 高亮 / 摘录 (modal flow) — 需要 shift, 跟之前一致
   if (key === cfg.highlight.toLowerCase() && event.shiftKey) return "excerpt";
+  // P2 quick action: 裸 H → quick highlight (no modal, 直接保存 + 高亮).
+  // 与 Shift+H (modal excerpt) 并存, 用户按习惯选. 注意: 必须在 cfg.highlight
+  // 检查后, 否则裸 H 会被 cfg.highlight.toLowerCase() === "h" 吃掉
+  if (key === "h" && !event.shiftKey) return "quickHighlight";
+  // P2 quick action: 裸 B → quick bookmark (no modal, 自动 label chapter+%)
+  if (key === "b" && !event.shiftKey) return "quickBookmark";
 
   // Below this point: fixed shortcuts that aren't user-configurable.
   // Gate them on `enabled` so a degraded mode (e.g. text input focused)

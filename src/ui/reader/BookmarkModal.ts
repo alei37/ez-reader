@@ -2,24 +2,37 @@ import { Modal } from "obsidian";
 import type { App } from "obsidian";
 
 /**
- * Simple Modal that asks the user for an optional bookmark label. The host
- * resolves with the entered string on submit, or `null` on cancel / Esc /
- * overlay click. Returning `null` (not empty string) is what lets the
- * caller distinguish "user cancelled" from "user submitted blank label".
+ * P1: BookmarkModal 现在显示位置上下文 (chapter + percentage + 时间 + 当前选中文字),
+ * 帮用户知道"这个书签是哪个位置的", 而不是输入框 + submit 之后才知道.
  *
- * Previously this returned `""` for cancellation, which made the host's
- * `if (label === null) return` guard useless — empty-label bookmarks
- * were being created on every cancel.
+ * Returns `null` on cancel / Esc / overlay click so the caller can
+ * distinguish "user cancelled" from "user submitted blank label".
  */
+export interface BookmarkModalContext {
+  /** Current chapter label (e.g. "Chapter 3: Wave Propagation"). */
+  readonly chapter: string;
+  /** Reading progress 0..1. */
+  readonly fraction: number;
+  /** Optional preview text — currently-selected text or nearby sentence.
+   *  Used as default label and shown in the modal as visual context. */
+  readonly preview: string;
+  /** ISO-style timestamp for the bookmark being created. */
+  readonly timestamp: number;
+}
+
 export class BookmarkModal extends Modal {
   private resolver: ((label: string | null) => void) | null = null;
+  private readonly context: BookmarkModalContext;
+  private readonly fallbackLabel: string;
 
-  constructor(app: App, private readonly initialLabel = "") {
+  constructor(app: App, context: BookmarkModalContext, initialLabel = "") {
     super(app);
+    this.context = context;
+    this.fallbackLabel = initialLabel || context.preview || context.chapter || "未命名书签";
   }
 
   openAndWait(): Promise<string | null> {
-    return new Promise<string | null>((resolve) => {
+    return new Promise((resolve) => {
       this.resolver = resolve;
       this.open();
     });
@@ -35,9 +48,29 @@ export class BookmarkModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: "添加书签" });
-    contentEl.createEl("p", { text: "可选：为书签填写名称或简短说明。" });
+
+    // 位置上下文 — 让用户立即看到"在哪儿加书签"
+    const contextBox = contentEl.createDiv({ cls: "ez-reader__bookmark-modal__context" });
+    const metaRow = contextBox.createDiv({ cls: "ez-reader__bookmark-modal__meta" });
+    if (this.context.chapter) {
+      metaRow.createSpan({ text: this.context.chapter, cls: "ez-reader__bookmark-modal__chapter" });
+    }
+    metaRow.createSpan({
+      text: `${Math.round(this.context.fraction * 100)}%`,
+      cls: "ez-reader__bookmark-modal__progress"
+    });
+    metaRow.createSpan({
+      text: new Date(this.context.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      cls: "ez-reader__bookmark-modal__time"
+    });
+    if (this.context.preview) {
+      const preview = contextBox.createDiv({ cls: "ez-reader__bookmark-modal__preview" });
+      preview.createEl("blockquote", { text: this.context.preview });
+    }
+
+    const inputLabel = contentEl.createEl("p", { text: "书签名称 (可改):", cls: "ez-reader__bookmark-modal__label" });
     const input = contentEl.createEl("input", { attr: { type: "text" } });
-    input.value = this.initialLabel;
+    input.value = this.fallbackLabel;
     input.addClass("ez-reader__bookmark-input");
     input.placeholder = "例如:第三章的关键论点";
     const actions = contentEl.createDiv({ cls: "ez-reader__modal-actions" });
@@ -59,7 +92,11 @@ export class BookmarkModal extends Modal {
         this.close();
       }
     });
-    window.setTimeout(() => input.focus(), 0);
+    window.setTimeout(() => {
+      input.focus();
+      // 全选 label 让用户立即覆盖 default
+      input.select();
+    }, 0);
   }
 
   onClose(): void {

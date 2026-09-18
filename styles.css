@@ -799,7 +799,10 @@
   border-color: var(--interactive-accent);
 }
 
-/* 数字 badge — 书签 / 摘录按钮右上角的小圆点 */
+/* 数字 badge — 书签 / 摘录按钮右上角的小圆点
+   P1 修复: 之前用 var(--color-red, var(--interactive-accent)) 红色,
+   视觉上像 "未完成 / 警告 / 待办". 用户反映想要更安静的 indicator.
+   现在用 muted 灰底 + 灰字, 跟 toolbar 其他元素一致. */
 .ez-reader__reader-toolbar__action {
   position: relative;
 }
@@ -812,8 +815,8 @@
   height: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background: var(--color-red, var(--interactive-accent));
-  color: var(--text-on-accent);
+  background: var(--background-modifier-border, var(--background-modifier-hover));
+  color: var(--text-muted);
   font-size: 10px;
   font-weight: 600;
   line-height: 16px;
@@ -843,6 +846,46 @@
   min-width: 100px;
   max-width: 320px;
   accent-color: var(--interactive-accent);
+}
+
+/* P2: 章节标记条 — 进度条下方一行, 点位置对应 toc item 的 fraction.
+ * 用户滚动时 ReaderView 被动记录 chapter→fraction, 这里渲染成可见
+ * 的 dot. 进度条宽度限制 (max-width 320px) 让 dot 横向间距合适. */
+.ez-reader__reader-toolbar__toc-markers {
+  position: relative;
+  height: 6px;
+  max-width: 320px;
+  margin: 0 auto;
+  flex: 0 0 auto;
+}
+.ez-reader__reader-toolbar__toc-markers.is-empty {
+  /* 没有 markers 时不占垂直空间 */
+  height: 0;
+  margin: 0;
+}
+.ez-reader__reader-toolbar__toc-marker {
+  position: absolute;
+  top: 0;
+  /* left 由 inline style 控制 (fraction * 100%) */
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.ez-reader__reader-toolbar__toc-marker:hover {
+  opacity: 1;
+  transform: scale(1.4);
+  background: var(--interactive-accent);
+}
+.ez-reader__reader-toolbar__toc-marker:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
 }
 
 .ez-reader__reader-toolbar__progress-value {
@@ -876,33 +919,285 @@
   padding: 6px 0;
 }
 
-.ez-reader__bookmark-row,
-.ez-reader__excerpt-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 0;
+/* 书签 / 摘录面板 — P1 polish: 显示上下文 (chapter + 百分比 + 时间),
+ * 视觉上区分原文 vs note, 动作按钮灰底不刺眼 */
+
+.ez-reader__panel-header-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 4px;
 }
 
-.ez-reader__excerpt-row {
+.ez-reader__bookmark-row {
+  display: flex;
   flex-direction: column;
   align-items: stretch;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ez-reader__bookmark-row:last-child {
+  border-bottom: 0;
+}
+
+.ez-reader__bookmark-row__context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+  align-items: baseline;
+}
+
+.ez-reader__bookmark-row__chapter {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.ez-reader__bookmark-row__fraction {
+  font-variant-numeric: tabular-nums;
+  background: var(--background-modifier-hover);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.ez-reader__bookmark-row__time {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+/* P1: jump + remove 同一行 (action row). 之前 remove 单独一行
+ * (column 布局), 单条书签纵向高度 ~80px 太占空间. 现在: context (1 行)
+ * + action-row (1 行) — 单条 ~50px. jump flex:1 占满, remove 固定
+ * 宽度在最右. */
+.ez-reader__bookmark-row__action-row {
+  display: flex;
+  align-items: center;
   gap: 4px;
 }
 
 .ez-reader__bookmark-row__jump {
   flex: 1 1 auto;
+  min-width: 0;
   text-align: left;
   background: transparent;
   border: 0;
   color: var(--text-normal);
   cursor: pointer;
+  padding: 2px 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ez-reader__excerpt-row__actions {
+.ez-reader__bookmark-row__jump:hover {
+  color: var(--interactive-accent);
+}
+
+.ez-reader__bookmark-row__remove {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ez-reader__bookmark-row__remove:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-error);
+}
+
+/* === BookmarkModal — 位置上下文 === */
+.ez-reader__bookmark-modal__context {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  margin: 8px 0;
+  border: 1px solid var(--background-modifier-border);
+}
+
+.ez-reader__bookmark-modal__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ez-reader__bookmark-modal__chapter {
+  flex: 1 1 auto;
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+.ez-reader__bookmark-modal__progress,
+.ez-reader__bookmark-modal__time {
+  font-variant-numeric: tabular-nums;
+}
+
+.ez-reader__bookmark-modal__preview blockquote {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-modifier-hover);
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  color: var(--text-normal);
+  line-height: 1.5;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.ez-reader__bookmark-modal__label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 8px 0 4px;
+}
+
+/* === ExcerptsPanel — P1 polish: 卡片式 (chapter + 原文 + note + tags + 动作) === */
+
+.ez-reader__excerpt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ez-reader__excerpt-card:last-child {
+  border-bottom: 0;
+}
+
+.ez-reader__excerpt-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.ez-reader__excerpt-card__chapter {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.ez-reader__excerpt-card__time {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.ez-reader__excerpt-card__quote {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-modifier-hover);
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  color: var(--text-normal);
+  line-height: 1.5;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.ez-reader__excerpt-card__thought-badge {
+  /* 自由想法 (text 为空) — 区别于正常 quote, 但仍属于"摘录面板"
+   * 范围 (用户从 onAddThought 走 openFreeThoughtModal 的也属于这条 entry).
+   * 视觉: 黄底斜体, 跟 note 同色调让用户一眼看出"没有原文". */
+  display: inline-block;
+  align-self: flex-start;
+  padding: 4px 10px;
+  background: rgba(255, 220, 100, 0.15);
+  border-left: 3px solid rgba(255, 200, 50, 0.6);
+  border-radius: 0 4px 4px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.ez-reader__excerpt-card__note {
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(255, 220, 100, 0.08);
+  /* P1: note 用浅黄底, 跟 quote 视觉区分 — 一眼看出哪段是原文, 哪段是评论 */
+  border-left: 3px solid rgba(255, 200, 50, 0.5);
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+  color: var(--text-normal);
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.ez-reader__excerpt-card__tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ez-reader__excerpt-card__tag {
+  background: var(--background-modifier-hover);
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ez-reader__excerpt-card__actions {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
+}
+
+.ez-reader__excerpt-card__btn {
+  /* P1: 灰色按钮, 不像待办. 删除单独加 btn--danger 红色 */
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 0;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.ez-reader__excerpt-card__btn:hover {
+  background: var(--background-modifier-border);
+  color: var(--text-normal);
+}
+
+.ez-reader__excerpt-card__btn--danger:hover {
+  background: rgba(255, 100, 100, 0.2);
+  color: var(--text-error);
+}
+
+/* === SidebarNotesPanel — P1: header 加 title-row + × 按钮 === */
+
+.ez-reader__notes-panel__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
 }
 
 .ez-reader__modal-actions {
@@ -957,10 +1252,34 @@
   background: transparent;
   color: var(--text-normal);
   cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  line-height: 1.2;
 }
 
 .ez-reader__selection-menu button:hover {
   background: var(--background-modifier-hover);
+}
+
+.ez-reader__selection-menu__hint {
+  font-size: 9px;
+  font-family: var(--font-monospace);
+  color: var(--text-faint, var(--text-muted));
+  opacity: 0.7;
+  letter-spacing: 0.02em;
+}
+
+.ez-reader__selection-menu button:hover .ez-reader__selection-menu__hint {
+  opacity: 0.9;
+}
+
+/* 窄屏(< 500px) 隐藏快捷键提示, 节省横向空间 — 移动端 popover 很挤 */
+@media (max-width: 500px) {
+  .ez-reader__selection-menu__hint {
+    display: none;
+  }
 }
 
 .ez-reader__translation-result__text {
@@ -1463,6 +1782,66 @@
   overflow: visible;
 }
 
+/* P2: inline note edit — contenteditable 状态视觉提示. 跟 note 同
+ * 色背景 + 虚线边框 + 焦点高亮, 用户一看就知道"可以编辑". */
+.ez-reader__notes-panel__note.is-editing {
+  background: var(--background-primary);
+  border: 1px dashed var(--interactive-accent);
+  outline: none;
+  cursor: text;
+  /* 编辑时解除 line-clamp, 否则 -webkit-box 会截断内容 */
+  display: block !important;
+  -webkit-line-clamp: unset !important;
+  overflow: visible !important;
+  min-height: 1.5em;
+}
+.ez-reader__notes-panel__note.is-editing:focus {
+  border-style: solid;
+}
+
+/* P2: 笔记 panel 顶部 tabs (全部 / 想法 / 摘录) */
+.ez-reader__notes-panel__tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin: 4px 0 8px;
+  padding: 0;
+}
+.ez-reader__notes-panel__tab {
+  flex: 1 1 auto;
+  text-align: center;
+  background: transparent;
+  border: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.ez-reader__notes-panel__tab:hover {
+  color: var(--text-normal);
+}
+.ez-reader__notes-panel__tab.is-active {
+  color: var(--interactive-accent);
+  border-bottom-color: var(--interactive-accent);
+  font-weight: 500;
+}
+.ez-reader__notes-panel__tab-count {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  background: var(--background-modifier-hover);
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: var(--text-muted);
+}
+.ez-reader__notes-panel__tab.is-active .ez-reader__notes-panel__tab-count {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, var(--text-normal));
+}
+
 .ez-reader__notes-panel__actions {
   display: flex;
   gap: 4px;
@@ -1777,6 +2156,10 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* P2: 限制抽屉内 body 最大高度, 长译文不会撑到屏幕外. 40vh 在
+   * 1080p 上约 432px, 在 13寸笔电 900px 上约 360px — 足够看清译文,
+   * 不至于盖住阅读区. 短译文不受影响 (body 高度由内容决定). */
+  max-height: 50vh;
 }
 
 .ez-reader__translation-drawer__body blockquote {
@@ -1810,6 +2193,32 @@
   color: var(--text-normal);
   cursor: pointer;
   font-size: 12px;
+}
+
+.ez-reader__translation-drawer__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ez-reader__translation-drawer__actions button {
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 12px;
+  transition: background-color 100ms ease;
+}
+.ez-reader__translation-drawer__actions button:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* 复制按钮 — 复制成功后短暂高亮 ✓ */
+.ez-reader__translation-drawer__copy-btn {
+  min-width: 60px;
+  text-align: center;
 }
 
 .ez-reader__translation-drawer__loading,
@@ -2609,4 +3018,78 @@
     padding: 16px 12px 48px !important;
     font-size: calc(0.95em * var(--ez-reader-font-scale, 1)) !important;
   }
+}
+
+/* === ShortcutHelpModal (P2: 完整快捷键面板, 替代 Notice) === */
+
+.ez-reader__shortcut-help h2 {
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+
+.ez-reader__shortcut-help__intro {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+.ez-reader__shortcut-help__section {
+  margin-bottom: 16px;
+}
+
+.ez-reader__shortcut-help__section h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 8px 0 6px;
+  font-weight: 600;
+}
+
+.ez-reader__shortcut-help__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ez-reader__shortcut-help__table tr {
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ez-reader__shortcut-help__table tr:last-child {
+  border-bottom: 0;
+}
+
+.ez-reader__shortcut-help__table td {
+  padding: 6px 8px;
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+.ez-reader__shortcut-help__key {
+  width: 200px;
+}
+
+.ez-reader__shortcut-help__kbd {
+  display: inline-block;
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-normal);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.ez-reader__shortcut-help__desc {
+  color: var(--text-normal);
+}
+
+.ez-reader__shortcut-help__footer {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 16px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
 }

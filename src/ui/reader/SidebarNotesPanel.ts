@@ -7,10 +7,18 @@ export interface SidebarNotesHandlers {
   onJump: (excerpt: Excerpt) => void;
   /** Delete the excerpt from the AnnotationStore. */
   onRemove: (excerpt: Excerpt) => void;
-  /** Edit the note attached to an existing excerpt. */
+  /** Edit the note attached to an existing excerpt — opens the legacy modal flow. */
   onEdit: (excerpt: Excerpt) => void;
+  /**
+   * P2: inline note patch — 用户在 panel 里直接点 note 文字 → 出现 contenteditable
+   * → blur 或 Cmd+Enter 保存 → 调这个, 只 patch note 字段. 不传 → 退回只读模式.
+   */
+  onUpdateNote?: (excerpt: Excerpt, note: string) => Promise<void>;
   /** Add a free-standing thought (not tied to a selection). */
   onAddThought: () => void;
+  /** P1: Close button on panel header. Optional — desktop-wide layout
+   *  always shows the notes panel, in which case there's no header ×. */
+  onClose?: () => void;
 }
 
 /**
@@ -30,6 +38,8 @@ export class SidebarNotesPanel {
   private query: string = "";
   /** Tag filter — single tag, used to scope the list. Cleared on close. */
   private tagFilter: string | null = null;
+  /** P2: type filter — "all" / "thought" / "excerpt". 跟 tab 一对一. */
+  private typeFilter: "all" | "thought" | "excerpt" = "all";
   private flashId: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | undefined;
   /** Debounce timer for the search box. */
@@ -99,11 +109,24 @@ export class SidebarNotesPanel {
   private render(): void {
     this.root.empty();
     const header = this.root.createDiv({ cls: "ez-reader__notes-panel__header" });
-    header.createEl("h3", { text: "笔记" });
-    const count = header.createEl("span", {
+    const titleRow = header.createDiv({ cls: "ez-reader__notes-panel__title-row" });
+    titleRow.createEl("h3", { text: "笔记" });
+    const count = titleRow.createEl("span", {
       cls: "ez-reader__notes-panel__count",
       text: `(${this.entries.length})`
     });
+    // P1 修复: 之前 SidebarNotesPanel header 没有 × 按钮 (其他 panel
+    // 都有). 用户反映"点击笔记侧栏右边出现, 没法退出" — 实际 Esc 和
+    // toolbar 按钮都能关, 但用户找 × 按钮找不到. 现在 header 加 ×,
+    // 跟 BookmarksPanel / ExcerptsPanel / TocPanel 行为一致.
+    if (this.handlers.onClose) {
+      const close = titleRow.createEl("button", {
+        text: "×",
+        attr: { type: "button", title: "关闭笔记 (Esc)", "aria-label": "关闭笔记" }
+      });
+      close.addClass("ez-reader__panel-close");
+      close.addEventListener("click", () => this.handlers.onClose?.());
+    }
     const add = header.createEl("button", {
       text: "+ 想法",
       attr: { type: "button", title: "添加自由想法(不需选中文字)", "aria-label": "添加自由想法" }
@@ -133,6 +156,39 @@ export class SidebarNotesPanel {
         this.render();
       });
     }
+
+    // P2: 顶部 tabs (全部 / 想法 / 摘录) — 一眼区分两种 annotation.
+    // thought = openFreeThoughtModal 创建的 (text 为空), excerpt = 选词保存的.
+    // 任何数量都显示 tabs — 方便快速过滤, 不依赖数量阈值.
+    const tabsBar = this.root.createDiv({ cls: "ez-reader__notes-panel__tabs" });
+    const counts = {
+      all: this.entries.length,
+      thought: this.entries.filter((e) => !e.text?.trim()).length,
+      excerpt: this.entries.filter((e) => !!e.text?.trim()).length
+    };
+    const makeTab = (
+      key: "all" | "thought" | "excerpt",
+      label: string
+    ): HTMLButtonElement => {
+      const btn = tabsBar.createEl("button", {
+        text: label,
+        attr: { type: "button", "aria-label": `只看 ${label}` }
+      });
+      btn.addClass("ez-reader__notes-panel__tab");
+      if (this.typeFilter === key) btn.addClass("is-active");
+      btn.createSpan({
+        text: String(counts[key]),
+        cls: "ez-reader__notes-panel__tab-count"
+      });
+      btn.addEventListener("click", () => {
+        this.typeFilter = key;
+        this.render();
+      });
+      return btn;
+    };
+    makeTab("all", "全部");
+    makeTab("thought", "想法");
+    makeTab("excerpt", "摘录");
 
     // 搜索框: 超过 5 条笔记才显示,避免噪音
     if (this.entries.length >= 5) {
@@ -201,25 +257,109 @@ export class SidebarNotesPanel {
           });
         }
       }
+      // P2: note 渲染 = collapsible preview + click-to-edit inline. 流程:
+      //   1. 默认收起 (只显示 previewText + ▸)
+      //   2. 点 ▸ / 文字 → 展开为 contenteditable, 自动 focus + select
+      //   3. blur 或 Cmd/Ctrl+Enter → 调 handlers.onUpdateNote 保存
+      //   4. Esc → 取消 (恢复原 note 文字)
+      // 没有 onUpdateNote handler 时回退到只读 (跟之前一样, 不破坏现有测试).
       if (entry.note) {
         const isExpanded = this.expandedNotes.has(entry.id);
-        const toggle = card.createDiv({ cls: "ez-reader__notes-panel__note-toggle" });
+        const previewText = entry.note.length > 60 ? `${entry.note.slice(0, 60)}…` : entry.note;
+        const toggle = card.createDiv({
+          cls: `ez-reader__notes-panel__note-toggle${isExpanded ? " is-expanded" : ""}`
+        });
         toggle.setAttribute("role", "button");
         toggle.setAttribute("tabindex", "0");
-        const previewText = entry.note.length > 60 ? `${entry.note.slice(0, 60)}…` : entry.note;
-        const label = isExpanded ? "收起想法" : `💭 想法 · ${previewText}`;
-        toggle.createSpan({ text: label, cls: "ez-reader__notes-panel__note-toggle-label" });
-        toggle.createSpan({ text: isExpanded ? "▾" : "▸", cls: "ez-reader__notes-panel__note-toggle-arrow" });
+        toggle.createSpan({
+          text: isExpanded ? "收起想法" : `💭 想法 · ${previewText}`,
+          cls: "ez-reader__notes-panel__note-toggle-label"
+        });
+        toggle.createSpan({
+          text: isExpanded ? "▾" : "▸",
+          cls: "ez-reader__notes-panel__note-toggle-arrow"
+        });
         const note = card.createEl("p", { text: entry.note });
         note.addClass("ez-reader__notes-panel__note");
         if (isExpanded) {
-          toggle.addClass("is-expanded");
           note.addClass("is-expanded");
         } else {
           note.addClass("is-collapsed");
         }
-        const flip = () => {
+        // inline edit — P2: contenteditable, blur 自动保存
+        const beginEdit = (): void => {
+          if (!this.handlers.onUpdateNote) return;
+          // 用我们自己的 sentinel 标志, 不用 note.isContentEditable —
+          // jsdom 不一定正确反映 contentEditable 属性 (bug: 静态属性
+          // 不可观察, 设值后 isContentEditable 仍返回 false). 自己的
+          // 标志可靠.
+          if (note.getAttribute("data-editing") === "1") return;
+          const original = entry.note ?? "";
+          note.contentEditable = "true";
+          note.setAttribute("data-editing", "1");
+          note.addClass("is-editing");
+          note.focus();
+          // select 全文 — 跟 BookmarkModal 同样的 UX
+          const sel = globalThis.getSelection();
+          if (sel) {
+            const range = document.createRange();
+            range.selectNodeContents(note);
+            sel.removeAllRanges();
+            sel.addRange(range);
+          }
+          const finish = async (commit: boolean): Promise<void> => {
+            if (note.getAttribute("data-editing") !== "1") return;
+            note.contentEditable = "false";
+            note.removeAttribute("data-editing");
+            note.removeClass("is-editing");
+            const newText = note.textContent ?? "";
+            if (commit && newText !== original) {
+              try {
+                const fn = this.handlers.onUpdateNote;
+                if (fn) await fn(entry, newText);
+              } catch (error) {
+                // 失败回滚 — 不要让 DOM 跟 store 不一致
+                note.textContent = original;
+                console.warn("[ez-reader] inline note save failed", error);
+              }
+            } else {
+              // 取消 / 没改动 — 还原文字
+              note.textContent = original;
+            }
+          };
+          const onKeyDown = (event: KeyboardEvent): void => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              void finish(false);
+            } else if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              void finish(true);
+            }
+          };
+          const onBlur = (): void => {
+            void finish(true);
+          };
+          note.addEventListener("keydown", onKeyDown);
+          note.addEventListener("blur", onBlur, { once: true });
+        };
+        const flip = (): void => {
           if (this.expandedNotes.has(entry.id)) {
+            // P2: 收起前如果还在 edit 态, 先 finish (commit=true) — 等同于
+            // blur 行为. 否则用户的改动会随元素 class 变化丢失.
+            if (note.getAttribute("data-editing") === "1") {
+              note.contentEditable = "false";
+              note.removeAttribute("data-editing");
+              note.removeClass("is-editing");
+              const newText = note.textContent ?? "";
+              const original = entry.note ?? "";
+              if (newText !== original) {
+                this.handlers.onUpdateNote?.(entry, newText)?.catch((error) => {
+                  note.textContent = original;
+                  console.warn("[ez-reader] inline note save failed", error);
+                });
+              }
+            }
             this.expandedNotes.delete(entry.id);
             toggle.classList.remove("is-expanded");
             note.classList.remove("is-expanded");
@@ -233,12 +373,28 @@ export class SidebarNotesPanel {
             note.classList.add("is-expanded");
             toggle.querySelector(".ez-reader__notes-panel__note-toggle-label")!.textContent = "收起想法";
             toggle.querySelector(".ez-reader__notes-panel__note-toggle-arrow")!.textContent = "▾";
+            // P2: 展开时自动进 inline edit — 用户点 ▸ 就是想改, 不用再点一次文字
+            beginEdit();
           }
         };
         toggle.addEventListener("click", flip);
         toggle.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
+            flip();
+          }
+        });
+        // P2: 直接点 note 文字也能开始编辑 (即使未展开)
+        note.addEventListener("click", (event) => {
+          if (!note.classList.contains("is-collapsed")) {
+            // 已展开, 才允许 click → edit (避免跟 toggle 冲突)
+            if (note.getAttribute("data-editing") !== "1") {
+              event.stopPropagation();
+              beginEdit();
+            }
+          } else {
+            // 收起态: 点击展开 + 编辑
+            event.stopPropagation();
             flip();
           }
         });
@@ -280,6 +436,15 @@ export class SidebarNotesPanel {
 
   private filteredEntries(): ReadonlyArray<Excerpt> {
     let result = this.entries;
+    // P2: type filter (all / thought / excerpt) — 跟 tabs 一对一
+    if (this.typeFilter !== "all") {
+      const isThought = (ex: Excerpt): boolean => !ex.text?.trim();
+      if (this.typeFilter === "thought") {
+        result = result.filter(isThought);
+      } else {
+        result = result.filter((ex) => !isThought(ex));
+      }
+    }
     if (this.tagFilter) {
       result = result.filter((ex) => ex.tags.includes(this.tagFilter!));
     }

@@ -117,6 +117,19 @@ export class ReadingService {
     await this.annotations.removeExcerpt(bookId, excerptId);
   }
 
+  /**
+   * P2: 只 patch note / tags 字段, 不重写整张 excerpt. 配合 notes panel
+   * 的 inline edit — 用户 blur 出 note 字段 → 立即调这个, 不重新写
+   * highlight (locator 没变), 也不改 createdAt / text.
+   */
+  async updateExcerptNote(
+    bookId: BookId,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void> {
+    await this.annotations.updateExcerptNote(bookId, excerptId, patch);
+  }
+
   async listExcerpts(bookId: BookId): Promise<ReadonlyArray<Excerpt>> {
     return this.annotations.listExcerpts(bookId);
   }

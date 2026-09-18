@@ -574,6 +574,24 @@ class FoliateSession implements ReaderSession {
       };
       doc.addEventListener("selectionchange", onChange);
       this.docListeners.add(() => doc.removeEventListener("selectionchange", onChange));
+      // P1 polish: 用户报告在 EPUB 里选词后, ReaderView 弹不出 selection menu
+      // (没翻译 / 摘录 / 想法按钮). foliate 沙盒 iframe 内的 selectionchange
+      // 触发不可靠, 某些 EPUB + WebView 组合下完全沉默. 多重兜底:
+      //   - mouseup: 桌面端鼠标 / 触摸合成鼠标场景
+      //   - pointerup: 现代浏览器统一指针事件 (鼠标 / 触控笔 / 触屏)
+      //   - touchend: 移动端 WebView (Android / iOS) 触屏选词不一定合成
+      //     pointer 事件, 直接 listen touchend 最稳
+      // 三层都调 onChange() 拿当前 selection; onChange 内部已经判 isCollapsed
+      // 和 text.trim() 非空, 重复触发是无害的.
+      const onPointerLike = () => onChange();
+      doc.addEventListener("mouseup", onPointerLike);
+      doc.addEventListener("pointerup", onPointerLike);
+      doc.addEventListener("touchend", onPointerLike);
+      this.docListeners.add(() => {
+        doc.removeEventListener("mouseup", onPointerLike);
+        doc.removeEventListener("pointerup", onPointerLike);
+        doc.removeEventListener("touchend", onPointerLike);
+      });
 
       // P0 修复(扩展): foliate 1.0.1 把 EPUB section 的 CSS 包成 blob URL,
       // Obsidian CSP 拒绝 `blob:` 源 stylesheet. foliate 同时用两种方式注入:

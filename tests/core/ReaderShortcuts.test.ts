@@ -69,12 +69,23 @@ test("Translate shortcut is shift+T (capital T only)", () => {
   assert.equal(routeShortcut(key("T", { shiftKey: true }), DEFAULT_SHORTCUTS), "translate");
 });
 
-test("Excerpt shortcut is shift+H (uppercase only)", () => {
-  // lowercase h (no shift) → not bound, null
-  assert.equal(routeShortcut(key("h"), DEFAULT_SHORTCUTS), null);
-  // shift+h → excerpt
+test("Excerpt shortcut is shift+H (uppercase only); bare H → quickHighlight (P2)", () => {
+  // P2: 裸 H (无 shift) 现在映射到 quickHighlight — 用户选中文本后按 H
+  // 直接保存摘录 + 黄色高亮, 不弹 modal. Shift+H 仍然走 modal excerpt 流程.
+  assert.equal(routeShortcut(key("h"), DEFAULT_SHORTCUTS), "quickHighlight");
+  assert.equal(routeShortcut(key("H"), DEFAULT_SHORTCUTS), "quickHighlight");
+  // shift+h → excerpt (modal flow)
   assert.equal(routeShortcut(key("H", { shiftKey: true }), DEFAULT_SHORTCUTS), "excerpt");
   assert.equal(routeShortcut(key("h", { shiftKey: true }), DEFAULT_SHORTCUTS), "excerpt");
+});
+
+test("Bare B → quickBookmark (P2)", () => {
+  // P2: 裸 B 映射到 quickBookmark — 一键加书签, 不弹 modal.
+  // 跟 quickHighlight 对称, 不抢 B (bookmark) 跟其他 binding 的字母.
+  assert.equal(routeShortcut(key("b"), DEFAULT_SHORTCUTS), "quickBookmark");
+  assert.equal(routeShortcut(key("B"), DEFAULT_SHORTCUTS), "quickBookmark");
+  // 跟 H 一样, shift+b 不绑死 (没有 modal bookmark 流程), 走 null
+  assert.equal(routeShortcut(key("B", { shiftKey: true }), DEFAULT_SHORTCUTS), null);
 });
 
 test("Alt / Ctrl / Meta → null (don't intercept browser/OS shortcuts)", () => {

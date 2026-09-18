@@ -65,6 +65,18 @@ export interface AnnotationStore {
   listExcerpts(bookId: BookId): Promise<ReadonlyArray<Excerpt>>;
   addExcerpt(excerpt: Excerpt): Promise<void>;
   removeExcerpt(bookId: BookId, excerptId: string): Promise<void>;
+  /**
+   * P2: Patch-only excerpt update — 只改 note 和 tags, 其他字段 (id /
+   * text / locator / createdAt) 保持原值. 比 addExcerpt 更高效:
+   * - 不需要 caller 把整张 Excerpt 拷贝过来
+   * - 不重新写高亮 (locator 没变)
+   * - notes panel inline edit 用, 用户频繁触发, 需要 O(1) 而不是 O(n)
+   */
+  updateExcerptNote(
+    bookId: BookId,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void>;
 
   listSettings(): Promise<PluginSettings>;
   saveSettings(settings: PluginSettings): Promise<void>;

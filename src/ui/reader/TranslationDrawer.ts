@@ -3,6 +3,12 @@ import type { Locale } from "../../core/types/Locale";
 
 export interface TranslationDrawerHandlers {
   onSaveAsNote: (text: string, translation: string) => void;
+  /**
+   * P2: 翻译面板里的"复制译文"按钮 — 用户翻译完想粘贴到别处 (微信 / 笔记 /
+   * 终端) 而不想存到 vault. 跟 Obsidian clipboard API 解耦 (各平台
+   * navigator.clipboard 行为不一样), 留给 caller 处理.
+   */
+  onCopy?: (translation: string) => Promise<void> | void;
 }
 
 /**
@@ -125,6 +131,23 @@ export class TranslationDrawer {
       attr: { type: "button", title: "把翻译连同原文一起存到笔记" }
     });
     saveBtn.onclick = () => this.handlers.onSaveAsNote(sourceText, translated);
+    // P2: 复制译文按钮 — 用户翻译完想直接粘贴用, 不存到 vault
+    if (this.handlers.onCopy) {
+      const copyBtn = actionsRow.createEl("button", {
+        text: "复制",
+        attr: { type: "button", title: "复制译文到剪贴板", "aria-label": "复制译文" }
+      });
+      copyBtn.addClass("ez-reader__translation-drawer__copy-btn");
+      copyBtn.onclick = async () => {
+        try {
+          await this.handlers.onCopy?.(translated);
+          copyBtn.setText("✓ 已复制");
+          globalThis.setTimeout(() => copyBtn.setText("复制"), 1500);
+        } catch (error) {
+          console.warn("[ez-reader] copy translation failed", error);
+        }
+      };
+    }
     const retryBtn = actionsRow.createEl("button", {
       text: "换语言重译",
       attr: { type: "button", title: "切换目标语言后重新翻译" }

@@ -8,6 +8,22 @@ export interface SelectionMenuHandlers {
 import { computeSelectionMenuPosition } from "./selectionMenuPosition";
 
 /**
+ * P2: SelectionMenu 现在每个按钮下方加一行小字快捷键提示, 让用户看到
+ * "摘录 (Shift+H)" 之类的提示而不只是问 "?" 才能发现快捷键.
+ *
+ * 设计: 按钮 = [图标] [标签] [小字快捷键] 三段式; 主按钮 is-primary 样式
+ * 保持. 移动端小屏下隐藏快捷键提示 (节省空间) — 通过 CSS media query 控制.
+ */
+export interface SelectionMenuHint {
+  /** 主按钮文字 — 之前就是 button label. */
+  readonly label: string;
+  /** tooltip + aria-label. */
+  readonly title: string;
+  /** 渲染在按钮右下角的小字快捷键提示, 跟 label 同文字宽度内显示, 可空. */
+  readonly shortcut?: string;
+}
+
+/**
  * Floating action menu that appears below a selection. Designed to be
  * triggered automatically by the `selection-change` event from the
  * reader session — no need for the user to first tap a "tools" button.
@@ -23,7 +39,12 @@ export class ReaderSelectionMenu {
   private readonly documentMouseDown: (event: MouseEvent) => void;
   private readonly documentSelectionChange: () => void;
 
-  constructor(handlers: SelectionMenuHandlers) {
+  constructor(handlers: SelectionMenuHandlers, hints?: {
+    thought?: string;
+    excerpt?: string;
+    translate?: string;
+    copy?: string;
+  }) {
     this.handlers = handlers;
     this.root = document.createElement("div");
     this.root.addClass("ez-reader__selection-menu");
@@ -31,12 +52,26 @@ export class ReaderSelectionMenu {
     this.root.setAttribute("role", "toolbar");
     this.root.setAttribute("aria-label", "选中文本操作");
 
-    const make = (label: string, title: string, key: keyof SelectionMenuHandlers, primary = false): HTMLButtonElement => {
+    const make = (
+      label: string,
+      title: string,
+      key: keyof SelectionMenuHandlers,
+      shortcut: string | undefined,
+      primary = false
+    ): HTMLButtonElement => {
       const btn = this.root.createEl("button", {
         text: label,
         attr: { type: "button", title, "aria-label": title, "aria-keyshortcuts": key }
       });
       if (primary) btn.addClass("is-primary");
+      // 快捷键提示 — 在 button 内部, label 下面单独一行小字, 不影响主 label.
+      if (shortcut) {
+        const hint = btn.createSpan({
+          text: shortcut,
+          cls: "ez-reader__selection-menu__hint"
+        });
+        hint.setAttribute("aria-hidden", "true");
+      }
       btn.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -49,10 +84,10 @@ export class ReaderSelectionMenu {
       return btn;
     };
 
-    make("想法", "为这段文字写想法(自动记到侧边栏笔记)", "onThought", true);
-    make("摘录", "保存为摘录(高亮 + 笔记)", "onExcerpt");
-    make("翻译", "调用翻译服务翻译这段文字", "onTranslate");
-    make("复制", "复制到剪贴板", "onCopy");
+    make("想法", "为这段文字写想法(自动记到侧边栏笔记)", "onThought", hints?.thought, true);
+    make("摘录", "保存为摘录(高亮 + 笔记)", "onExcerpt", hints?.excerpt);
+    make("翻译", "调用翻译服务翻译这段文字", "onTranslate", hints?.translate);
+    make("复制", "复制到剪贴板", "onCopy", hints?.copy);
 
     document.body.append(this.root);
 
