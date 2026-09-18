@@ -9,7 +9,7 @@
 **项目**: Obsidian 社区市场插件 `ez-reader`(从零重写,非 fork)。
 **位置**: `/home/ljl/dsh/ezreader/`
 **远程仓库**: `git@github.com:alei37/ez-reader.git`,分支 `main`
-**当前 HEAD**: `876243c` — "feat: TXT/MOBI reader + PDF 跳转 + 沉浸/panel fix + 置顶功能 + 多项 P0/P1 polish"
+**当前 HEAD**: `3a4de46` — "fix: 真进度持久化 + foliate patch 清 CSP/script + reader/shelf polish + 笔记 note 折叠"
 **测试/部署路径**: `/home/ljl/obsidian/obsidian_alei/.obsidian/plugins/ez-reader/`
 **架构**: 分层端口-适配器(Port/Adapter) + 严格 core/adapters/ui 分层。
 **支持格式**:
@@ -69,7 +69,7 @@
 ├── dist/                    ← CI 发布的预构建 (manifest.json + styles.css)
 ├── reports/                 ← 历史研究文档
 │   └── sunny-research-report.md  ← 项目早期研究笔记(过时但有 context)
-├── main.js                  ← 构建产物 (~795 KB)
+├── main.js                  ← 构建产物 (~842 KB, gitignored)
 ├── styles.css               ← 全部样式 (~45 KB)
 ├── tests/
 │   ├── core/                ← 单元测试 (Node --test)
@@ -132,7 +132,7 @@ Plugin.ts  (装配)
 - 静态 `import "obsidian"` 走 `external: ["obsidian"]` → bundle 时保留 specifier → Obsidian runtime 提供
 - **动态 `import("obsidian")` 不走 external**!esbuild 把它当普通 module specifier,Obsidian runtime 找不到 → throw `Failed to resolve module specifier 'obsidian'`
 - **修复**:永远用顶层 `import { ... } from "obsidian"`,不要 `await import("obsidian")`
-- 这条规则在 `commit 876243c` 已经全部修过。`grep "await import(.obsidian.)" src/` 应该 0 命中。
+- 这条规则在 `commit 876243c` 已经全部修过, `commit 3a4de46` 继续守住。`grep "await import(.obsidian.)" src/` 应该 0 命中。
 
 ### 3.4 文件 IO 模式
 - 通过依赖注入 `BookBytesLoader`,**不要在 reader 里用 `fetch()`**(`obsidian://` 协议 fetch 不可用)
@@ -174,9 +174,10 @@ Plugin.ts  (装配)
 - patch 内容: 移除 `package.json` 的 `allow-scripts`(esbuild 不识别) + 加 `customElements.get` guard(避免重复注册)
 - 路由: `src/Plugin.ts:73` 直接 `this.foliate = new FoliateBookReader()`
 - 创建 `<foliate-view>` custom element 挂到 host
-- **关键修复** (`commit 876243c`):
+- **关键修复** (`commit 876243c` + `commit 3a4de46`):
   - iframe.contentDocument 监听 keydown 转发给 ReaderView(键盘左右键 work)
-  - MutationObserver 把 `<link rel="stylesheet" href="blob:...">` fetch 转 inline `<style>`(绕过 Obsidian CSP)
+  - `commit 3a4de46` patch foliate-js 直接 inline `@import "blob:..."` 和 `<link rel=stylesheet>` (mutation observer 来不及拦截, microtask vs sync parse race)
+  - `commit 3a4de46` patch 删 `<script>` / 嵌套 `<iframe>` / `on*` / `javascript:` URL(绕 sandboxed iframe 没 allow-scripts 报错)
   - `setOnIframeKeydown` 暴露给 ReaderView
 
 ### 4.2 PDF (`PdfOverlay` on Obsidian PDFView)
@@ -231,14 +232,14 @@ private makeTextReader(): BookReader {
 | `src/adapters/obsidian/ObsidianNoteWriter.ts` | 摘录/想法的 vault md 同步 | 改 markdown 模板、加双链 |
 | `src/adapters/text/PagedTextSession.ts` | TXT + MOBI 共享的页面渲染 | 改翻页/选词/highlight |
 | `src/adapters/foliate/FoliateBookReader.ts` | EPUB foliate-js 封装 | 改 EPUB 行为、iframe 事件转发 |
-| `src/ui/reader/pdfOverlay.ts` | 911 行,PDF 选词/黄条/笔记侧边栏 | 改 PDF 体验,加 thought/highlight 功能 |
-| `src/ui/reader/ReaderView.ts` | 1480 行,阅读器主视图 | 加阅读器功能、改键盘/手势/沉浸 |
+| `src/ui/reader/pdfOverlay.ts` | ~1200 行,PDF 选词/黄条/笔记侧边栏 | 改 PDF 体验,加 thought/highlight 功能 |
+| `src/ui/reader/ReaderView.ts` | ~1700 行,阅读器主视图 | 加阅读器功能、改键盘/手势/沉浸 |
 | `src/ui/reader/ReaderToolbar.ts` | 工具栏 (最左目录 icon,最右 close icon) | 改工具栏布局/按钮 |
 | `src/ui/reader/ReaderSelectionMenu.ts` | 选词浮层菜单(想法/摘录/翻译/复制) | 改菜单位置/快捷键 |
 | `src/ui/shelf/ShelfView.ts` | 书架主视图 + 右键菜单 | 改书架布局、增右键菜单项 |
 | `src/ui/shelf/AddToLibraryModal.ts` | 加入书籍弹窗,选书界面 | 改批量加入流程 |
 | `src/core/services/LibraryService.ts` | 489 行,library 状态管理 | 加新书操作、改排序/筛选 |
-| `src/core/services/ReadingService.ts` | 113 行,reading/highlight/annotation 状态 | 加 annotation 类型 |
+| `src/core/services/ReadingService.ts` | ~150 行,reading/highlight/annotation 状态 | 加 annotation 类型 |
 | `src/core/entities/Book.ts` | Book interface | 加新字段(像 `pinnedAt`) |
 | `src/core/ports/BookReader.ts` | BookReader/ReaderSession 接口 | 加 reader 能力(zoom/highlight) |
 | `src/core/ports/AnnotationStore.ts` | 持久化接口 | 加新 store 方法 |
@@ -254,7 +255,7 @@ private makeTextReader(): BookReader {
 ```bash
 cd /home/ljl/dsh/ezreader
 pnpm install          # 第一次或依赖变了
-pnpm run build        # 产出 main.js (~795 KB)
+pnpm run build        # 产出 main.js (~842 KB)
 ```
 
 `pnpm run build` = `tsc --noEmit --skipLibCheck && node esbuild.config.mjs production`
@@ -268,7 +269,7 @@ pnpm test
 
 **测试在 `tests/core/` 下,只测 `core/` 里的服务, 不启动 Obsidian**。
 
-**当前**: 173/173 通过
+**当前**: 197/197 通过
 
 **测试 bundle ESM/CJS interop**:
 - `esbuild.tests.config.mjs` externalize `obsidian`, `jsdom`, 和 Node built-ins (`path`, `fs`, `url`, `os`, `crypto`, `stream`, `buffer`, `util`, `events`, `assert`, `child_process`)
@@ -302,8 +303,14 @@ Obsidian 桌面版支持插件热重载(在设置里打开),改了代码后:
 
 ## 7. 已知 P1/P2 polish 项(不阻塞,留作下一轮)
 
+> 同步到 commit `3a4de46` (2026-09-16)。3a4de46 修掉了几条:
+> - MOBI spine → TOC label 映射 (toolbar 章节标题有了)
+> - PagedTextSession.applyAppearance 完整接通 (fontFamily/theme/typography)
+> - buildAppearanceCss / buildPagedTextCss 重构为统一的 themeColors + readerShortcuts
+> - AGENTS.md 路径 outdated
+> - 笔记 note 字段可折叠
+
 ### P1(用户体验)
-- **MOBI 章节标题没显示在 toolbar** — foliate 有 `currentChapter`,MOBI 路径没接 toolbar
 - **MOBI `<a href>` 内部跳转未拦截** — 章节内 cross-ref 点击无反应
 - **MOBI 大文件 parser 阻塞主线程** — 2-5s 同步解压,UI 假死
 - **PagedTextSession `disposers` Set 每次翻页增长** — 理论性能问题,实际未必可见
@@ -312,11 +319,9 @@ Obsidian 桌面版支持插件热重载(在设置里打开),改了代码后:
 - **PDF selection-level jump 不精确** — `PdfOverlay.jumpToExcerpt` 只 scrollIntoView 到 page, 没真正跳到 4-tuple subpath (需要 PDFView 暴露内部 API; P2-5 TODO 在 `pdfOverlay.ts:445`)
 
 ### P2(代码质量)
-- **`LICENSES/` 缺 3 个 MIT notice**: `@lingo-reader/mobi-parser`, `@lingo-reader/shared`, `fflate`
-- **`manifest.json` version 仍是 0.1.0** — 即使改了大量
-- **`AGENTS.md` 路径 outdated(老版本写 `/home/ljl/obsidian/local-book-reader/`)** — 已修
-- **`buildAppearanceCss` / `buildPagedTextCss` 重复** — 颜色变量重复定义
-- **`PagedTextSession` applyAppearance 没完整实现** — 只调了 `setCssVars`,CSS 变量已定义但全功能没接通
+- **`LICENSES/` 缺 3 个 MIT notice**: `@lingo-reader/mobi-parser`, `@lingo-reader/shared`, `fflate` (Apache-2.0)
+- **`manifest.json` version 仍是 0.1.0** — 即使改了大量,public 前需 bump
+- **CI/release workflow** — 没 `.github/workflows/release.yml` 自动打 zip
 
 ### 已知用户体验细节
 - 用户偏好中文 UI(label 用中文:`想法`、`摘录`、`翻译`、`复制`)

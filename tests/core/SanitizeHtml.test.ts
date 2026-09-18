@@ -120,3 +120,35 @@ test("sanitizeHtml: drops comments and doctype", () => {
   assert.match(out, /<p>visible<\/p>/);
   assert.match(out, /<p>after<\/p>/);
 });
+
+test("sanitizeHtml: <a href> is renamed to data-ez-reader-href (P1 polish)", () => {
+  // MOBI chapters use <a href="chapter2.xhtml"> for cross-refs. Without
+  // rewriting, browser default navigates away from the reader. With the
+  // rewrite, href is gone, the original is on data-ez-reader-href, and the
+  // reader intercepts clicks via its own handler.
+  const out = sanitizeHtml('<p><a href="chapter02.xhtml#section-1">see chapter 2</a></p>');
+  // Match ` href="` exactly (with leading space) — distinguishes from
+  // `data-ez-reader-href="` which also contains `href="`.
+  assert.doesNotMatch(out, / href="chapter02/);
+  assert.match(out, /data-ez-reader-href="chapter02\.xhtml#section-1"/);
+  assert.match(out, /see chapter 2/);
+});
+
+test("sanitizeHtml: <a href> with javascript: drops href but still keeps link text", () => {
+  const out = sanitizeHtml('<a href="javascript:alert(1)">click</a>');
+  assert.doesNotMatch(out, /href/);
+  assert.match(out, /click/);
+});
+
+test("sanitizeHtml: <a href> with fragment keeps #href (intra-document anchor)", () => {
+  // Fragment-only links are page-internal; we keep them as href so the
+  // browser handles in-page jumps natively. (We don't currently wire up
+  // scroll-to for these, but at least the href remains usable.)
+  const out = sanitizeHtml('<a href="#footnote-1">see footnote</a>');
+  assert.match(out, /href="#footnote-1"/);
+});
+
+test("sanitizeHtml: <a> without href is unchanged", () => {
+  const out = sanitizeHtml("<a>plain anchor</a>");
+  assert.match(out, /<a>plain anchor<\/a>/);
+});

@@ -126,6 +126,29 @@ export class PagedTextSession implements ReaderSession {
   private readonly host: HTMLElement;
   private readonly styleEl: HTMLStyleElement;
   private readonly disposers = new Set<() => void>();
+  /** Selection listeners re-attached on every renderPage; tracked separately
+   *  so we can drop them before adding the next pair. P1 polish: before this
+   *  set existed, every page flip appended two listeners + one cleanup closure
+   *  into `disposers`, which was only drained at close(). After 100 flips we'd
+   *  call 200 stale removeEventListener no-ops on session close. Now we
+   *  actively unbind on each flip. */
+  private selectionCleanup: (() => void) | null = null;
+  /** P1 polish: anchor click listener bound at stage level so it survives
+   *  page flips. Catches <a data-ez-reader-href="..."> clicks (sanitizeHtml
+   *  renames href → data-ez-reader-href so the browser doesn't navigate
+   *  to a chapter URL) and dispatches "link-click". */
+  private readonly stageClickHandler = (event: MouseEvent): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const anchor = target.closest<HTMLElement>("a[data-ez-reader-href]");
+    if (!anchor) return;
+    const href = anchor.dataset["ezReaderHref"];
+    if (!href) return;
+    event.preventDefault();
+    this.element.dispatchEvent(
+      new CustomEvent("link-click", { detail: { href } })
+    );
+  };
   private currentPageIndex = 0;
   private currentAppearance: ReaderAppearance;
   private closed = false;
@@ -162,6 +185,7 @@ export class PagedTextSession implements ReaderSession {
 
     this.stageEl = document.createElement("div");
     this.stageEl.classList.add("ez-reader__paged-text");
+    this.stageEl.addEventListener("click", this.stageClickHandler);
     this.element.append(this.stageEl);
 
     this.host.append(this.element);
@@ -180,6 +204,10 @@ export class PagedTextSession implements ReaderSession {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.selectionCleanup) {
+      this.selectionCleanup();
+      this.selectionCleanup = null;
+    }
     for (const off of this.disposers) off();
     this.disposers.clear();
     this.injectedCss.clear();
@@ -413,16 +441,24 @@ export class PagedTextSession implements ReaderSession {
     // (例如用户从 PDF / markdown 复制文字). 每次 fire 都要跑 contains() 过滤,
     // 高频触发下是纯浪费. 改用 mouseup / selectionend 挂在 stageEl —
     // 只在用户真正在我们页面里选完词时触发, 触发频率从几十 Hz 降到几次/s.
+    //
+    // P1 polish: 每次翻页先清掉上一次的 listener — 否则旧的 (mouseup,
+    // selectionchange) 永远挂在 stageEl 上, 100 翻页 = 100 个 stale
+    // listener 累积到 close(). 现在 selectionCleanup 持有上一次 cleanup,
+    // 翻页前先调用一次, 把 stageEl 清干净再装新的.
+    if (this.selectionCleanup) {
+      this.selectionCleanup();
+      this.selectionCleanup = null;
+    }
     const onSelectionDone = () => this.dispatchSelection();
     this.stageEl.addEventListener("mouseup", onSelectionDone);
     // selectionchange 在移动端 (iOS / Android) Safari / Chrome 触发,
     // 桌面 Chrome / Firefox 不会触发 — 两个都挂保险.
     this.stageEl.addEventListener("selectionchange", onSelectionDone);
-    const cleanupSelection = () => {
+    this.selectionCleanup = () => {
       this.stageEl.removeEventListener("mouseup", onSelectionDone);
       this.stageEl.removeEventListener("selectionchange", onSelectionDone);
     };
-    this.disposers.add(cleanupSelection);
 
     // Fire relocate for any listener attached after mount.
     const total = this.content.pages.length;

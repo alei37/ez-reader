@@ -19,7 +19,11 @@
  * What we keep (intentionally permissive — mobi text needs it):
  *   - Structural tags: p, br, div, span, h1-h6, blockquote, ul, ol, li
  *   - Inline formatting: b, i, em, strong, u, sub, sup, code, pre
- *   - Links and images (with safe URL check)
+ *   - Links and images (with safe URL check). Anchors with a non-fragment
+ *     href have it renamed to `data-ez-reader-href` and the `href` stripped
+ *     so the browser doesn't navigate to an external URL on click — the
+ *     reader will intercept the click via its own handler and resolve
+ *     intra-book links to spine / page offsets.
  *   - Tables: table, thead, tbody, tr, th, td
  *   - Custom class / id / style attributes — mobi CSS classes are how
  *     chapters look right; stripping them would flatten the visual
@@ -172,10 +176,19 @@ const sanitizeAttrs = (rawAttrs: string): string | null => {
     // Re-emit with double quotes. We escape `&` and `"` in the value
     // so a malicious value can't break out of the attribute.
     const safeValue = value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    // P1 polish: <a href="..."> rewrites. MOBI chapters use href to point
+    // at other chapters / anchors (intra-book links). Browser default
+    // would navigate away from the reader; we strip href and stash the
+    // value on data-ez-reader-href so the reader can intercept clicks
+    // and resolve them via the book's spine. Same for src on img if it's
+    // a non-fragment URL — but for simplicity we keep img src as-is since
+    // images have no click handler that would navigate.
+    if (name === "href" && !value.startsWith("#") && !isDangerousUrl(value)) {
+      // Treat as intra-book link target. Stash on data-* attribute.
+      result += ` data-ez-reader-href="${safeValue}"`;
+      continue;
+    }
     result += ` ${name}="${safeValue}"`;
-  }
-  if (!matched && rawAttrs.trim().length > 0) {
-    return null;
   }
   return result;
 };

@@ -171,14 +171,60 @@ const hardBreakLongParagraph = (text: string, maxChars: number): string[] => {
 };
 
 /**
- * Extract a book title from the first non-empty line, falling back to the
- * filename. Used for the chapter-title display in `currentChapter()` and
- * for the TOC's single root entry.
+ * P1 polish: extract a book title from the head of the text, falling back to
+ * the filename. Previous heuristic ("first non-empty line ≤80 chars, no
+ * trailing 。/.") misidentified the first body sentence of classical Chinese
+ * novels as the title (e.g. 《千字文》 opens with "天地玄黄,宇宙洪荒" — 8
+ * chars, no trailing 。, treated as title). Strategy now:
+ *
+ *  1. Strong signals: scan the first ~50 lines for an unmistakable structural
+ *     marker — "书名:" / "Title:" / "TITLE" / "题:" / `《X》` / 卷X / 第X章
+ *     etc. First match wins.
+ *  2. Weak signal: if no strong signal found, take the first non-empty line,
+ *     but only if it's plausibly a title — ≤25 chars (short classical title
+ *     or 1-2 line poetic name), no body-sentence punctuation (，。！？、；:
+ *     "?" "!" ...). Long sentences are body, not title.
+ *  3. Otherwise fall back to filename.
  */
-const guessTitleFromText = (text: string, fallback: string): string => {
-  const firstLine = text.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim() ?? "";
-  // Heuristic: a title is short (< 80 chars) and not too long with no punctuation.
-  if (firstLine.length > 0 && firstLine.length <= 80 && !firstLine.endsWith("。") && !firstLine.endsWith(".")) {
+export const STRONG_TITLE_PATTERNS: ReadonlyArray<RegExp> = [
+  // 显式声明: "书名: xxx" / "Title: xxx" / "题: xxx"
+  /^[\s\u3000]*(?:书\s*名|Title|题|篇名)\s*[:：]\s*(.+?)\s*$/iu,
+  // 引号包围: 《书名》 / 《 书名 》 / 「书名」 / 『书名』 / "书名"
+  /^[\s\u3000]*[《「『"“](.{1,40}?)[》」』"”][\s\u3000]*$/u,
+  // 书的结构: 卷X / 第X章 / 全X / 篇X — 后面跟副标题或不跟
+  // 两个 alternation:
+  //   a) "卷"/"篇"/"全" + 可选数字 + 可选[章回...] (e.g. "卷一", "卷之一", "卷一 大题")
+  //   b) "第" + 数字 + [章回节卷集篇] + 可选副标题 (e.g. "第一章 标题", "第三回")
+  /^[\s\u3000]*(?:(?:卷|篇|全)(?:之?[0-9零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾]+)?(?:[章回]?)|第\s*[0-9零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾]+\s*[章回节卷集篇])\s*(.{0,30})$/u,
+  // 中文书名常见格式: 5-15 字无标点
+  /^[\s\u3000]*[\u4e00-\u9fa5]{2,15}[\s\u3000]*$/u,
+];
+
+export const BODY_PUNCTUATION = /[，。！？、；：""''?!,;:"'']/;
+
+export const guessTitleFromText = (text: string, fallback: string): string => {
+  const lines = text.split(/\r?\n/).slice(0, 50);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    for (const re of STRONG_TITLE_PATTERNS) {
+      const match = line.match(re);
+      if (match) {
+        // 第一组捕获是提取的标题, 整行匹配则取整行
+        const candidate = (match[1] ?? line).trim();
+        if (candidate.length > 0 && candidate.length <= 40 && !BODY_PUNCTUATION.test(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  }
+  // 弱信号兜底: 第一行 ≤25 字, 没有 body 标点
+  const firstLine = lines.find((line) => line.trim().length > 0)?.trim() ?? "";
+  if (
+    firstLine.length > 0 &&
+    firstLine.length <= 25 &&
+    !BODY_PUNCTUATION.test(firstLine)
+  ) {
     return firstLine;
   }
   return fallback;

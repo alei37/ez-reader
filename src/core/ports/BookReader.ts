@@ -11,6 +11,7 @@ export type ReaderTarget =
 export interface ReaderEventMap {
   relocate: CustomEvent<{ fraction?: number; locator?: string; chapter?: string; page?: number }>;
   "selection-change": CustomEvent<{ text: string; locator?: string; rect?: DOMRect }>;
+  "link-click": CustomEvent<{ href: string }>;
   close: Event;
 }
 
