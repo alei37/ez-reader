@@ -18,6 +18,10 @@ export interface ReaderToolbarHandlers {
   onCycleStatus: () => void;
   /** 点击收藏按钮 — 切换当前书的收藏状态。 */
   onToggleFavorite: () => void;
+  /** 点击搜索按钮 — 弹出 find-in-book 输入栏。 */
+  onOpenSearch?: () => void;
+  /** Search 是否处于激活态 (高亮 + 显示 "X matches") — 用于 toggle 按钮视觉。 */
+  onCloseSearch?: () => void;
 }
 
 export interface ReaderToolbarState {
@@ -36,6 +40,16 @@ export interface ReaderToolbarState {
   readonly excerptCount?: number;
   /** Whether the current book is in the user's favorites. */
   readonly favorite?: boolean;
+  /** 当前页码 (1-based), null 表示不可用 (例如 TXT 跟 EPUB 没有真实页码)。 */
+  readonly currentPage?: number | null;
+  /** 总页数, null 表示不可用。 */
+  readonly totalPages?: number | null;
+  /** Search bar 是否打开 — toolbar 的搜索按钮在打开时高亮。 */
+  readonly searchOpen?: boolean;
+  /** Find-in-book 命中数 — 在 chapterLabel 后面或 search 按钮 badge 上显示。 */
+  readonly searchMatchCount?: number | null;
+  /** P1: 累计阅读时长 (ms) — toolbar 显示 "X 分钟"。 */
+  readonly totalReadingMs?: number;
 }
 
 /**
@@ -66,6 +80,10 @@ export class ReaderToolbar {
   private readonly tocToggle?: HTMLButtonElement;
   private readonly notesToggle: HTMLButtonElement;
   private readonly immersiveToggle: HTMLButtonElement;
+  private readonly searchButton: HTMLButtonElement;
+  private readonly searchBadge: HTMLElement;
+  private readonly pageLabel: HTMLElement;
+  private readonly readingTimeLabel: HTMLElement;
   /**
    * 用户正在拖动进度条时为 true. 期间不走 relocate 回写 (会抖动),
    * 也不二次触发 progress change (input 事件已经触发了).
@@ -174,6 +192,28 @@ export class ReaderToolbar {
     addBookmark.addClass("ez-reader__reader-toolbar__action");
     addBookmark.addEventListener("click", () => handlers.onAddBookmark());
 
+    // 搜索按钮 — find-in-book (P1). 跟其他 toolbar 按钮风格一致,
+    // 激活时高亮 (is-active) + 在右上角 badge 显示命中数。
+    this.searchButton = actionsGroup.createEl("button", { attr: { type: "button", title: "搜索 (/)", "aria-label": "搜索", "data-shortcut": "search" } });
+    this.searchButton.addClass("ez-reader__reader-toolbar__action", "ez-reader__reader-toolbar__search-btn");
+    setIcon(this.searchButton, "search");
+    this.searchBadge = this.searchButton.createEl("span", { cls: "ez-reader__reader-toolbar__badge ez-reader__reader-toolbar__search-badge" });
+    this.searchBadge.addClass("is-hidden");
+    this.searchBadge.setText("");
+    this.searchButton.addEventListener("click", () => {
+      if (this.currentSearchOpen) handlers.onCloseSearch?.();
+      else handlers.onOpenSearch?.();
+    });
+
+    // 页码指示 — 在 nav-row 的 next 按钮之后插入 "N / M"。当前
+    // 页不可用时不 render (EPUB / TXT 暂时用 chapterLabel 替代)。
+    this.pageLabel = navRow.createEl("span", { text: "", cls: "ez-reader__reader-toolbar__page-label" });
+    this.pageLabel.addClass("is-hidden");
+
+    // P1: 阅读时长 — 紧贴 chapter label 后, 显示"X 分钟"。
+    this.readingTimeLabel = navGroup.createEl("span", { text: "", cls: "ez-reader__reader-toolbar__reading-time" });
+    this.readingTimeLabel.addClass("is-hidden");
+
     this.fontButton = actionsGroup.createEl("button", { text: "Aa", attr: { type: "button", title: "字号 / 行距 / 主题", "aria-label": "字号 / 行距 / 主题", "data-shortcut": "font" } });
     this.fontButton.addClass("ez-reader__reader-toolbar__action");
     this.fontButton.addEventListener("click", () => handlers.onShowFontSettings());
@@ -234,6 +274,27 @@ export class ReaderToolbar {
     this.fontButton.toggleClass("is-hidden", state.showFontSettings !== true);
     this.updateBadge(this.bookmarkBadge, state.bookmarkCount);
     this.updateBadge(this.excerptBadge, state.excerptCount);
+    // 搜索按钮激活态 + 命中数 badge.
+    this.currentSearchOpen = state.searchOpen === true;
+    this.searchButton.toggleClass("is-active", this.currentSearchOpen);
+    this.updateSearchBadge(state.searchMatchCount);
+    // 页码指示: 有 currentPage + totalPages 时显示 "N / M".
+    const cur = state.currentPage;
+    const total = state.totalPages;
+    if (typeof cur === "number" && typeof total === "number" && total > 0) {
+      this.pageLabel.removeClass("is-hidden");
+      this.pageLabel.setText(`${cur} / ${total}`);
+    } else {
+      this.pageLabel.addClass("is-hidden");
+    }
+    // 阅读时长: 大于 1 分钟才显示, 避免噪音.
+    const totalMs = state.totalReadingMs ?? 0;
+    if (totalMs >= 60_000) {
+      this.readingTimeLabel.removeClass("is-hidden");
+      this.readingTimeLabel.setText(formatReadingTime(totalMs));
+    } else {
+      this.readingTimeLabel.addClass("is-hidden");
+    }
   }
 
   /** Show a small number badge on a button. Hide when 0/undefined. */
@@ -246,6 +307,29 @@ export class ReaderToolbar {
     el.removeClass("is-hidden");
     el.setText(count > 99 ? "99+" : String(count));
   }
+
+  /** Search badge — 命中数 0 也显示 (告诉用户没找到), null/undefined 隐藏. */
+  private currentSearchOpen = false;
+  private updateSearchBadge(count: number | null | undefined): void {
+    if (typeof count !== "number") {
+      this.searchBadge.addClass("is-hidden");
+      this.searchBadge.setText("");
+      return;
+    }
+    this.searchBadge.removeClass("is-hidden");
+    if (count > 999) this.searchBadge.setText("999+");
+    else this.searchBadge.setText(String(count));
+  }
 }
 
 const clampFraction = (value: number): number => Math.max(0, Math.min(1, value));
+
+/** 格式化为 "X 分钟" / "X 小时 Y 分" — 跟随 zh-CN 习惯。 */
+const formatReadingTime = (ms: number): string => {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes - hours * 60;
+  if (remainingMinutes === 0) return `${hours} 小时`;
+  return `${hours} 小时 ${remainingMinutes} 分`;
+};

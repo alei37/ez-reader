@@ -9,8 +9,11 @@ import type {
   ReaderTarget,
   TocItem
 } from "../../core/ports/BookReader";
-import type { ReaderAppearance, ReaderTheme } from "../../core/types/ReaderSettings";
+import type { ReaderAppearance } from "../../core/types/ReaderSettings";
+import { READER_FONT_FAMILY_STACKS } from "../../core/types/ReaderSettings";
 import { mimeTypeFor } from "../../core/entities/Book";
+import { themeColors } from "../../core/utils/themeColors";
+import { sniffImageMime } from "../../core/utils/imageSniff";
 
 interface FoliateViewElement extends HTMLElement {
   open(book: unknown): Promise<void>;
@@ -26,28 +29,23 @@ interface FoliateViewElement extends HTMLElement {
     toc?: ReadonlyArray<{ label?: unknown; href?: unknown; subitems?: unknown }>;
     metadata?: { title?: unknown; creator?: unknown; language?: unknown };
     getCover?: () => Promise<Blob | null>;
+    sections?: ReadonlyArray<{ id?: string; load?: () => Promise<string> }>;
   };
-  renderer?: HTMLElement & { setStyles?: (css: string) => void };
+  renderer?: HTMLElement & {
+    setStyles?: (css: string) => void;
+    paginator?: {
+      sections?: ReadonlyArray<{ id?: string; load?: () => Promise<string | Document> }>;
+      // 0-based section index of the currently displayed section.
+      sectionIndex?: number;
+      goToFraction?: (fraction: number) => Promise<void>;
+    };
+  };
   lastLocation?: { fraction?: number; cfi?: string; tocItem?: { label?: string } };
 }
 
 interface FoliateModule {
   makeBook: (input: File) => Promise<unknown>;
 }
-
-/** Resolve a `ReaderTheme` to the CSS values foliate injects into the iframe. */
-export const themeColors = (theme: ReaderTheme): { bg: string; fg: string; scheme: "light" | "dark" | "light dark" } => {
-  switch (theme) {
-    case "light":
-      return { bg: "#ffffff", fg: "#1f2328", scheme: "light" };
-    case "dark":
-      return { bg: "#1f2328", fg: "#e6edf3", scheme: "dark" };
-    case "sepia":
-      return { bg: "#f4ecd8", fg: "#4b3b2a", scheme: "light" };
-    default:
-      return { bg: "Canvas", fg: "CanvasText", scheme: "light dark" };
-  }
-};
 
 /**
  * Build the CSS string passed to `foliate-paginator.setStyles()`. Pure
@@ -57,15 +55,29 @@ export const themeColors = (theme: ReaderTheme): { bg: string; fg: string; schem
 export const buildAppearanceCss = (appearance: ReaderAppearance): string => {
   const theme = themeColors(appearance.theme);
   const fontScale = (appearance.fontSize / 100).toFixed(3);
+  const fontFamily = READER_FONT_FAMILY_STACKS[appearance.fontFamily ?? "serif"];
+  const letterSpacing = (appearance.letterSpacing ?? 0).toFixed(3);
+  const maxWidth = appearance.maxWidth ?? 720;
   return `
-    :root { --ez-reader-font-scale: ${fontScale}; }
+    :root {
+      --ez-reader-font-scale: ${fontScale};
+      --ez-reader-font-family: ${fontFamily};
+      --ez-reader-letter-spacing: ${letterSpacing}em;
+      --ez-reader-max-width: ${maxWidth}px;
+    }
     html, body {
       font-size: calc(1em * var(--ez-reader-font-scale)) !important;
       color: ${theme.fg} !important;
       background: ${theme.bg} !important;
       color-scheme: ${theme.scheme};
     }
-    body { padding-inline: ${appearance.margin}px !important; line-height: ${appearance.lineHeight} !important; }
+    body {
+      padding-inline: ${appearance.margin}px !important;
+      line-height: ${appearance.lineHeight} !important;
+      font-family: var(--ez-reader-font-family) !important;
+      letter-spacing: var(--ez-reader-letter-spacing) !important;
+    }
+    body > * { max-width: var(--ez-reader-max-width); margin-inline: auto; }
     p, li, blockquote, dd { line-height: ${appearance.lineHeight} !important; }
   `;
 };
@@ -236,33 +248,7 @@ const loadEpubFile = async (
   return makeBook(file);
 };
 
-/**
- * Sniff image MIME from the first 12 bytes of a buffer. foliate often
- * returns `Blob` with empty `type`; the previous fallback defaulted to
- * `image/jpeg` which silently mis-saved PNG / WEBP covers with the wrong
- * extension.
- */
-const sniffImageMime = (bytes: ArrayBuffer): string | null => {
-  const view = new Uint8Array(bytes, 0, Math.min(12, bytes.byteLength));
-  // PNG: 89 50 4E 47 0D 0A 1A 0A
-  if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4E && view[3] === 0x47) {
-    return "image/png";
-  }
-  // JPEG: FF D8 FF
-  if (view[0] === 0xFF && view[1] === 0xD8 && view[2] === 0xFF) {
-    return "image/jpeg";
-  }
-  // WEBP: "RIFF" .... "WEBP"
-  if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46 &&
-      view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) {
-    return "image/webp";
-  }
-  // GIF: "GIF8"
-  if (view[0] === 0x47 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x38) {
-    return "image/gif";
-  }
-  return null;
-};
+
 
 class FoliateSession implements ReaderSession {
   readonly element: HTMLElement;
@@ -282,6 +268,14 @@ class FoliateSession implements ReaderSession {
    * - "backward" — 翻到上一页 (从左滑入)
    */
   private lastDirection: "initial" | "forward" | "backward" = "initial";
+  /**
+   * P1: Find-in-book 状态 — 缓存当前 query, 让用户翻页后再调用
+   * findInBook(query, false) 走下一个匹配。索引指向"下一个要跳的"
+   * 匹配在 `matchPositions` 里的位置。
+   */
+  private findQuery: string | null = null;
+  private findMatches: Array<{ sectionIndex: number; offsetInSection: number }> = [];
+  private findCursor = 0;
 
   constructor(
     view: FoliateViewElement,
@@ -447,6 +441,68 @@ class FoliateSession implements ReaderSession {
     return [...this.highlights];
   }
 
+  /**
+   * In-book search. foliate-js 没有 public find API, 所以我们手动遍历
+   * spine 拿到每个 section 的 HTML 文本, indexOf 找 query 出现的位置,
+   * 把所有匹配按 (sectionIndex, offset) 缓存起来, 再用 goToFraction
+   * 跳到对应位置 (用当前 sectionIndex + sectionFraction 算总 fraction).
+   *
+   * 限制: 跨多页的匹配 (例如某匹配从 section A 第 30% 跨到 section B
+   * 第 5%) 简化为只 anchor 到起始 section — foliate 内部 anchor 算法
+   * 已经能展示起始点的上下文, 视觉上"高亮在结果起点"对搜索体验足够。
+   */
+  async findInBook(query: string, fromStart: boolean): Promise<number> {
+    if (this.closed) return 0;
+    const trimmed = query.trim();
+    if (!trimmed) return 0;
+    const paginator = this.view.renderer?.paginator;
+    const sections = paginator?.sections ?? this.view.book?.sections;
+    if (!sections || sections.length === 0) return 0;
+
+    // 重新构建匹配列表 — query 变了 OR 用户按了 fromStart 都要重建。
+    if (this.findQuery !== trimmed || fromStart) {
+      this.findQuery = trimmed;
+      this.findMatches = [];
+      const needle = trimmed.toLocaleLowerCase();
+      for (let i = 0; i < sections.length; i++) {
+        const sec = sections[i];
+        if (!sec || typeof sec.load !== "function") continue;
+        let html: string | Document;
+        try {
+          html = await sec.load();
+        } catch {
+          continue;
+        }
+        // foliate section.load() 可能返回 string 也可能返回 Document (取决于打包方式).
+        const text = extractTextFromSection(html).toLocaleLowerCase();
+        let from = 0;
+        let idx: number;
+        while ((idx = text.indexOf(needle, from)) >= 0) {
+          this.findMatches.push({ sectionIndex: i, offsetInSection: idx });
+          from = idx + needle.length;
+          // 安全阀: 单章超过 500 个匹配就停 — 用户搜索常见词 ("的" / "the")
+          // 容易触发, 这种情况下 UI 显示 500+ 即可, 没必要把整本书扫一遍。
+          if (this.findMatches.length > 500) break;
+        }
+        if (this.findMatches.length > 500) break;
+      }
+      this.findCursor = 0;
+    }
+    if (this.findMatches.length === 0) return 0;
+
+    if (fromStart) this.findCursor = 0;
+    else this.findCursor = (this.findCursor + 1) % this.findMatches.length;
+    const target = this.findMatches[this.findCursor]!;
+
+    // 跳到目标: 用 fraction = (sectionIndex / total) 即可, 用户视觉上
+    // 看到的就是该 section。foliate 翻页后 updateUI 会自动 display 目标 section。
+    const total = sections.length;
+    const fraction = total <= 1 ? 0 : target.sectionIndex / (total - 1);
+    this.lastDirection = "initial";
+    await this.view.goToFraction(fraction);
+    return this.findMatches.length;
+  }
+
   async highlight(spec: HighlightSpec): Promise<void> {
     this.highlights.push(spec);
     try {
@@ -519,17 +575,18 @@ class FoliateSession implements ReaderSession {
       doc.addEventListener("selectionchange", onChange);
       this.docListeners.add(() => doc.removeEventListener("selectionchange", onChange));
 
-      // P0 修复: foliate 把 EPUB section 的 stylesheet 用 blob URL 加载,
-      // Obsidian CSP 拒绝 `blob:` 源的 stylesheet (style-src 不含 blob:).
-      // 修法: MutationObserver 监听 doc 的 <head> 变化, 看到
-      // `<link rel="stylesheet" href="blob:...">` 就 fetch 那个 URL, 转 inline
-      // `<style>` 注入. CSP 允许 'unsafe-inline' 所以 inline style 不被拒.
-      const inlineBlobStylesheets = (root: ParentNode): void => {
+      // P0 修复(扩展): foliate 1.0.1 把 EPUB section 的 CSS 包成 blob URL,
+      // Obsidian CSP 拒绝 `blob:` 源 stylesheet. foliate 同时用两种方式注入:
+      //   1) `<link rel="stylesheet" href="blob:...">` (老路径)
+      //   2) `<style>` 元素 textContent 里的 `@import "blob:..."` (新路径,
+      //      epub.js:871-876 把 `@import url(...)` 重写成 `@import "blob:..."`)
+      // 两种都 fetch blob + inline, 加上 `characterData` 监听 textContent in-place 修改.
+      const IMPORT_RE = /@import\s*["'](blob:[^"']+)["']/gi;
+      const inlineBlobLinkStyles = (root: ParentNode): void => {
         const links = root.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href^="blob:"]');
         links.forEach((link) => {
           const href = link.getAttribute("href");
           if (!href) return;
-          // 标记已处理, 避免重复 fetch (同一 blob URL 可能在多个 section 出现)
           if (link.dataset["ezReaderInlined"] === "1") return;
           link.dataset["ezReaderInlined"] = "1";
           fetch(href)
@@ -541,28 +598,59 @@ class FoliateSession implements ReaderSession {
               link.replaceWith(style);
             })
             .catch((error) => {
-              console.warn("[ez-reader] inlineBlobStylesheets failed", error);
-              // 失败: 移除 link (避免 console 持续报错), 让 EPUB 缺这一份样式
-              // 但其他 inline style 仍生效, 排版不会完全崩.
+              console.warn("[ez-reader] inlineBlobLinkStyles failed", error);
               link.remove();
             });
         });
       };
+      const inlineBlobImportStyles = (root: ParentNode): void => {
+        const styles = Array.from(root.querySelectorAll<HTMLStyleElement>("style"));
+        for (const style of styles) {
+          const text = style.textContent ?? "";
+          IMPORT_RE.lastIndex = 0;
+          if (!IMPORT_RE.test(text)) continue;
+          IMPORT_RE.lastIndex = 0;
+          const matches = [...text.matchAll(IMPORT_RE)];
+          if (matches.length === 0) continue;
+          if (style.dataset["ezReaderInlinedImports"] === "1") continue;
+          style.dataset["ezReaderInlinedImports"] = "1";
+          Promise.all(matches.map((m) => fetch(m[1]).then((r) => r.text())))
+            .then((cssTexts) => {
+              let newText = text;
+              let i = 0;
+              newText = newText.replace(IMPORT_RE, () => cssTexts[i++] ?? "");
+              style.dataset["ezReaderInlinedImports"] = "0";
+              style.textContent = newText;
+            })
+            .catch((error) => {
+              console.warn("[ez-reader] inlineBlobImportStyles failed", error);
+              style.dataset["ezReaderInlinedImports"] = "0";
+              // 失败: 把 @import 那行替成注释, 避免持续 CSP 报错
+              style.textContent = text.replace(IMPORT_RE, "/* failed @import */");
+            });
+        }
+      };
+      const scanAll = (root: ParentNode): void => {
+        inlineBlobLinkStyles(root);
+        inlineBlobImportStyles(root);
+      };
       const headObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
           for (const node of Array.from(mutation.addedNodes)) {
-            if (node instanceof HTMLLinkElement) {
-              inlineBlobStylesheets(doc);
+            if (node instanceof HTMLLinkElement || node instanceof HTMLStyleElement) {
+              scanAll(node);
             }
           }
-          inlineBlobStylesheets(doc);
+          scanAll(doc);
         }
       });
       if (doc.head) {
-        headObserver.observe(doc.head, { childList: true, subtree: true });
+        // characterData 监听 <style> textContent in-place 修改 (foliate
+        // 在 paginator 注入时会直接重写 style.textContent, 不会 addNode)
+        headObserver.observe(doc.head, { childList: true, subtree: true, characterData: true });
         this.docListeners.add(() => headObserver.disconnect());
       }
-      inlineBlobStylesheets(doc);
+      scanAll(doc);
 
       // P0 修复: foliate iframe 内的 keydown 事件不会 bubble 到 parent,
       // 所以 ReaderView 挂在 containerEl 的 keyboard listener 永远收不到
@@ -619,6 +707,22 @@ const countTocLeaves = (tree: ReadonlyArray<unknown>): number => {
   };
   walk(tree);
   return count;
+};
+
+/**
+ * Convert a foliate section payload into a flat text string. foliate
+ * section.load() returns either a `string` (raw HTML) or a `Document`
+ * (parsed). We strip tags uniformly via a single string walk — the
+ * output is only used for `indexOf` matching, so we don't need a real
+ * HTML parser.
+ */
+const extractTextFromSection = (payload: string | Document): string => {
+  if (typeof payload === "string") {
+    return payload.replace(/<[^>]*>/g, " ");
+  }
+  // Document: prefer `textContent` from body to avoid <head>/<script>.
+  const body = payload.body ?? payload.documentElement;
+  return body?.textContent ?? "";
 };
 
 /**

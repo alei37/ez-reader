@@ -99,11 +99,13 @@ export class CoverCache {
       }
       if (!extracted) return;
       const path = await this.writeCover(book, extracted.bytes, extracted.mimeType);
+      // P0-3 修复: 之前 `setCoverPath → loadCoverPaths → saveCoverPaths` 三步
+      // 之间有 race: 两个并发 caller 都读到旧 map, 后写的覆盖先写的, 丢一条
+      // coverPath. 现在 patchCoverPaths 在 mutate 内部读最新 cache 再 merge,
+      // 跟 patchSettings 一样的原子 read-modify-write. 同时先写磁盘再写内存 —
+      // 如果 patchCoverPaths 抛错, 内存状态不会被错误地标成 "有封面".
+      await this.annotations.patchCoverPaths((current) => ({ ...current, [book.id]: path }));
       this.library.setCoverPath(book.id, path);
-      // Persist alongside the rest of the annotation data so the path
-      // survives even if the covers directory goes missing.
-      const current = await this.annotations.loadCoverPaths();
-      await this.annotations.saveCoverPaths({ ...current, [book.id]: path });
     } catch (error) {
       console.warn(`[ez-reader] cover extraction failed for ${book.locator.path}`, error);
     } finally {

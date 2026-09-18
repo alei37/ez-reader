@@ -147,6 +147,7 @@ class StaticStore implements AnnotationStore {
   }
   async loadCoverPaths() { return {}; }
   async saveCoverPaths(): Promise<void> {}
+  async patchCoverPaths(): Promise<void> {}
   async getAddedAt(): Promise<number | null> { return null; }
   async setAddedAt(): Promise<void> {}
   async markOnboardingDismissed(): Promise<void> {}

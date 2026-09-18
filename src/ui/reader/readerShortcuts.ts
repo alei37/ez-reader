@@ -33,7 +33,8 @@ export type ShortcutAction =
   | "last"
   | "showHelp"
   | "escape"
-  | "copySelection";
+  | "copySelection"
+  | "openSearch";
 
 /**
  * Map a keyboard event to a shortcut action, or null if nothing matches.
@@ -49,8 +50,14 @@ export const routeShortcut = (
   shortcuts: KeyboardShortcuts,
   enabled = true
 ): ShortcutAction | null => {
-  // Alt / Ctrl / Meta — reserve for browser / OS, don't intercept.
-  if (event.altKey || event.ctrlKey || event.metaKey) return null;
+  // Alt — reserve for OS, don't intercept (browser / WM use it).
+  if (event.altKey) return null;
+
+  // Ctrl / Cmd + F → open search (跨平台 OS 习惯)。其他 Ctrl/Cmd 组合保留给
+  // Obsidian / 浏览器, 不抢。
+  if ((event.ctrlKey || event.metaKey) && event.key === "f" && !event.shiftKey) {
+    return "openSearch";
+  }
 
   // Escape — let Obsidian handle the priority order (close leaf > blur
   // > close panel) by NOT returning a shortcut here. Previously we always
@@ -60,6 +67,9 @@ export const routeShortcut = (
   // path inside ReaderView; this function returns null so Obsidian's
   // own handler still runs.
   if (event.key === "Escape") return "escape";
+
+  // 裸 Ctrl / Meta (无修饰键) — 让 Obsidian / OS 处理, 不拦截。
+  if (event.ctrlKey || event.metaKey) return null;
 
   const key = event.key.toLowerCase();
   const cfg = shortcuts;
@@ -108,6 +118,11 @@ export const routeShortcut = (
     case "c":
     case "C":
       return "copySelection";
+    // P1: find-in-book 快捷键 — Ctrl/Cmd+F 跨平台一致 + 裸 `/` (vim style)
+    // 都能打开. 注意 Ctrl/Cmd 修饰由外层 shortcut event 决定, routeShortcut
+    // 在 alt/ctrl/meta 时已 return null, 所以这里捕获的是裸键或裸 shift.
+    case "/":
+      return "openSearch";
   }
   return null;
 };

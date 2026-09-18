@@ -7,7 +7,8 @@ import type { LibraryService } from "../../core/services/LibraryService";
 import type { Bookmark } from "../../core/entities/Bookmark";
 import type { Excerpt } from "../../core/entities/Excerpt";
 import type { ReadingPosition } from "../../core/entities/ReadingState";
-import { findHighlightRect, findTextOnPage as findTextOnPageInLayer } from "../../core/pdf/highlight";
+import { findHighlightRect, findNextPageWithText, findTextOnPage as findTextOnPageInLayer } from "../../core/pdf/highlight";
+import { computeSelectionMenuPosition } from "./selectionMenuPosition";
 
 /**
  * 浮层 UI, 挂在 Obsidian 内置 PDFView 的 leaf 上, 提供:
@@ -146,6 +147,7 @@ export class PdfOverlay {
   private readonly notesBtn: HTMLElement;
   private readonly notesPanel: HTMLElement;
   private readonly highlightLayer: HTMLElement;
+  private readonly searchBar: HTMLElement;
   private readonly disposers: Array<() => void> = [];
   private readonly highlightsByExcerpt = new Map<string, RenderedHighlight>();
   private pendingSelection: PendingSelection | undefined;
@@ -153,6 +155,10 @@ export class PdfOverlay {
   private bookTitle = "";
   private targetLocale = "zh-CN";
   private mounted = false;
+  /** P1: in-PDF find state — see `runPdfSearch`. */
+  private pdfFindQuery = "";
+  private pdfFindCurrentPage: number | null = null;
+  private pdfFindMatchCount = 0;
   private readonly renderHighlightsDebounced: () => void;
   private readonly repositionHighlightsDebounced: () => void;
 
@@ -171,6 +177,10 @@ export class PdfOverlay {
       onClick: () => this.toggleNotesPanel()
     });
     this.highlightLayer = createHighlightLayer(document.body);
+    this.searchBar = createSearchBar(document.body, {
+      onSearch: (q, fromStart) => void this.runPdfSearch(q, fromStart),
+      onClose: () => this.closePdfSearch()
+    });
 
     this.renderHighlightsDebounced = debounce(() => void this.renderHighlights(), 250);
     this.repositionHighlightsDebounced = debounce(() => this.repositionHighlights(), 100);
@@ -400,6 +410,16 @@ export class PdfOverlay {
       const divs: HTMLElement[] = [];
       for (const rect of item.rects) {
         const div = drawHighlight(this.highlightLayer, rect, item.ex.id, item.ex.text);
+        // P1: 点击 highlight → 打开笔记面板 + scroll 到对应 entry + flash.
+        // 用 capture + closest 避免跟 PDFView 自身的 click 处理打架.
+        div.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!this.notesPanel.classList.contains("is-open")) {
+            this.toggleNotesPanel();
+          }
+          this.focusExcerptInPanel(item.ex.id);
+        });
         divs.push(div);
       }
       this.highlightsByExcerpt.set(item.ex.id, {
@@ -533,6 +553,8 @@ export class PdfOverlay {
     this.notesBtn.remove();
     this.notesPanel.remove();
     this.highlightLayer.remove();
+    this.searchBar.remove();
+    this.clearPdfSearchHighlights();
     this.pendingSelection = undefined;
     this.highlightsByExcerpt.clear();
     if (ATTACHED.get(this.opts.pdfLeaf) === this) {
@@ -762,7 +784,121 @@ export class PdfOverlay {
     }
     this.hideMenu();
   }
+
+  /**
+   * P1: in-PDF find. Walks PDFView text-layers page by page, looking for
+   * `query` after the current page. On a hit, scrolls the page into view
+   * + draws a yellow highlight rectangle. Updates the match count in the
+   * search bar so the user sees "1/12" style progress.
+   */
+  private async runPdfSearch(query: string, fromStart: boolean): Promise<void> {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      this.pdfFindQuery = "";
+      this.pdfFindMatchCount = 0;
+      updatePdfSearchStatus(this.searchBar, null);
+      return;
+    }
+    this.pdfFindQuery = trimmed;
+    const currentPage = fromStart
+      ? 1
+      : this.pdfFindCurrentPage !== null
+        ? this.pdfFindCurrentPage + 1
+        : findActivePageNumber(this.container) ?? 1;
+    const nextPage = findNextPageWithText(this.container, trimmed, currentPage);
+    if (nextPage === null) {
+      this.pdfFindMatchCount = 0;
+      updatePdfSearchStatus(this.searchBar, 0);
+      new Notice(`PDF 未找到 "${trimmed}"`);
+      return;
+    }
+    this.pdfFindCurrentPage = nextPage;
+    // 跳到那一页 (PDFView 是连续滚动模式)
+    const pageEl = findPageElement(this.container, nextPage);
+    pageEl?.scrollIntoView({ behavior: "smooth", block: "start" });
+    this.clearPdfSearchHighlights();
+    const rects = findHighlightRect(this.container, nextPage, trimmed);
+    if (rects) {
+      for (const r of rects.rects) {
+        const div = drawHighlight(this.highlightLayer, r, `__pdf_search__`, trimmed);
+        div.addClass("ez-reader__pdf-overlay-highlight--search");
+        this.pdfSearchHighlightDivs.push(div);
+      }
+      this.pdfFindMatchCount = 1;
+      const total = this.countPdfMatchesAcrossPages(trimmed);
+      updatePdfSearchStatus(this.searchBar, total);
+    } else {
+      updatePdfSearchStatus(this.searchBar, 1);
+    }
+  }
+
+  private pdfSearchHighlightDivs: HTMLElement[] = [];
+
+  private clearPdfSearchHighlights(): void {
+    for (const div of this.pdfSearchHighlightDivs) div.remove();
+    this.pdfSearchHighlightDivs = [];
+  }
+
+  private countPdfMatchesAcrossPages(query: string): number {
+    const pages = Array.from(
+      this.container.querySelectorAll<HTMLElement>(".pdf-page[data-page-number], .page[data-page-number]")
+    );
+    let count = 0;
+    const needle = query.toLocaleLowerCase();
+    for (const page of pages) {
+      const text = collectTextLayerSpans(page).map((s) => s.textContent ?? "").join("").toLocaleLowerCase();
+      let from = 0;
+      let idx: number;
+      while ((idx = text.indexOf(needle, from)) >= 0) {
+        count += 1;
+        from = idx + needle.length;
+        if (count > 999) return count;
+      }
+    }
+    return count;
+  }
+
+  private closePdfSearch(): void {
+    this.pdfFindQuery = "";
+    this.pdfFindMatchCount = 0;
+    this.pdfFindCurrentPage = null;
+    this.clearPdfSearchHighlights();
+    this.searchBar.classList.add("is-hidden");
+    updatePdfSearchStatus(this.searchBar, null);
+  }
+
+  /** Public toggle — exposed so the host can hotkey Ctrl+F. */
+  toggleSearchBar(): void {
+    const visible = !this.searchBar.classList.contains("is-hidden");
+    if (visible) this.closePdfSearch();
+    else {
+      this.searchBar.classList.remove("is-hidden");
+      const input = this.searchBar.querySelector<HTMLInputElement>("input");
+      input?.focus();
+    }
+  }
+
+  /**
+   * P1: 点击 PDF 黄条 → 笔记面板 focus 到对应 entry, 用 flash class
+   * 让用户视觉确认。
+   */
+  private focusExcerptInPanel(excerptId: string): void {
+    // 给所有 entry 加 transient class, 让 css 用 attribute selector 高亮.
+    // (renderNotesPanelContent 用 [data-excerpt-id] attribute 标识每个 row.)
+    const panel = this.notesPanel;
+    const target = panel.querySelector<HTMLElement>(`[data-excerpt-id="${cssEscapeAttr(excerptId)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("ez-reader__pdf-overlay-row--focus");
+    globalThis.setTimeout(() => target.classList.remove("ez-reader__pdf-overlay-row--focus"), 1500);
+  }
 }
+
+/** Escape an attribute selector value. PDF excerpt IDs come from randomUUID,
+ *  but contain dashes/digits — `[data-excerpt-id="..."]` 需要 escape 一些
+ *  特殊字符以防注入。 */
+const cssEscapeAttr = (value: string): string =>
+  value.replace(/(["\\\]])/g, "\\$1");
 
 // ---- DOM helpers ----
 
@@ -853,17 +989,16 @@ const showMenuAt = (menu: HTMLElement, rect: DOMRect): void => {
   // 先放屏幕外测尺寸, 避免 anchor 到错误位置
   menu.style.left = "-9999px";
   menu.style.top = "-9999px";
+  // P2: 复用 selectionMenuPosition 的纯函数 — 跟 ReaderSelectionMenu 用同一个
+  // 算法, 包括多行选区强制上方 + 视口边距约束, 行为一致。
   requestAnimationFrame(() => {
     const menuRect = menu.getBoundingClientRect();
-    const margin = 8;
-    let left = rect.left + rect.width / 2 - menuRect.width / 2;
-    let top = rect.bottom + margin;
-    if (top + menuRect.height > window.innerHeight - margin) {
-      top = rect.top - menuRect.height - margin;
-    }
-    left = Math.max(margin, Math.min(left, window.innerWidth - menuRect.width - margin));
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
+    const pos = computeSelectionMenuPosition(rect, menuRect, {
+      width: window.innerWidth,
+      height: window.innerHeight
+    });
+    menu.style.left = `${pos.left}px`;
+    menu.style.top = `${pos.top}px`;
   });
 };
 
@@ -893,6 +1028,98 @@ const createHighlightLayer = (parent: HTMLElement): HTMLElement => {
   layer.className = "ez-reader__pdf-overlay-highlight-layer";
   parent.appendChild(layer);
   return layer;
+};
+
+/**
+ * Create the floating search bar for in-PDF find. Same "fixed + viewport"
+ * pattern as ReaderSelectionMenu. Returns the root element; the host
+ * toggles `is-hidden` directly.
+ *
+ * Note: PDF overlay can't reuse the EPUB / PagedText `SearchBar` class
+ * because the host plumbing is different — Plugin.handleProtocol only
+ * knows about PdfOverlay, not ReaderView. Keeping it inline here.
+ */
+const createSearchBar = (
+  parent: HTMLElement,
+  handlers: { onSearch: (query: string, fromStart: boolean) => void; onClose: () => void }
+): HTMLElement => {
+  const bar = document.createElement("div");
+  bar.className = "ez-reader__pdf-overlay-search-bar is-hidden";
+  const input = bar.createEl("input", {
+    attr: { type: "search", placeholder: "搜索 PDF 文字……", "aria-label": "搜索 PDF" }
+  });
+  input.addClass("ez-reader__pdf-overlay-search-bar__input");
+  const status = bar.createEl("span", { text: "", cls: "ez-reader__pdf-overlay-search-bar__status" });
+  const nextBtn = bar.createEl("button", { text: "↓", attr: { type: "button", title: "下一处" } });
+  nextBtn.addClass("ez-reader__pdf-overlay-search-bar__btn");
+  const prevBtn = bar.createEl("button", { text: "↑", attr: { type: "button", title: "上一处" } });
+  prevBtn.addClass("ez-reader__pdf-overlay-search-bar__btn");
+  const closeBtn = bar.createEl("button", { text: "×", attr: { type: "button", title: "关闭" } });
+  closeBtn.addClass("ez-reader__pdf-overlay-search-bar__btn", "ez-reader__pdf-overlay-search-bar__close");
+
+  // 用闭包变量记 current query, Enter 时区分 fromStart vs next.
+  let lastQuery = "";
+  const commit = (fromStart: boolean): void => {
+    const value = input.value.trim();
+    lastQuery = value;
+    handlers.onSearch(value, fromStart);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit(event.shiftKey);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      handlers.onClose();
+    }
+  });
+  nextBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    commit(false);
+  });
+  prevBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    commit(true);
+  });
+  closeBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    handlers.onClose();
+  });
+
+  parent.appendChild(bar);
+  // 让 PdfOverlay 通过 querySelector 拿 input/status。
+  (bar as unknown as { __ezReaderInput: HTMLInputElement }).__ezReaderInput = input;
+  (bar as unknown as { __ezReaderStatus: HTMLElement }).__ezReaderStatus = status;
+  return bar;
+};
+
+/** Update the search status text. `null` clears, `0` shows "无匹配", `N` shows count. */
+const updatePdfSearchStatus = (bar: HTMLElement, count: number | null): void => {
+  const status = (bar as unknown as { __ezReaderStatus?: HTMLElement }).__ezReaderStatus;
+  if (!status) return;
+  if (count === null) {
+    status.setText("");
+    return;
+  }
+  if (count === 0) {
+    status.setText("无匹配");
+  } else {
+    status.setText(`${count} 处`);
+  }
+};
+
+/**
+ * Walk a PDF page element's text-layer and return the direct-child spans.
+ * Same logic as `core/pdf/highlight.ts` `collectTextLayerSpans` — kept
+ * local to avoid importing a private helper across the modules boundary.
+ */
+const collectTextLayerSpans = (pageEl: HTMLElement): HTMLElement[] => {
+  const textLayer = pageEl.querySelector(".textLayer");
+  if (!(textLayer instanceof HTMLElement)) return [];
+  return Array.from(textLayer.querySelectorAll(":scope > span")).filter(
+    (el): el is HTMLElement => el instanceof HTMLElement
+  );
 };
 
 interface NotesRenderHandlers {
@@ -932,6 +1159,7 @@ const renderNotesPanelContent = (
     panel.createEl("h4", { text: `摘录 (${excerpts.length})` });
     for (const ex of excerpts) {
       const row = panel.createEl("div", { cls: "ez-reader__pdf-overlay-notes-panel__row" });
+      row.setAttribute("data-excerpt-id", ex.id);
       row.createEl("div", { text: ex.text, cls: "excerpt" });
       const pos = ex.locator.position;
       if (pos.kind === "pdf") {

@@ -68,6 +68,7 @@ class InMemoryStore implements AnnotationStore {
   async patchSettings(): Promise<void> {}
   async loadCoverPaths(): Promise<Readonly<Record<string, string>>> { return {}; }
   async saveCoverPaths(): Promise<void> {}
+  async patchCoverPaths(): Promise<void> {}
   async getAddedAt(): Promise<number | null> { return null; }
   async setAddedAt(): Promise<void> {}
   async markOnboardingDismissed(): Promise<void> {}

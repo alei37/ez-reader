@@ -99,6 +99,10 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
     this.snapshot = { ...this.snapshot, coverPaths };
   }
+  async patchCoverPaths(patch: (paths: Record<string, string>) => Record<string, string>): Promise<void> {
+    const current = this.snapshot.coverPaths ?? {};
+    this.snapshot = { ...this.snapshot, coverPaths: patch(current) };
+  }
   async getAddedAt(): Promise<number | null> { return null; }
   async setAddedAt(bookId: string, addedAt: number): Promise<void> {
     const current = this.snapshot.addedAtByBookId ?? {};

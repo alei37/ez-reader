@@ -184,6 +184,32 @@ const guessTitleFromText = (text: string, fallback: string): string => {
   return fallback;
 };
 
+/**
+ * P1: 检测 TXT 当前页是否包含"章节标题"行, 返回第一个匹配的章节标题
+ * (中文古文 + 西方翻译小说通用)。模式尽量宽松:
+ * - `第X章` / `第X回` / `Chapter N` / `CHAPTER N`
+ * - 不区分全/半角、不区分大小写
+ *
+ * 返回 null 表示当前页没识别到章节标题 — caller 显示 fallback。
+ */
+export const detectChapterTitle = (text: string): string | null => {
+  const lines = text.split(/\r?\n/);
+  // 中文古文 / 翻译小说常见模式
+  const patterns: ReadonlyArray<RegExp> = [
+    /^[\s\u3000]*第\s*[0-9零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾]+\s*[章回节卷集篇]/u,
+    /^[\s\u3000]*chapter\s+[0-9]+(?:\s|$)/iu,
+    /^[\s\u3000]*CHAPTER\s+[IVXLCDM]+/u
+  ];
+  for (const line of lines.slice(0, 50)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.length > 60) continue;
+    for (const re of patterns) {
+      if (re.test(trimmed)) return trimmed;
+    }
+  }
+  return null;
+};
+
 export class TxtBookReader implements BookReader {
   async open(
     book: Book,
@@ -196,8 +222,19 @@ export class TxtBookReader implements BookReader {
     const fallbackTitle = book.locator.path.split("/").pop()?.replace(/\.txt$/i, "") ?? "TXT";
     const title = guessTitleFromText(text, fallbackTitle);
     const pages = splitTextIntoPages(text);
+    // P1: 给每个 page 标 chapterTitle — 用页面开头文本匹配章节模式,
+    // 没匹配到就继承上一页 (fallback 到书 title)。
+    let lastChapter = title;
+    const enrichedPages = pages.map((page, idx) => {
+      // 把 HTML 转回纯文本再检测 (splitTextIntoPages 已经 escape 过 HTML,
+      // 但 <p>/<br> 还在 — 简单 strip 后再匹配)。
+      const plainText = page.html.replace(/<[^>]*>/g, " ");
+      const detected = idx === 0 ? title : detectChapterTitle(plainText);
+      if (detected) lastChapter = detected;
+      return { ...page, chapterTitle: lastChapter };
+    });
     const content: PagedTextContent = {
-      pages,
+      pages: enrichedPages,
       toc: [{ id: "txt-root", label: title, depth: 0 }],
       chapterStartPages: [0]
     };

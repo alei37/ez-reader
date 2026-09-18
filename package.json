@@ -33,6 +33,11 @@
     "translation"
   ],
   "license": "MIT",
+  "pnpm": {
+    "patchedDependencies": {
+      "foliate-js@1.0.1": "patches/foliate-js@1.0.1.patch"
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.15.2",
     "esbuild": "^0.25.2",

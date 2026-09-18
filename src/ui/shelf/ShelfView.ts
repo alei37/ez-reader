@@ -5,12 +5,25 @@ import type { ReadingService } from "../../core/services/ReadingService";
 import type { BookReader } from "../../core/ports/BookReader";
 import type { CoverCache } from "../../adapters/obsidian/CoverCache";
 import { DEFAULT_SORT, emptyFilter, type ShelfFilter, type SortCriterion } from "../../core/types/ShelfFilter";
+import { SHELF_DENSITIES, type PluginSettings, type ShelfDensity } from "../../core/types/ReaderSettings";
 import { AddToLibraryModal } from "./AddToLibraryModal";
 import { OnboardingModal } from "./OnboardingModal";
 import { ShelfFiltersModal } from "./ShelfFilters";
-import { ShelfToolbar, type ViewMode } from "./ShelfToolbar";
+import { nextShelfDensity, ShelfToolbar, type ViewMode } from "./ShelfToolbar";
 import { renderGridItem } from "./ShelfGridItem";
 import { renderListItem } from "./ShelfListItem";
+
+/**
+ * Minimal slice of AnnotationStore the shelf needs for per-user UI
+ * preferences (currently just `shelfDensity`). Decoupled from the full
+ * port so tests / mock implementations don't need to wire up
+ * `onSettingsChanged` to satisfy the type.
+ */
+interface ShelfSettingsStore {
+  listSettings(): Promise<PluginSettings>;
+  patchSettings(patch: (settings: PluginSettings) => PluginSettings): Promise<void>;
+  onSettingsChanged(listener: (settings: PluginSettings) => void): () => void;
+}
 
 export const SHELF_VIEW_TYPE = "ez-reader-shelf";
 
@@ -27,6 +40,8 @@ interface ShelfViewDeps {
     hasOnboardingBeenDismissed(): Promise<boolean>;
     markOnboardingDismissed(): Promise<void>;
   };
+  /** Settings store slice — shelf density persists here. */
+  readonly settingsStore?: ShelfSettingsStore;
 }
 
 export class ShelfView extends ItemView {
@@ -37,7 +52,9 @@ export class ShelfView extends ItemView {
   private mode: ViewMode = "grid";
   private filter: ShelfFilter = emptyFilter();
   private sort: SortCriterion = DEFAULT_SORT;
+  private shelfDensity: ShelfDensity = "default";
   private unsubscribe: (() => void) | undefined;
+  private settingsUnsubscribe: (() => void) | undefined;
   private promptedForFirstImport = false;
 
   constructor(leaf: WorkspaceLeaf, deps: ShelfViewDeps) {
@@ -81,7 +98,8 @@ export class ShelfView extends ItemView {
           this.renderRefresh();
         },
         onAddToLibrary: () => this.openAddToLibrary(),
-        onAddAllToLibrary: () => void this.addAllToLibrary()
+        onAddAllToLibrary: () => void this.addAllToLibrary(),
+        onCycleShelfDensity: () => void this.cycleShelfDensity()
       },
       this.toolbarState()
     );
@@ -92,11 +110,55 @@ export class ShelfView extends ItemView {
     this.body = container.createDiv({ cls: "ez-reader__shelf__body" });
     this.emptyState = container.createDiv({ cls: "ez-reader__shelf__empty" });
 
+    // 同步初始 settings (shelfDensity), 然后订阅跨 view 变化
+    // (SettingsTab 改了也会反映到 shelf). 不阻塞 onOpen — 等数据回来
+    // 再用 scheduleRefresh 走 debounced 路径, 避免首屏白闪.
+    void this.loadAndApplyShelfDensity();
+    if (this.deps.settingsStore) {
+      this.settingsUnsubscribe = this.deps.settingsStore.onSettingsChanged(() => {
+        void this.loadAndApplyShelfDensity();
+      });
+    }
+
     // library.subscribe 走 scheduleRefresh (100ms debounce), 防止一次性加 100 本书
     // 导致 100 次 renderRefresh. 用户主动 search / sort 走 renderRefresh (即时).
     this.unsubscribe = this.deps.library.subscribe(() => this.scheduleRefresh());
     this.renderRefresh();
     this.maybePromptForFirstImport();
+  }
+
+  private async loadAndApplyShelfDensity(): Promise<void> {
+    if (!this.deps.settingsStore) return;
+    try {
+      const settings = await this.deps.settingsStore.listSettings();
+      const raw = settings.shelfDensity ?? "default";
+      const density = SHELF_DENSITIES.includes(raw) ? raw : "default";
+      if (density !== this.shelfDensity) {
+        this.shelfDensity = density;
+        this.applyShelfDensityToDom();
+        this.toolbar.update(this.toolbarState());
+      }
+    } catch (error) {
+      // settings 加载失败 — 静默 fallback default, 不打扰用户
+      console.warn("[ez-reader] failed to load shelfDensity", error);
+    }
+  }
+
+  private applyShelfDensityToDom(): void {
+    if (this.body) this.body.setAttribute("data-shelf-density", this.shelfDensity);
+  }
+
+  private async cycleShelfDensity(): Promise<void> {
+    const next = nextShelfDensity(this.shelfDensity);
+    this.shelfDensity = next;
+    this.applyShelfDensityToDom();
+    this.toolbar.update(this.toolbarState());
+    if (!this.deps.settingsStore) return;
+    try {
+      await this.deps.settingsStore.patchSettings((s) => ({ ...s, shelfDensity: next }));
+    } catch (error) {
+      console.warn("[ez-reader] failed to persist shelfDensity", error);
+    }
   }
 
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -120,6 +182,8 @@ export class ShelfView extends ItemView {
   async onClose(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    this.settingsUnsubscribe?.();
+    this.settingsUnsubscribe = undefined;
     if (this.refreshTimer !== undefined) {
       globalThis.clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -234,7 +298,8 @@ export class ShelfView extends ItemView {
       sort: this.sort,
       totalCount: stats.inLibrary,
       visibleCount: visible,
-      availableCount: stats.total - stats.inLibrary
+      availableCount: stats.total - stats.inLibrary,
+      shelfDensity: this.shelfDensity
     };
   }
 
@@ -243,6 +308,8 @@ export class ShelfView extends ItemView {
     this.body.empty();
     this.body.removeClass("is-grid", "is-list");
     this.body.addClass(this.mode === "grid" ? "is-grid" : "is-list");
+    // 保持密度属性 — 切 grid/list 不应该丢 density
+    this.body.setAttribute("data-shelf-density", this.shelfDensity);
 
     if (entries.length === 0) {
       this.renderEmptyState();

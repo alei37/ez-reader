@@ -7,6 +7,7 @@ import { ObsidianNoteWriter } from "./adapters/obsidian/ObsidianNoteWriter";
 import { FoliateBookReader } from "./adapters/foliate/FoliateBookReader";
 import { TxtBookReader } from "./adapters/text/TxtBookReader";
 import { MobiBookReader } from "./adapters/text/MobiBookReader";
+import { PdfCoverExtractor } from "./adapters/obsidian/PdfCoverExtractor";
 import { GoogleTranslationProvider } from "./adapters/translation/GoogleTranslationProvider";
 import { YoudaoTranslationProvider } from "./adapters/translation/YoudaoTranslationProvider";
 import { DeeplTranslationProvider } from "./adapters/translation/DeeplTranslationProvider";
@@ -46,6 +47,7 @@ export default class EzReaderPlugin extends Plugin {
   private foliate!: BookReader;
   private txtReader!: BookReader;
   private mobiReader!: BookReader;
+  private pdfCover!: PdfCoverExtractor;
   private covers!: CoverCache;
   private noteWriter!: NoteWriter;
   /**
@@ -69,6 +71,12 @@ export default class EzReaderPlugin extends Plugin {
     this.foliate = new FoliateBookReader();
     this.txtReader = new TxtBookReader();
     this.mobiReader = new MobiBookReader();
+    // P1: PDF cover extraction uses Obsidian's bundled pdf.js (the same
+    // instance the built-in PDFView uses). Reusing it avoids shipping
+    // ~2MB of vendored pdf.js + a worker — and crucially avoids
+    // overwriting `globalThis.pdfjsLib`, which would otherwise make
+    // Obsidian's PDFView crash with a worker version mismatch.
+    this.pdfCover = new PdfCoverExtractor();
     const metadataReader: BookReader = {
       // metadataReader 只用于 readMetadata, open/extractCover 永远不会被调用
       // (它们走 textReader / foliate dispatcher). 这里保留接口实现避免
@@ -96,7 +104,13 @@ export default class EzReaderPlugin extends Plugin {
       metadataReader,
       this.makeBookBytesLoader()
     );
-    this.reading = new ReadingService(this.annotationStore);
+    this.reading = new ReadingService(
+      this.annotationStore,
+      // 同步 LibraryService.entries + emit shelf refresh, 否则 reader 翻页
+      // 写完 data.json 后 shelf 仍然显示旧进度, 关闭 → 重开 reader 也不
+      // resume (entry.reading 是 library.entries 的旧快照).
+      (state) => this.library.updateReading(state)
+    );
     this.translation = new TranslationCoordinator(this.annotationStore, [
       new YoudaoTranslationProvider(),
       new DeeplTranslationProvider(),
@@ -105,6 +119,7 @@ export default class EzReaderPlugin extends Plugin {
     // Settings 改完立即 bust translation 30s cache, 让下一次 translate 拿到新 provider / key.
     this.annotationStore.onSettingsChanged(() => this.translation.invalidate());
     // P1 之后: ez-reader 不再写 PDF 渲染。PDF 走 Obsidian 内置 viewer (PDF++ 接管)。
+    // 封面仍然走我们自己的 pdf.js (只渲染首页, 不接管整本 PDF 渲染)。
     // TXT 没封面 (返回 null), 不注册 — CoverCache 走占位封面。
     this.covers = new CoverCache(
       this.app,
@@ -113,7 +128,8 @@ export default class EzReaderPlugin extends Plugin {
       {
         epub: this.foliate,
         mobi: this.mobiReader,
-        azw3: this.mobiReader
+        azw3: this.mobiReader,
+        pdf: this.pdfCover
       },
       this.annotationStore
     );
@@ -179,7 +195,10 @@ export default class EzReaderPlugin extends Plugin {
       covers: this.covers,
       bookBytesLoader: this.makeBookBytesLoader(),
       // Onboarding 模态需要持久化 dismissal 标志 — 透传 annotationStore
-      annotationStore: this.annotationStore
+      annotationStore: this.annotationStore,
+      // Shelf density 等 shelf-only 的设置也走这里, 不暴露 patchSettings
+      // 全部能力 — ShelfView 只需要读 + 写这一个字段, 锁死最小接口.
+      settingsStore: this.annotationStore
     };
   }
 

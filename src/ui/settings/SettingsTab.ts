@@ -5,8 +5,11 @@ import type { TranslationProvider } from "../../core/ports/TranslationProvider";
 import { isUiLocale, UI_LOCALES, type UiLocale } from "../../core/types/Locale";
 import {
   DEFAULT_READER_APPEARANCE,
+  SHELF_DENSITIES,
+  SHELF_DENSITY_LABELS,
   type PluginSettings,
   type ReaderTheme,
+  type ShelfDensity,
   type TranslationSettings
 } from "../../core/types/ReaderSettings";
 
@@ -473,6 +476,22 @@ export class SettingsTab extends PluginSettingTab {
           text.setValue(s.libraryOwnerName);
         });
         text.onChange((value) => saveOwner(value));
+      });
+    new Setting(containerEl)
+      .setName("书架封面密度")
+      .setDesc("影响网格列数和列表封面尺寸。紧凑=每行多本,超大=每行一本大封面。")
+      .addDropdown((dropdown) => {
+        for (const density of SHELF_DENSITIES) {
+          dropdown.addOption(density, SHELF_DENSITY_LABELS[density]);
+        }
+        void this.loadSettings().then((s) => {
+          const raw = s.shelfDensity ?? "default";
+          dropdown.setValue(SHELF_DENSITIES.includes(raw) ? raw : "default");
+        });
+        dropdown.onChange(async (value) => {
+          if (!SHELF_DENSITIES.includes(value as ShelfDensity)) return;
+          await this.annotations.patchSettings((s) => ({ ...s, shelfDensity: value as ShelfDensity }));
+        });
       });
   }
 

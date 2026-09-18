@@ -64,6 +64,43 @@
   color: var(--text-muted);
 }
 
+/* Density cycle button: 显示当前档位名, 点击循环下一档 */
+.ez-reader__shelf-toolbar__density {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: border-color 120ms, background 120ms;
+}
+
+.ez-reader__shelf-toolbar__density:hover {
+  border-color: var(--interactive-accent);
+}
+
+.ez-reader__shelf-toolbar__density__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.ez-reader__shelf-toolbar__density__icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .ez-reader__shelf__body {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -72,7 +109,7 @@
 
 .ez-reader__shelf__body.is-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--ez-reader-shelf-cover-min, 220px), 1fr));
   gap: 24px;
 }
 
@@ -80,6 +117,30 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* ---- Shelf density (用户可调, 4 档) ----
+   compact / default / spacious / large — 影响 grid 列最小宽度 和 list cover
+   像素尺寸. CSS 变量驱动, JS 只设 data-shelf-density, 不直接改 width. */
+.ez-reader__shelf__body[data-shelf-density="compact"] {
+  --ez-reader-shelf-cover-min: 160px;
+  --ez-reader-shelf-list-cover: 28px;
+  --ez-reader-shelf-list-info-max: 1fr;
+}
+.ez-reader__shelf__body[data-shelf-density="default"] {
+  --ez-reader-shelf-cover-min: 220px;
+  --ez-reader-shelf-list-cover: 40px;
+  --ez-reader-shelf-list-info-max: 1fr;
+}
+.ez-reader__shelf__body[data-shelf-density="spacious"] {
+  --ez-reader-shelf-cover-min: 280px;
+  --ez-reader-shelf-list-cover: 56px;
+  --ez-reader-shelf-list-info-max: 1fr;
+}
+.ez-reader__shelf__body[data-shelf-density="large"] {
+  --ez-reader-shelf-cover-min: 340px;
+  --ez-reader-shelf-list-cover: 72px;
+  --ez-reader-shelf-list-info-max: 1fr;
 }
 
 .ez-reader__shelf__empty {
@@ -146,7 +207,7 @@
 }
 
 .ez-reader__shelf-grid__cover {
-  aspect-ratio: 3 / 4;
+  aspect-ratio: var(--ez-reader-shelf-cover-aspect, 3 / 4);
 }
 
 .ez-reader__shelf-grid__cover img,
@@ -207,19 +268,32 @@
 .ez-reader__shelf-grid__cover-glyph {
   font-size: 42px;
   font-weight: 700;
-  color: var(--text-muted);
+  color: inherit;
   line-height: 1;
 }
 
 .ez-reader__shelf-grid__cover-title {
   font-size: 11px;
-  color: var(--text-muted);
+  color: inherit;
+  opacity: 0.85;
   text-align: center;
   display: -webkit-box;
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
   word-break: break-word;
+}
+
+/* Placeholder covers set their color inline (light vs dark mode chosen by
+   the utility). Children inherit it. When an actual cover image loads,
+   the cover has no inline color — the children fall back to --text-muted
+   below so they keep working in non-placeholder mode. */
+.ez-reader__shelf-grid__cover.has-image .ez-reader__shelf-grid__cover-glyph,
+.ez-reader__shelf-grid__cover.has-image .ez-reader__shelf-grid__cover-title,
+.ez-reader__shelf-grid__cover:not(.is-placeholder) .ez-reader__shelf-grid__cover-glyph,
+.ez-reader__shelf-grid__cover:not(.is-placeholder) .ez-reader__shelf-grid__cover-title {
+  color: var(--text-muted);
+  opacity: 1;
 }
 
 .ez-reader__shelf-grid__author {
@@ -240,8 +314,9 @@
 }
 
 .ez-reader__shelf-list__cover {
-  width: 40px;
-  height: 56px;
+  width: var(--ez-reader-shelf-list-cover, 40px);
+  aspect-ratio: 3 / 4;
+  height: auto;
   border-radius: 4px;
   flex-shrink: 0;
 }
@@ -973,6 +1048,23 @@
   flex: 1 1 0;
 }
 
+.ez-reader__appearance-modal__font-families {
+  display: flex;
+  gap: 6px;
+  flex: 1 1 auto;
+}
+
+.ez-reader__appearance-modal__font-families button {
+  flex: 1 1 0;
+  /* Pill 自身体现字体样式 — 用户选中前能预览. */
+  font-size: 13px;
+}
+.ez-reader__appearance-modal__font-families button.ez-reader__pill--sans { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.ez-reader__appearance-modal__font-families button.ez-reader__pill--serif { font-family: Georgia, "Source Serif Pro", "Songti SC", serif; }
+.ez-reader__appearance-modal__font-families button.ez-reader__pill--mono { font-family: "JetBrains Mono", Menlo, Consolas, monospace; }
+.ez-reader__appearance-modal__font-families button.ez-reader__pill--song { font-family: "Songti SC", "STSong", "SimSun", serif; }
+.ez-reader__appearance-modal__font-families button.ez-reader__pill--kai { font-family: "Kaiti SC", "STKaiti", cursive, serif; }
+
 /* Reader themes — light/dark/sepia tint the stage background. */
 .ez-reader__theme-light .ez-reader__pdf-stage {
   background: #f4f4f5;
@@ -1084,10 +1176,34 @@
   gap: 8px;
   padding: 6px 8px;
   border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
 }
 
 .ez-reader__add-modal__row:hover {
   background: var(--background-modifier-hover);
+}
+
+.ez-reader__add-modal__row.is-selected {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.ez-reader__add-modal__row.is-selected .ez-reader__add-modal__row__path,
+.ez-reader__add-modal__row.is-selected .ez-reader__add-modal__row__format {
+  color: var(--text-on-accent);
+  opacity: 0.85;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.ez-reader__add-modal__row.is-selected .ez-reader__add-modal__row__cover.is-placeholder {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.ez-reader__add-modal__row input[type="checkbox"] {
+  cursor: pointer;
+  margin: 0;
+  flex: 0 0 auto;
 }
 
 .ez-reader__add-modal__row__cover {
@@ -1296,6 +1412,37 @@
   color: var(--text-accent);
 }
 
+.ez-reader__notes-panel__note-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+.ez-reader__notes-panel__note-toggle:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.ez-reader__notes-panel__note-toggle:focus-visible {
+  box-shadow: 0 0 0 2px var(--interactive-accent);
+}
+.ez-reader__notes-panel__note-toggle-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ez-reader__notes-panel__note-toggle-arrow {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.7;
+}
 .ez-reader__notes-panel__note {
   margin: 4px 0 0;
   padding: 4px 8px;
@@ -1303,6 +1450,17 @@
   background: var(--background-modifier-hover);
   font-size: 12px;
   color: var(--text-normal);
+  white-space: pre-wrap;
+  /* 默认收起: 前 1 行折叠, 展开看完整 */
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ez-reader__notes-panel__note.is-expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
 }
 
 .ez-reader__notes-panel__actions {
@@ -1415,6 +1573,27 @@
 /* 减弱动画偏好 (用户操作系统设置) 时直接显示, 不滑 */
 @media (prefers-reduced-motion: reduce) {
   .ez-reader__reader__stage > foliate-view[class*="ez-reader__page-loaded"] {
+    animation: none !important;
+  }
+}
+
+/* === PagedText 翻页动画 ===
+ * 跟 foliate 走同样的三向动画, 微信读书风格。
+ * PagedText 直接渲染到 host DOM (无 iframe), pageEl 是 article 元素。
+ * 动画结束后 listener 移除 class, 多次翻页不叠加。
+ */
+.ez-reader__paged-text-page.ez-reader__page-loaded--forward {
+  animation: ez-reader__page-slide-forward 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ez-reader__paged-text-page.ez-reader__page-loaded--backward {
+  animation: ez-reader__page-slide-backward 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ez-reader__paged-text-page.ez-reader__page-loaded--initial {
+  animation: ez-reader__page-fade-in 260ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ez-reader__paged-text-page[class*="ez-reader__page-loaded"] {
     animation: none !important;
   }
 }
@@ -1798,6 +1977,262 @@
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
+}
+
+/* === Notes panel tag filter chip ===
+ * 用户点击标签过滤后显示 — 让用户清楚当前在看哪个标签的笔记。
+ * × 按钮清空过滤。
+ */
+.ez-reader__notes-panel__tag-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 8px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-radius: 999px;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.ez-reader__notes-panel__tag-filter-clear {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+/* === Notes panel tag button ===
+ * 笔记卡片里的标签 — 改为可点击的小 pill, 跟之前纯文本不同。
+ */
+.ez-reader__notes-panel__tag-btn {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-right: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.ez-reader__notes-panel__tag-btn:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-color: var(--interactive-accent);
+}
+
+/* === Search Bar (find-in-book) ===
+ * 浮在 reader 顶部中央 — 跟 selection menu 同级, 但 viewport 定位。
+ * 用 backdrop-filter 跟 toolbar 视觉协调 (玻璃感), 移动端友好。
+ */
+.ez-reader__search-bar {
+  position: fixed;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.16);
+  z-index: 300;
+  font-size: 13px;
+  min-width: 360px;
+  max-width: 80vw;
+}
+
+@media (max-width: 700px) {
+  .ez-reader__search-bar {
+    top: 64px;
+    min-width: 0;
+    width: calc(100vw - 24px);
+    max-width: none;
+  }
+}
+
+/* PDF overlay search bar — 与 reader search bar 视觉一致, 但定位在
+ * PDF 视口右上方避免遮盖 PDF 内容。 */
+.ez-reader__pdf-overlay-search-bar {
+  position: fixed;
+  top: 56px;
+  right: 56px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.16);
+  z-index: 300;
+  font-size: 13px;
+}
+
+.ez-reader__pdf-overlay-search-bar.is-hidden {
+  display: none;
+}
+
+.ez-reader__pdf-overlay-search-bar__input {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font: inherit;
+}
+
+.ez-reader__pdf-overlay-search-bar__input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.ez-reader__pdf-overlay-search-bar__btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+
+.ez-reader__pdf-overlay-search-bar__btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ez-reader__pdf-overlay-search-bar__close {
+  font-size: 16px;
+}
+
+.ez-reader__pdf-overlay-search-bar__status {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 4px;
+  min-width: 4ch;
+  text-align: center;
+}
+
+/* 搜索时画的高亮 — 跟普通 highlight 同色, 但 z-index 高一些不被遮。 */
+.ez-reader__pdf-overlay-highlight--search {
+  z-index: 2;
+}
+
+/* P1: 点击 PDF 黄条 → 笔记面板 focus flash. */
+.ez-reader__pdf-overlay-row--focus {
+  background: var(--interactive-accent) !important;
+  color: var(--text-on-accent) !important;
+  transition: background 0.6s ease, color 0.6s ease;
+}
+
+/* 高亮 div 现在可点击 — cursor 提示 + hover 微亮。 */
+.ez-reader__pdf-overlay-highlight {
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.ez-reader__pdf-overlay-highlight:hover {
+  filter: brightness(1.15);
+}
+
+.ez-reader__search-bar.is-hidden {
+  display: none;
+}
+
+.ez-reader__search-bar__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font: inherit;
+}
+
+.ez-reader__search-bar__input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.ez-reader__search-bar__btn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+
+.ez-reader__search-bar__btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ez-reader__search-bar__close {
+  font-size: 18px;
+}
+
+/* === Toolbar page label ===
+ * "N / M" 页码指示 — 在 toolbar nav-row 末尾显示. PDF 这种有真实页码的格式
+ * 关键信息, 微信读书风格。
+ */
+.ez-reader__reader-toolbar__page-label {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 0 6px;
+  flex: 0 0 auto;
+}
+
+.ez-reader__reader-toolbar__page-label.is-hidden {
+  display: none;
+}
+
+/* === Toolbar reading time ===
+ * 累计阅读时长 — 在 chapter label 下方小字显示. 让用户对自己花了多少时间
+ * 在这本书有直观感觉。
+ */
+.ez-reader__reader-toolbar__reading-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 2px;
+  text-align: center;
+}
+
+.ez-reader__reader-toolbar__reading-time.is-hidden {
+  display: none;
+}
+
+/* === Search button icon === */
+.ez-reader__reader-toolbar__search-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+}
+
+.ez-reader__reader-toolbar__search-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 /* === Settings === */

@@ -1,6 +1,11 @@
 import { Modal } from "obsidian";
 import type { App } from "obsidian";
-import type { ReaderAppearance, ReaderTheme } from "../../core/types/ReaderSettings";
+import type {
+  ReaderAppearance,
+  ReaderFontFamily,
+  ReaderTheme
+} from "../../core/types/ReaderSettings";
+import { READER_FONT_FAMILY_LABELS } from "../../core/types/ReaderSettings";
 
 const FONT_SIZE_MIN = 60;
 const FONT_SIZE_MAX = 200;
@@ -8,8 +13,13 @@ const LINE_HEIGHT_MIN = 1.0;
 const LINE_HEIGHT_MAX = 2.4;
 const MARGIN_MIN = 0;
 const MARGIN_MAX = 80;
+const LETTER_SPACING_MIN = 0;
+const LETTER_SPACING_MAX = 0.1; // em
+const MAX_WIDTH_MIN = 480;
+const MAX_WIDTH_MAX = 1200;
 
 const THEMES: ReaderTheme[] = ["system", "light", "dark", "sepia"];
+const FONT_FAMILIES: ReaderFontFamily[] = ["sans", "serif", "mono", "song", "kai"];
 
 const themeLabel = (theme: ReaderTheme): string => {
   switch (theme) {
@@ -26,8 +36,8 @@ const themeLabel = (theme: ReaderTheme): string => {
 
 /**
  * Simple inline modal for tuning reader appearance: font size, line height,
- * page margin, and theme. Resolves to the chosen appearance, or null if
- * the user cancelled.
+ * page margin, theme, font family, letter spacing, and max content width.
+ * Resolves to the chosen appearance, or null if the user cancelled.
  */
 export class AppearanceModal extends Modal {
   private resolver: ((appearance: ReaderAppearance | null) => void) | null = null;
@@ -39,12 +49,20 @@ export class AppearanceModal extends Modal {
   private marginInput!: HTMLInputElement;
   private marginValue!: HTMLElement;
   private themeButtons: Map<ReaderTheme, HTMLButtonElement> = new Map();
+  private fontFamilyButtons: Map<ReaderFontFamily, HTMLButtonElement> = new Map();
+  private letterSpacingInput!: HTMLInputElement;
+  private letterSpacingValue!: HTMLElement;
+  private maxWidthInput!: HTMLInputElement;
+  private maxWidthValue!: HTMLElement;
   private chosenTheme: ReaderTheme;
+  private chosenFontFamily: ReaderFontFamily;
 
   constructor(app: App, initial: ReaderAppearance) {
     super(app);
     this.initial = initial;
     this.chosenTheme = initial.theme;
+    // Defaults for fields that may be undefined on older saved appearances.
+    this.chosenFontFamily = initial.fontFamily ?? "serif";
   }
 
   onOpen(): void {
@@ -100,6 +118,49 @@ export class AppearanceModal extends Modal {
       this.themeButtons.set(theme, btn);
     }
 
+    // --- Font family ---
+    const fontFamilyRow = contentEl.createDiv({ cls: "ez-reader__appearance-modal__row" });
+    fontFamilyRow.createEl("label", { text: "字体" });
+    const fontFamilyWrap = fontFamilyRow.createDiv({ cls: "ez-reader__appearance-modal__font-families" });
+    for (const family of FONT_FAMILIES) {
+      const btn = fontFamilyWrap.createEl("button", { text: READER_FONT_FAMILY_LABELS[family], attr: { type: "button" } });
+      btn.addClass("ez-reader__pill", `ez-reader__pill--font-${family}`);
+      btn.toggleClass("is-active", family === this.chosenFontFamily);
+      btn.addEventListener("click", () => {
+        this.chosenFontFamily = family;
+        for (const [other, otherBtn] of this.fontFamilyButtons) {
+          otherBtn.toggleClass("is-active", other === family);
+        }
+      });
+      this.fontFamilyButtons.set(family, btn);
+    }
+
+    // --- Letter spacing ---
+    const letterSpacingRow = contentEl.createDiv({ cls: "ez-reader__appearance-modal__row" });
+    letterSpacingRow.createEl("label", { text: "字间距" });
+    const initialLetterSpacing = this.initial.letterSpacing ?? 0;
+    this.letterSpacingInput = letterSpacingRow.createEl("input", {
+      attr: { type: "range", min: String(LETTER_SPACING_MIN), max: String(LETTER_SPACING_MAX), step: "0.01" }
+    });
+    this.letterSpacingInput.value = String(initialLetterSpacing);
+    this.letterSpacingValue = letterSpacingRow.createEl("span", { text: `${initialLetterSpacing.toFixed(2)}em` });
+    this.letterSpacingInput.addEventListener("input", () => {
+      this.letterSpacingValue.setText(`${Number(this.letterSpacingInput.value).toFixed(2)}em`);
+    });
+
+    // --- Max content width ---
+    const maxWidthRow = contentEl.createDiv({ cls: "ez-reader__appearance-modal__row" });
+    maxWidthRow.createEl("label", { text: "文本宽度" });
+    const initialMaxWidth = this.initial.maxWidth ?? 720;
+    this.maxWidthInput = maxWidthRow.createEl("input", {
+      attr: { type: "range", min: String(MAX_WIDTH_MIN), max: String(MAX_WIDTH_MAX), step: "20" }
+    });
+    this.maxWidthInput.value = String(initialMaxWidth);
+    this.maxWidthValue = maxWidthRow.createEl("span", { text: `${initialMaxWidth}px` });
+    this.maxWidthInput.addEventListener("input", () => {
+      this.maxWidthValue.setText(`${this.maxWidthInput.value}px`);
+    });
+
     // --- Actions ---
     const actions = contentEl.createDiv({ cls: "ez-reader__modal-actions" });
     const cancel = actions.createEl("button", { text: "取消", attr: { type: "button" } });
@@ -128,7 +189,10 @@ export class AppearanceModal extends Modal {
       lineHeight: Number(this.lineHeightInput.value),
       margin: Number(this.marginInput.value),
       theme: this.chosenTheme,
-      flow: this.initial.flow
+      flow: this.initial.flow,
+      fontFamily: this.chosenFontFamily,
+      letterSpacing: Number(this.letterSpacingInput.value),
+      maxWidth: Number(this.maxWidthInput.value)
     };
     this.close();
     resolver?.(appearance);

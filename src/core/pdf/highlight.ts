@@ -116,3 +116,51 @@ export const findHighlightRect = (
   if (rects.length === 0) return null;
   return { pageNumber, rects };
 };
+
+/**
+ * Find the next page (after `fromPage`) that contains `searchText` in its
+ * text-layer. Returns the page number (1-based) or null when no match is
+ * found across all visible pages. Capped at `maxPages` to keep the scan
+ * bounded for huge PDFs — the caller can re-call to keep searching if the
+ * user opts to "wrap around".
+ *
+ * Used by the in-PDF search bar to advance between matches when the user
+ * presses Enter / clicks ↓.
+ */
+export const findNextPageWithText = (
+  container: HTMLElement,
+  searchText: string,
+  fromPage: number,
+  options: { maxPages?: number; caseSensitive?: boolean } = {}
+): number | null => {
+  if (!searchText.trim()) return null;
+  const maxPages = options.maxPages ?? 200;
+  const caseSensitive = options.caseSensitive === true;
+  const needle = caseSensitive ? searchText : searchText.toLocaleLowerCase();
+  const allPages = Array.from(
+    container.querySelectorAll<HTMLElement>(".pdf-page[data-page-number], .page[data-page-number]")
+  );
+  if (allPages.length === 0) return null;
+  // Sort by data-page-number so callers can rely on deterministic order.
+  const pages = allPages
+    .map((el) => Number(el.getAttribute("data-page-number") ?? "0"))
+    .filter((n) => n > 0)
+    .sort((a, b) => a - b);
+  if (pages.length === 0) return null;
+  // Start searching from `fromPage` (1-based); wrap around if not found.
+  const startIdx = pages.findIndex((p) => p >= fromPage);
+  const order = startIdx >= 0
+    ? [...pages.slice(startIdx), ...pages.slice(0, startIdx)]
+    : pages;
+  let scanned = 0;
+  for (const pageNum of order) {
+    if (scanned >= maxPages) break;
+    scanned += 1;
+    const pageEl = findPageElement(container, pageNum);
+    if (!pageEl) continue;
+    const text = collectTextLayerSpans(pageEl).map((s) => s.textContent ?? "").join("");
+    const haystack = caseSensitive ? text : text.toLocaleLowerCase();
+    if (haystack.includes(needle)) return pageNum;
+  }
+  return null;
+};

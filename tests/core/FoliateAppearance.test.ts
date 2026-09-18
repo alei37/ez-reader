@@ -1,10 +1,8 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 
-import {
-  buildAppearanceCss,
-  themeColors
-} from "../../src/adapters/foliate/FoliateBookReader";
+import { buildAppearanceCss } from "../../src/adapters/foliate/FoliateBookReader";
+import { themeColors } from "../../src/core/utils/themeColors";
 import type { ReaderAppearance } from "../../src/core/types/ReaderSettings";
 
 /**

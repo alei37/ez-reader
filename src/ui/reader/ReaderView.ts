@@ -14,6 +14,7 @@ import { BookmarksPanel } from "./BookmarksPanel";
 import { ExcerptsPanel } from "./ExcerptsPanel";
 import { ReaderSelectionMenu } from "./ReaderSelectionMenu";
 import { ReaderToolbar } from "./ReaderToolbar";
+import { SearchBar } from "./SearchBar";
 import { SidebarNotesPanel } from "./SidebarNotesPanel";
 import { TocPanel } from "./TocPanel";
 import { ThoughtModal } from "./ThoughtModal";
@@ -204,6 +205,7 @@ export class ReaderView extends ItemView {
   private tocPanel: TocPanel | undefined;
   private translationDrawer: TranslationDrawer | undefined;
   private selectionMenu: ReaderSelectionMenu | undefined;
+  private searchBar: SearchBar | undefined;
   private host: HTMLElement | undefined;
   private fraction = 0;
   private chapter = "";
@@ -213,6 +215,19 @@ export class ReaderView extends ItemView {
   private tocItems: ReadonlyArray<TocItem> = [];
   private isDesktopWide = false;
   private isImmersive = false;
+  /**
+   * P1: 阅读时长统计 — 每次 reader 成为 active leaf 时开始计时,
+   * 离开时把 ms 累加并 30s 防抖写回 store. 字段 `totalReadingMs`
+   * 已经在 ReadingState 里.
+   */
+  private activeSinceMs: number | null = null;
+  private lastReadingFlushAt = 0;
+  /**
+   * Find-in-book 状态 — toolbar 拿这两个字段做 badge + active 视觉。
+   * searchBarVisible 也控制 input 是否聚焦。
+   */
+  private searchBarVisible = false;
+  private searchMatchCount: number | null = null;
   /**
    * Debounce timestamp for `persistProgress` failures — relocate 触发频繁
    * (每翻页一次),连续失败时不能让 Notice 刷屏. 5s 内只展示一次.
@@ -278,7 +293,9 @@ export class ReaderView extends ItemView {
         onToggleNotes: () => void this.toggleNotes(),
         onCycleStatus: () => void this.cycleStatus(),
         onToggleFavorite: () => void this.toggleFavorite(),
-        onToggleImmersive: () => this.toggleImmersive()
+        onToggleImmersive: () => this.toggleImmersive(),
+        onOpenSearch: () => void this.openSearchBar(),
+        onCloseSearch: () => void this.closeSearchBar()
       },
       {
         fraction: 0,
@@ -289,7 +306,11 @@ export class ReaderView extends ItemView {
         showingNotes: this.isDesktopWide,
         showingToc: false,
         showingImmersive: this.isImmersive,
-        showFontSettings: true
+        showFontSettings: true,
+        currentPage: null,
+        totalPages: null,
+        searchOpen: false,
+        searchMatchCount: null
       }
     );
     container.append(this.toolbar.root);
@@ -365,54 +386,66 @@ export class ReaderView extends ItemView {
       onTranslate: () => void this.requestTranslation()
     });
 
+    // P1: 搜索栏 — 浮在 body 之上 (跟 selection menu 同级), 用户输
+    // 入 query → 调 session.findInBook → toolbar 显示命中数 / active 态。
+    this.searchBar = new SearchBar({
+      onSearch: (query) => void this.runFindInBook(query, false),
+      onSearchFromStart: (query) => void this.runFindInBook(query, true),
+      onClose: () => this.closeSearchBar()
+    });
+
     this.bindSwipeGestures();
     this.bindKeyboardNavigation();
     this.bindImmersiveToolbarToggle();
+    this.bindReadingTimeTracker();
     if (this.entry) await this.openSession();
   }
 
   async onClose(): Promise<void> {
+    // P0-7 修复: 等切书发起的 close 也跑完 (setEntry 是 sync, 调用方不
+    // await 我们, 但我们仍需保证 onClose 时旧 session 已释放, 否则
+    // Obsidian 的 leaf detach 会带着未 close 的 foliate iframe).
+    if (this.pendingClosePromise) {
+      await this.pendingClosePromise;
+      this.pendingClosePromise = undefined;
+    }
     if (this.session) {
       await this.session.close();
       this.session = undefined;
     }
     this.selectionMenu?.destroy();
     this.selectionMenu = undefined;
+    this.searchBar?.destroy();
+    this.searchBar = undefined;
     this.notesPanel?.dispose();
     this.host = undefined;
-    // P0 修复: 之前 readyPromise 没清, 如果 onClose 时还有 awaiter
-    // (例如协议 handler 调 openExcerptById 后没等到 ready), 等到
-    // 30s 兜底才退出. 现在 resolve 让 awaiter 立刻解.
-    if (this.readyResolve) {
-      const oldResolve = this.readyResolve;
-      this.readyResolve = undefined;
-      this.readyPromise = undefined;
-      oldResolve();
-    }
+    // P0-1 修复: 兜底 timer 必须 clear, 否则 view 关闭后 timer 还持有
+    // view 引用直到 fire. 现在 markReady() 内部已经会 clear.
+    this.markReady();
     this.pendingSelection = undefined;
   }
 
   setEntry(entry: LibraryEntry): void {
     this.entry = entry;
-    // 切换书时: 关闭上一个 session 释放 worker / iframe, 重置 ready promise
+    // 切换书时: 关闭上一个 session 释放 worker / iframe, 重置 ready promise.
+    // P0-7 修复: 之前 fire-and-forget, 旧 foliate iframe / PDF.js worker
+    // 还没释放就立刻在 host 上挂新 session, 极端情况下两份 reader 同时
+    // 跑 (内存翻倍, 旧 worker 卸载延后). 现在用 stored promise 串行:
+    // setEntry 是 sync 接口, 调用方不 await 我们 — 但 pendingClosePromise
+    // 让下次 setEntry / openSession / onClose 等旧 session 真正关掉.
     if (this.session) {
-      const old = this.session;
+      this.pendingClosePromise = this.session.close().catch((error) => {
+        console.warn("[ez-reader] failed to close previous session", error);
+      });
       this.session = undefined;
-      void old.close().catch((error) => console.warn("[ez-reader] failed to close previous session", error));
     }
     // 切书时清掉 pendingSelection — 否则上一本书选过的词, pending 文本还指向
     // 旧书. 用户点 "翻译 / 摘录 / 想法" 按钮会作用在错的书上 (locator 也无效).
     this.pendingSelection = undefined;
     this.selectionMenu?.hide();
     // 解析旧 readyPromise — 旧 awaiter (例如协议 handler 调
-    // openExcerptById) 之前阻塞在 await whenReady(),现在让它退出,
-    // 避免 30s 兜底超时.
-    if (this.readyResolve) {
-      const oldResolve = this.readyResolve;
-      this.readyResolve = undefined;
-      this.readyPromise = undefined;
-      oldResolve();
-    }
+    // openExcerptById) 之前阻塞在 await whenReady(),现在让它退出.
+    this.markReady();
     if (this.host) {
       void this.openSession();
     } else {
@@ -459,8 +492,19 @@ export class ReaderView extends ItemView {
    */
   private readyPromise: Promise<void> | undefined;
   private readyResolve: (() => void) | undefined;
+  // P0-1 修复: 30s 兜底 timer 必须保存 handle, 在 markReady / onClose /
+  // setEntry 时 clear. 之前 fire-and-forget, view 关闭后 timer 还持有 view
+  // 引用直到 30s 后 fire, 反复开关书会累积僵尸 timer.
+  private readyFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  // P0-7 修复: setEntry 是 sync, 旧 session.close() 不能 fire-and-forget
+  // (见 setEntry 注释). 这里存 promise 让后续 openSession / onClose await.
+  private pendingClosePromise: Promise<void> | undefined;
 
   private markReady(): void {
+    if (this.readyFallbackTimer !== undefined) {
+      globalThis.clearTimeout(this.readyFallbackTimer);
+      this.readyFallbackTimer = undefined;
+    }
     if (this.readyResolve) this.readyResolve();
     this.readyResolve = undefined;
     this.readyPromise = undefined;
@@ -474,8 +518,11 @@ export class ReaderView extends ItemView {
       this.readyPromise = new Promise<void>((resolve) => {
         this.readyResolve = resolve;
       });
-      // 兜底: 30 秒还没就绪就强制 resolve,避免永久挂起
-      globalThis.setTimeout(() => this.markReady(), 30000);
+      // 兜底: 30 秒还没就绪就强制 resolve,避免永久挂起.
+      this.readyFallbackTimer = globalThis.setTimeout(() => {
+        this.readyFallbackTimer = undefined;
+        this.markReady();
+      }, 30000);
     }
     return this.readyPromise;
   }
@@ -537,6 +584,52 @@ export class ReaderView extends ItemView {
       this.host?.removeEventListener("mousemove", onMouseMove);
       if (visibleTimer !== undefined) globalThis.clearTimeout(visibleTimer);
     });
+  }
+
+  /**
+   * P1: 阅读时长统计 — 监听 workspace 'active-leaf-change'. 当本 leaf
+   * 成为 active 时记录开始时间, 失去 focus 时把累加 ms 写回 store。
+   * 30s 防抖避免高频切窗造成 IO 风暴。
+   */
+  private bindReadingTimeTracker(): void {
+    const onLeafChange = () => {
+      const now = Date.now();
+      const isActive = this.deps.app.workspace.activeLeaf === this.leaf;
+      if (isActive && this.activeSinceMs === null) {
+        this.activeSinceMs = now;
+      } else if (!isActive && this.activeSinceMs !== null) {
+        const delta = now - this.activeSinceMs;
+        this.activeSinceMs = null;
+        if (delta >= 1000) void this.flushReadingTime(delta);
+      }
+    };
+    this.deps.app.workspace.on("active-leaf-change", onLeafChange);
+    if (this.deps.app.workspace.activeLeaf === this.leaf) {
+      this.activeSinceMs = Date.now();
+    }
+    this.register(() => {
+      this.deps.app.workspace.off("active-leaf-change", onLeafChange);
+      if (this.activeSinceMs !== null) {
+        const delta = Date.now() - this.activeSinceMs;
+        this.activeSinceMs = null;
+        if (delta >= 1000) void this.flushReadingTime(delta);
+      }
+    });
+  }
+
+  private async flushReadingTime(deltaMs: number): Promise<void> {
+    if (!this.entry) return;
+    const now = Date.now();
+    if (now - this.lastReadingFlushAt < 30000 && deltaMs < 60000) return;
+    this.lastReadingFlushAt = now;
+    try {
+      const next = await this.deps.reading.addReadingTime(this.entry.book.id, deltaMs);
+      // 同步 entry 里的 reading 字段 — 让 toolbar 显示新累计。
+      this.entry = { ...this.entry, reading: next };
+      this.toolbar?.update(this.toolbarState());
+    } catch (error) {
+      console.warn("[ez-reader] flushReadingTime failed", error);
+    }
   }
 
   // ---- 键盘 ----
@@ -604,9 +697,17 @@ export class ReaderView extends ItemView {
         event.preventDefault();
         this.copyCurrentSelection();
         return;
+      case "openSearch":
+        event.preventDefault();
+        // 切换 search bar — 已开就关, 关就开. 跟 toolbar 按钮一致。
+        if (this.searchBarVisible) this.closeSearchBar();
+        else this.openSearchBar();
+        return;
       case "escape":
-        // 优先级: 选区菜单 → 抽屉 → panel → 不动 reader (防止误关)
-        if (this.selectionMenu?.isVisible()) {
+        // 优先级: search bar → 选区菜单 → 抽屉 → panel → 不动 reader (防止误关)
+        if (this.searchBarVisible) {
+          this.closeSearchBar();
+        } else if (this.selectionMenu?.isVisible()) {
           this.selectionMenu.hide();
         } else if (this.translationDrawer?.isVisible()) {
           this.translationDrawer.hide();
@@ -744,6 +845,13 @@ private async showFontSettings(): Promise<void> {
 
   private async openSession(): Promise<void> {
     if (!this.entry || !this.host) return;
+    // P0-7 修复: 等旧 session 真正关掉(切书路径), 否则两份 reader 同时
+    // 挂在 host 上 — foliate iframe + PDF.js worker 内存翻倍, 旧 worker
+    // 卸载延后到下一次 frame, 偶发 OOM. await 后再 mount 新 session.
+    if (this.pendingClosePromise) {
+      await this.pendingClosePromise;
+      this.pendingClosePromise = undefined;
+    }
     const book = this.entry.book;
     const delegate = createContentDelegate(book.locator.format, {
       foliate: this.deps.foliate,
@@ -1017,7 +1125,12 @@ private async showFontSettings(): Promise<void> {
       showingImmersive: this.isImmersive,
       showFontSettings: true,
       bookmarkCount: this.bookmarkCount,
-      excerptCount: this.excerptCount
+      excerptCount: this.excerptCount,
+      currentPage: this.session?.currentPage?.() ?? null,
+      totalPages: this.session?.totalPages?.() ?? null,
+      searchOpen: this.searchBarVisible,
+      searchMatchCount: this.searchMatchCount,
+      totalReadingMs: this.entry?.reading.totalReadingMs ?? 0
     };
   }
 
@@ -1490,6 +1603,65 @@ private async showFontSettings(): Promise<void> {
   private async requestTranslation(): Promise<void> {
     if (!this.pendingSelection || !this.translationDrawer) return;
     await this.translationDrawer.translate(this.pendingSelection.text);
+  }
+
+  /**
+   * P1: 打开 find-in-book 搜索栏 — 跟 ReaderSelectionMenu 同级, 浮在
+   * reader 顶部。让用户立刻开始打字。再次触发 / Esc 关闭。
+   */
+  private openSearchBar(): void {
+    if (!this.searchBar) return;
+    this.searchBarVisible = true;
+    this.searchBar.show();
+    this.toolbar?.update(this.toolbarState());
+  }
+
+  private closeSearchBar(): void {
+    if (!this.searchBar) return;
+    this.searchBarVisible = false;
+    this.searchMatchCount = null;
+    this.searchBar.hide();
+    this.toolbar?.update(this.toolbarState());
+  }
+
+  private async runFindInBook(query: string, fromStart: boolean): Promise<void> {
+    if (!this.session || typeof this.session.findInBook !== "function") {
+      // Session 没挂上或格式不支持 — 静默关闭 search bar.
+      this.closeSearchBar();
+      new Notice("当前格式暂不支持搜索");
+      return;
+    }
+    const trimmed = query.trim();
+    if (!trimmed) {
+      this.searchMatchCount = null;
+      this.toolbar?.update(this.toolbarState());
+      return;
+    }
+    try {
+      const count = await this.session.findInBook(trimmed, fromStart);
+      this.searchMatchCount = count;
+      this.toolbar?.update(this.toolbarState());
+      if (count === 0) {
+        new Notice(`未找到 "${trimmed}"`);
+      } else if (fromStart) {
+        new Notice(`找到 ${count} 处匹配 (从首处开始)`);
+      } else {
+        new Notice(`匹配 ${this.findCursorDisplay(count)} / ${count}`);
+      }
+    } catch (error) {
+      console.warn("[ez-reader] findInBook failed", error);
+      new Notice("搜索失败");
+      this.closeSearchBar();
+    }
+  }
+
+  /**
+   * 用户按 Enter (fromStart) vs Enter again (next) 时显示不同文案 ——
+   * 复用一个 cursor 但要从 toolbar badge 推断 index。这里简化: 不暴露
+   * cursor index,只显示 total, 跟 Kindle 类似。
+   */
+  private findCursorDisplay(_total: number): string {
+    return "下一处";
   }
 
   private async saveTranslationAsNote(source: string, translated: string): Promise<void> {

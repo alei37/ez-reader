@@ -1,6 +1,7 @@
 import type { LibraryEntry } from "../../core/services/LibraryService";
 import { progressFraction } from "../../core/entities/ReadingState";
 import { extractAuthorFallback, statusLabel } from "./shelfFormatters";
+import { placeholderCoverStyle } from "./placeholderCover";
 
 export interface ShelfItemHandlers {
   onOpen: (entry: LibraryEntry) => void;
@@ -40,15 +41,18 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
   } else {
     cover.addClass("is-placeholder");
     const title = entry.book.metadata?.title ?? entry.book.locator.path;
-    cover.setCssStyles(placeholderBackground(title));
+    const style = placeholderCoverStyle(title);
+    cover.setCssStyles({ background: style.background, color: style.color });
     cover.createEl("span", {
       text: title.charAt(0).toLocaleUpperCase(),
-      cls: "ez-reader__shelf-grid__cover-glyph"
+      cls: "ez-reader__shelf-grid__cover-glyph",
+      attr: { style: `text-shadow: ${style.textShadow}` }
     });
-    cover.createEl("span", {
+    const titleEl = cover.createEl("span", {
       text: title,
       cls: "ez-reader__shelf-grid__cover-title"
     });
+    titleEl.style.textShadow = style.textShadow;
   }
   // P1 新功能: 置顶标记 — 在封面右上角放一个小 📌 icon, 不遮挡封面内容.
   // 用 lucide `pin` 图标, setIcon 由 caller (ShelfView) 在 toolbar 入口
@@ -115,39 +119,4 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
     handlers.onContextMenu(entry, event);
   });
   return card;
-};
-
-/**
- * Generate a stable, deterministic gradient for the placeholder cover.
- * Two books with similar titles will have similar hues, but each book
- * still gets its own background — no two covers look identical.
- *
- * Cached so we don't recompute the hash for the same title on every
- * re-render. The map is bounded to a few hundred entries to keep
- * memory tight when the user has thousands of books.
- */
-const placeholderCache = new Map<string, Record<string, string>>();
-const PLACEHOLDER_CACHE_MAX = 500;
-
-const placeholderBackground = (title: string): Record<string, string> => {
-  const cached = placeholderCache.get(title);
-  if (cached) return cached;
-  let hash = 0;
-  for (let i = 0; i < title.length; i++) {
-    hash = ((hash << 5) - hash) + title.charCodeAt(i);
-    hash = hash & hash;
-  }
-  const hue1 = Math.abs(hash) % 360;
-  const hue2 = (hue1 + 28) % 360;
-  const result = {
-    background: `linear-gradient(135deg, hsl(${hue1}, 38%, 28%), hsl(${hue2}, 48%, 18%))`,
-    color: "rgba(255, 255, 255, 0.92)"
-  };
-  if (placeholderCache.size >= PLACEHOLDER_CACHE_MAX) {
-    // 简单 FIFO: 删除最早插入
-    const firstKey = placeholderCache.keys().next().value;
-    if (firstKey !== undefined) placeholderCache.delete(firstKey);
-  }
-  placeholderCache.set(title, result);
-  return result;
 };

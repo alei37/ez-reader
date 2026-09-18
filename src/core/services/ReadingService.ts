@@ -10,9 +10,19 @@ import { defaultReadingState, progressFraction } from "../entities/ReadingState"
  * for any mutation: bookmark add, excerpt add, progress update, status
  * change. This isolates the rules (e.g. "opening a book transitions status
  * from unread to reading") from the persistence and the UI.
+ *
+ * Optional `onChange` callback fires whenever a reading state is written
+ * (openBook / updatePosition / setStatus / toggleFavorite). Callers use
+ * this to keep derived state in sync — e.g. LibraryService.updateReading
+ * so the shelf refreshes and the next ReaderView.open reads the latest
+ * position for resume. Bookmarks / excerpts don't fire it because they
+ * don't change the reading state.
  */
 export class ReadingService {
-  constructor(private readonly annotations: AnnotationStore) {}
+  constructor(
+    private readonly annotations: AnnotationStore,
+    private readonly onChange?: (state: ReadingState) => void | Promise<void>
+  ) {}
 
   /** Get current state, falling back to a default. */
   async getState(bookId: BookId): Promise<ReadingState> {
@@ -29,6 +39,7 @@ export class ReadingService {
       status: state.status === "unread" ? "reading" : state.status
     };
     await this.annotations.upsertReading(next);
+    await this.fireChange(next);
     return next;
   }
 
@@ -39,6 +50,7 @@ export class ReadingService {
     const status = inferStatus(state.status, fraction);
     const next: ReadingState = { ...state, position, status };
     await this.annotations.upsertReading(next);
+    await this.fireChange(next);
     return next;
   }
 
@@ -46,6 +58,7 @@ export class ReadingService {
     const state = await this.getState(bookId);
     const next: ReadingState = { ...state, status };
     await this.annotations.upsertReading(next);
+    await this.fireChange(next);
     return next;
   }
 
@@ -53,7 +66,35 @@ export class ReadingService {
     const state = await this.getState(bookId);
     const next: ReadingState = { ...state, favorite: !state.favorite };
     await this.annotations.upsertReading(next);
+    await this.fireChange(next);
     return next;
+  }
+
+  /**
+   * P1: 累加阅读时长. 通过 ReaderView 的 active-leaf 监听器触发,
+   * deltaMs 来自"上次 active 到这次 inactive"的间隔。
+   * 不触发 onChange (shelf 不需要立即 re-render — 累计是后台行为)。
+   */
+  async addReadingTime(bookId: BookId, deltaMs: number): Promise<ReadingState> {
+    if (deltaMs <= 0) return this.getState(bookId);
+    const state = await this.getState(bookId);
+    const next: ReadingState = {
+      ...state,
+      totalReadingMs: (state.totalReadingMs ?? 0) + deltaMs
+    };
+    await this.annotations.upsertReading(next);
+    return next;
+  }
+
+  /** Fire onChange (if registered), swallowing errors so a listener
+   *  failure doesn't break the write that already succeeded. */
+  private async fireChange(state: ReadingState): Promise<void> {
+    if (!this.onChange) return;
+    try {
+      await this.onChange(state);
+    } catch (error) {
+      console.warn("[ez-reader] ReadingService.onChange listener failed", error);
+    }
   }
 
   async addBookmark(bookmark: Bookmark): Promise<void> {

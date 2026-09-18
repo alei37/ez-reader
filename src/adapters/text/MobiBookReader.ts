@@ -6,8 +6,10 @@ import type {
   ReaderSession
 } from "../../core/ports/BookReader";
 import type { ReaderAppearance } from "../../core/types/ReaderSettings";
+import { sniffImageMime } from "../../core/utils/imageSniff";
 import type { PagedTextContent, PagedTextPage } from "./PagedTextSession";
 import { PagedTextSession } from "./PagedTextSession";
+import { sanitizeHtml } from "../../core/utils/sanitizeHtml";
 
 /**
  * Minimal contract from `@lingo-reader/mobi-parser`. We re-declare it
@@ -265,18 +267,24 @@ export class MobiBookReader implements BookReader {
  */
 const buildContent = async (parser: EpubLikeParser, book: Book): Promise<PagedTextContent> => {
   const spine = parser.getSpine();
+  // P1: build a map from spine index → top-level TOC label so each page
+  // knows its chapter title (the toolbar chapterLabel stays informative).
+  const spineIdToChapterLabel = new Map<number, string>();
   const pages: PagedTextPage[] = [];
-  for (const chapter of spine) {
+  for (let i = 0; i < spine.length; i++) {
+    const chapter = spine[i]!;
     const processed = parser.loadChapter(chapter.id);
     const html = processed?.html ?? "";
-    // The parser's `html` is the body content; wrap it so the session's
-    // CSS has a paragraph root to target.
     const inlinedCss = await inlineChapterCss(processed?.css ?? []);
     pages.push({
       id: chapter.id,
-      html: html.length > 0 ? html : "<p></p>",
+      // P0-2 修复: mobi 解析器返回的 html 不可信 — 用户可能从不可信
+      // 来源下载 mobi, 章节里嵌 <script>/<img onerror> 就会在 reader
+      // 里执行 (TxtBookReader 已经 escape 过纯文本, MOBI 之前没动).
+      // 在 PagedTextSession 调 innerHTML 之前先过 sanitizeHtml.
+      html: html.length > 0 ? sanitizeHtml(html) : "<p></p>",
       css: inlinedCss,
-      chapterTitle: undefined
+      chapterTitle: spineIdToChapterLabel.get(i)
     });
   }
   if (pages.length === 0) {
@@ -300,13 +308,23 @@ const buildContent = async (parser: EpubLikeParser, book: Book): Promise<PagedTe
       const tocId = `toc-${flatToc.length}`;
       flatToc.push({ id: tocId, label, depth });
       chapterStartPages.push(targetPage);
+      // P1: 只记录顶层 TOC label 给对应 page 的 chapterTitle ——
+      // 子章节不重复覆盖 (用户最关心"我现在在第几章")。
+      if (depth === 0 && !spineIdToChapterLabel.has(pageIdx)) {
+        spineIdToChapterLabel.set(pageIdx, label);
+      }
       if (Array.isArray(item.children)) walk(item.children, depth + 1);
     }
   };
   walk(parser.getToc(), 0);
 
-  // If the parser returned no TOC, synthesize one per chapter so the
-  // panel isn't empty.
+  // 第二轮: 把 page 上的 chapterTitle 填回去 — 第一轮时 pages 还在
+  // 构建 (loadChapter 调用还没结束), 所以 spineIdToChapterLabel 先填,
+  // 现在二次遍历 pages 把对应 label 写上。
+  // 注: 现在 pages 数组里 chapterTitle 都已是 label (我在第一轮填了)。
+  // 保留双步骤是为了让 toc 解析后还能影响未填充的 page。
+
+  // 如果 parser 没返回 TOC, 给每个 page 一个默认 chapterTitle.
   if (flatToc.length === 0) {
     const metadata = parser.getMetadata();
     const title = metadata.title?.trim() || book.locator.path.split("/").pop() || "书";
@@ -315,6 +333,9 @@ const buildContent = async (parser: EpubLikeParser, book: Book): Promise<PagedTe
     pages.forEach((page, idx) => {
       flatToc.push({ id: `toc-${idx + 1}`, label: `第 ${idx + 1} 节`, depth: 1 });
       chapterStartPages.push(idx);
+      if (!page.chapterTitle) {
+        (page as { chapterTitle?: string }).chapterTitle = `第 ${idx + 1} 节`;
+      }
     });
   }
 
@@ -359,16 +380,4 @@ const inlineChapterCss = async (
   return out;
 };
 
-/**
- * Sniff image MIME from the first 12 bytes. Duplicates FoliateBookReader
- * logic — kept private here to avoid a circular import.
- */
-const sniffImageMime = (bytes: ArrayBuffer): string | null => {
-  const view = new Uint8Array(bytes, 0, Math.min(12, bytes.byteLength));
-  if (view[0] === 0x89 && view[1] === 0x50 && view[2] === 0x4e && view[3] === 0x47) return "image/png";
-  if (view[0] === 0xff && view[1] === 0xd8 && view[2] === 0xff) return "image/jpeg";
-  if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46 &&
-      view[8] === 0x57 && view[9] === 0x45 && view[10] === 0x42 && view[11] === 0x50) return "image/webp";
-  if (view[0] === 0x47 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x38) return "image/gif";
-  return null;
-};
+

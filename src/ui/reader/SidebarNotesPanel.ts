@@ -28,11 +28,15 @@ export class SidebarNotesPanel {
   private readonly app: App | undefined;
   private entries: ReadonlyArray<Excerpt> = [];
   private query: string = "";
+  /** Tag filter — single tag, used to scope the list. Cleared on close. */
+  private tagFilter: string | null = null;
   private flashId: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | undefined;
   /** Debounce timer for the search box. */
   private searchTimer: ReturnType<typeof setTimeout> | undefined;
   private searchInput: HTMLInputElement | undefined;
+  /** Set of excerpt ids whose note region is currently expanded. */
+  private expandedNotes = new Set<string>();
 
   constructor(handlers: SidebarNotesHandlers & { app?: App }, host: HTMLElement) {
     this.handlers = handlers;
@@ -115,6 +119,21 @@ export class SidebarNotesPanel {
       return;
     }
 
+    // P1: 标签 filter active 时显示 chip — 用户能直观看到当前过滤.
+    if (this.tagFilter) {
+      const chip = this.root.createDiv({ cls: "ez-reader__notes-panel__tag-filter-chip" });
+      chip.createSpan({ text: `标签过滤: #${this.tagFilter}` });
+      const clearBtn = chip.createEl("button", {
+        text: "×",
+        attr: { type: "button", title: "清除过滤", "aria-label": "清除过滤" }
+      });
+      clearBtn.addClass("ez-reader__notes-panel__tag-filter-clear");
+      clearBtn.addEventListener("click", () => {
+        this.tagFilter = null;
+        this.render();
+      });
+    }
+
     // 搜索框: 超过 5 条笔记才显示,避免噪音
     if (this.entries.length >= 5) {
       const searchWrap = this.root.createDiv({ cls: "ez-reader__notes-panel__search" });
@@ -166,14 +185,63 @@ export class SidebarNotesPanel {
       const ts = formatTimestamp(entry.createdAt);
       meta.createEl("span", { text: `${ts}${chapter}`, cls: "ez-reader__notes-panel__meta-text" });
       if (entry.tags.length > 0) {
-        meta.createEl("span", {
-          text: entry.tags.map((t) => `#${t}`).join(" "),
-          cls: "ez-reader__notes-panel__tags"
-        });
+        const tagWrap = meta.createSpan({ cls: "ez-reader__notes-panel__tags" });
+        for (const tag of entry.tags) {
+          const tagBtn = tagWrap.createEl("button", {
+            text: `#${tag}`,
+            attr: { type: "button", title: `只看标签 ${tag}`, "aria-label": `过滤标签 ${tag}` }
+          });
+          tagBtn.addClass("ez-reader__notes-panel__tag-btn");
+          tagBtn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            // 切换: 当前 active 就清空, 否则切到新标签
+            this.tagFilter = this.tagFilter === tag ? null : tag;
+            this.render();
+          });
+        }
       }
       if (entry.note) {
+        const isExpanded = this.expandedNotes.has(entry.id);
+        const toggle = card.createDiv({ cls: "ez-reader__notes-panel__note-toggle" });
+        toggle.setAttribute("role", "button");
+        toggle.setAttribute("tabindex", "0");
+        const previewText = entry.note.length > 60 ? `${entry.note.slice(0, 60)}…` : entry.note;
+        const label = isExpanded ? "收起想法" : `💭 想法 · ${previewText}`;
+        toggle.createSpan({ text: label, cls: "ez-reader__notes-panel__note-toggle-label" });
+        toggle.createSpan({ text: isExpanded ? "▾" : "▸", cls: "ez-reader__notes-panel__note-toggle-arrow" });
         const note = card.createEl("p", { text: entry.note });
         note.addClass("ez-reader__notes-panel__note");
+        if (isExpanded) {
+          toggle.addClass("is-expanded");
+          note.addClass("is-expanded");
+        } else {
+          note.addClass("is-collapsed");
+        }
+        const flip = () => {
+          if (this.expandedNotes.has(entry.id)) {
+            this.expandedNotes.delete(entry.id);
+            toggle.classList.remove("is-expanded");
+            note.classList.remove("is-expanded");
+            note.classList.add("is-collapsed");
+            toggle.querySelector(".ez-reader__notes-panel__note-toggle-label")!.textContent = `💭 想法 · ${previewText}`;
+            toggle.querySelector(".ez-reader__notes-panel__note-toggle-arrow")!.textContent = "▸";
+          } else {
+            this.expandedNotes.add(entry.id);
+            toggle.classList.add("is-expanded");
+            note.classList.remove("is-collapsed");
+            note.classList.add("is-expanded");
+            toggle.querySelector(".ez-reader__notes-panel__note-toggle-label")!.textContent = "收起想法";
+            toggle.querySelector(".ez-reader__notes-panel__note-toggle-arrow")!.textContent = "▾";
+          }
+        };
+        toggle.addEventListener("click", flip);
+        toggle.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            flip();
+          }
+        });
       }
       const actions = card.createDiv({ cls: "ez-reader__notes-panel__actions" });
       const jump = actions.createEl("button", {
@@ -211,9 +279,13 @@ export class SidebarNotesPanel {
   }
 
   private filteredEntries(): ReadonlyArray<Excerpt> {
-    if (!this.query) return this.entries;
+    let result = this.entries;
+    if (this.tagFilter) {
+      result = result.filter((ex) => ex.tags.includes(this.tagFilter!));
+    }
+    if (!this.query) return result;
     const needle = this.query;
-    return this.entries.filter((ex) => {
+    return result.filter((ex) => {
       const haystack = [
         ex.text,
         ex.note,

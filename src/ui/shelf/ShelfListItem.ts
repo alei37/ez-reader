@@ -1,6 +1,7 @@
 import type { LibraryEntry } from "../../core/services/LibraryService";
 import { progressFraction } from "../../core/entities/ReadingState";
 import { extractAuthorFallback, statusLabel } from "./shelfFormatters";
+import { placeholderCoverStyle } from "./placeholderCover";
 
 export interface ShelfListHandlers {
   onOpen: (entry: LibraryEntry) => void;
@@ -21,11 +22,25 @@ export const renderListItem = (entry: LibraryEntry, handlers: ShelfListHandlers,
     cover.addEventListener("error", () => {
       cover.remove();
       const placeholder = row.createDiv({ cls: "ez-reader__shelf-list__cover is-placeholder" });
-      placeholder.setText((entry.book.metadata?.title ?? entry.book.locator.path).charAt(0));
+      const title = entry.book.metadata?.title ?? entry.book.locator.path;
+      const style = placeholderCoverStyle(title);
+      placeholder.setCssStyles({
+        background: style.background,
+        color: style.color,
+        textShadow: style.textShadow
+      });
+      placeholder.setText(title.charAt(0));
     });
   } else {
     const cover = row.createDiv({ cls: "ez-reader__shelf-list__cover is-placeholder" });
-    cover.setText((entry.book.metadata?.title ?? entry.book.locator.path).charAt(0));
+    const title = entry.book.metadata?.title ?? entry.book.locator.path;
+    const style = placeholderCoverStyle(title);
+    cover.setCssStyles({
+      background: style.background,
+      color: style.color,
+      textShadow: style.textShadow
+    });
+    cover.setText(title.charAt(0));
   }
 
   const info = row.createDiv({ cls: "ez-reader__shelf-list__info" });

@@ -12,7 +12,6 @@ const context = await esbuild.context({
   logLevel: "info",
   sourcemap: production ? false : "inline",
   treeShaking: true,
-  // P1 之后: ez-reader 不再打包 pdfjs-dist / pdf.worker, PDF 走 Obsidian 内置 viewer
   plugins: [],
   outfile: "main.js"
 });

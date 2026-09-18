@@ -7,7 +7,9 @@ import type {
   ReaderTarget,
   TocItem
 } from "../../core/ports/BookReader";
-import type { ReaderAppearance, ReaderTheme } from "../../core/types/ReaderSettings";
+import type { ReaderAppearance } from "../../core/types/ReaderSettings";
+import { READER_FONT_FAMILY_STACKS } from "../../core/types/ReaderSettings";
+import { themeColors } from "../../core/utils/themeColors";
 
 /**
  * A single rendered "page" of the book. Pages are flat-HTML chunks that the
@@ -47,27 +49,6 @@ export interface PagedTextContent {
 }
 
 /**
- * Theme color resolution. Kept identical to FoliateBookReader.themeColors
- * so both engines look identical when the user switches between formats.
- *
- * Not exported from `adapters/index.ts` (would collide with Foliate's
- * identically-named export). Consumers import it directly from
- * `adapters/text/PagedTextSession` if needed.
- */
-const themeColors = (theme: ReaderTheme): { bg: string; fg: string; scheme: "light" | "dark" | "light dark" } => {
-  switch (theme) {
-    case "light":
-      return { bg: "#ffffff", fg: "#1f2328", scheme: "light" };
-    case "dark":
-      return { bg: "#1f2328", fg: "#e6edf3", scheme: "dark" };
-    case "sepia":
-      return { bg: "#f4ecd8", fg: "#4b3b2a", scheme: "light" };
-    default:
-      return { bg: "Canvas", fg: "CanvasText", scheme: "light dark" };
-  }
-};
-
-/**
  * Build the CSS string applied to the host element. Mirrors the
  * FoliateBookReader approach — pure function so appearance changes can be
  * applied incrementally without re-rendering the page.
@@ -75,8 +56,16 @@ const themeColors = (theme: ReaderTheme): { bg: string; fg: string; scheme: "lig
 export const buildPagedTextCss = (appearance: ReaderAppearance): string => {
   const theme = themeColors(appearance.theme);
   const fontScale = (appearance.fontSize / 100).toFixed(3);
+  const fontFamily = READER_FONT_FAMILY_STACKS[appearance.fontFamily ?? "serif"];
+  const letterSpacing = (appearance.letterSpacing ?? 0).toFixed(3);
+  const maxWidth = appearance.maxWidth ?? 720;
   return `
-    :root { --ez-reader-font-scale: ${fontScale}; }
+    :root {
+      --ez-reader-font-scale: ${fontScale};
+      --ez-reader-font-family: ${fontFamily};
+      --ez-reader-letter-spacing: ${letterSpacing}em;
+      --ez-reader-max-width: ${maxWidth}px;
+    }
     .ez-reader__paged-text {
       font-size: calc(1em * var(--ez-reader-font-scale));
       line-height: ${appearance.lineHeight};
@@ -87,7 +76,13 @@ export const buildPagedTextCss = (appearance: ReaderAppearance): string => {
       box-sizing: border-box;
       overflow-y: auto;
       height: 100%;
-      font-family: var(--ez-reader-text-font, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif);
+      font-family: var(--ez-reader-font-family);
+      letter-spacing: var(--ez-reader-letter-spacing);
+    }
+    /* 文本容器宽度限制 — 大屏阅读体验关键,默认 720px。 */
+    .ez-reader__paged-text__inner {
+      max-width: var(--ez-reader-max-width);
+      margin: 0 auto;
     }
     .ez-reader__paged-text p { margin: 0 0 1em 0; }
     .ez-reader__paged-text a { color: inherit; text-decoration: underline; }
@@ -140,6 +135,14 @@ export class PagedTextSession implements ReaderSession {
   private readonly selectionListeners = new Set<(detail: SelectionChangeDetail) => void>();
   private readonly relocateListeners = new Set<(detail: { fraction: number; chapter?: string; page: number }) => void>();
   private direction: "initial" | "forward" | "backward" = "initial";
+  /**
+   * P1: in-book search state. `findMatches` is a flat list of (page, offset)
+   * entries; `findCursor` points at the next match to jump to. Resetting
+   * happens whenever the query string changes or `fromStart` is true.
+   */
+  private findQuery: string | null = null;
+  private findMatches: Array<{ pageIndex: number; offsetInPage: number }> = [];
+  private findCursor = 0;
 
   constructor(options: PagedTextSessionOptions) {
     this.content = options.content;
@@ -294,6 +297,46 @@ export class PagedTextSession implements ReaderSession {
     this.applyHighlightOverlay(spec);
   }
 
+  /**
+   * In-book search for TXT / MOBI / AZW3. Walks the page list, finds
+   * matches in HTML textContent (case-insensitive), caches them so
+   * repeated calls without `fromStart` advance to the next hit.
+   *
+   * Returns total match count. Jumps the session to the page containing
+   * the next match; the host's CSS-driven highlight (search.js reuses
+   * `applyHighlightOverlay` via session.highlight) shows the user where
+   * the match landed.
+   */
+  async findInBook(query: string, fromStart: boolean): Promise<number> {
+    if (this.closed) return 0;
+    const trimmed = query.trim();
+    if (!trimmed) return 0;
+    if (this.findQuery !== trimmed || fromStart) {
+      this.findQuery = trimmed;
+      this.findMatches = [];
+      const needle = trimmed.toLocaleLowerCase();
+      for (let i = 0; i < this.content.pages.length; i++) {
+        const text = stripHtmlTags(this.content.pages[i]!.html).toLocaleLowerCase();
+        let from = 0;
+        let idx: number;
+        while ((idx = text.indexOf(needle, from)) >= 0) {
+          this.findMatches.push({ pageIndex: i, offsetInPage: idx });
+          from = idx + needle.length;
+          if (this.findMatches.length > 500) break;
+        }
+        if (this.findMatches.length > 500) break;
+      }
+      this.findCursor = 0;
+    }
+    if (this.findMatches.length === 0) return 0;
+    if (fromStart) this.findCursor = 0;
+    else this.findCursor = (this.findCursor + 1) % this.findMatches.length;
+    const target = this.findMatches[this.findCursor]!;
+    this.direction = "initial";
+    await this.turnTo(target.pageIndex, "initial");
+    return this.findMatches.length;
+  }
+
   async removeHighlight(id: string): Promise<void> {
     this.highlights = this.highlights.filter((h) => h.id !== id);
     // MOBI/TXT highlights live inside the same DOM — strip wrappers.
@@ -331,19 +374,38 @@ export class PagedTextSession implements ReaderSession {
     }
 
     // Wrap with a fresh container so the page-load animation can play.
+    // Inner wrapper carries max-width constraint so wide screens don't
+    // stretch lines too long. Outer container keeps the slide animation
+    // independent from inner content reflow.
     const pageEl = document.createElement("article");
     pageEl.classList.add("ez-reader__paged-text-page");
     pageEl.dataset["pageIndex"] = String(pageIdx);
-    pageEl.innerHTML = page.html;
-    // Re-apply current highlights whose locator matches this page.
+    const innerEl = document.createElement("div");
+    innerEl.classList.add("ez-reader__paged-text__inner");
+    innerEl.innerHTML = page.html;
+    pageEl.append(innerEl);
+    // Re-apply current highlights whose locator matches this page. Use
+    // innerEl as the scope so highlight walking doesn't pick up
+    // pageEl container text (only the actual content).
     for (const h of this.highlights) {
       const locatorPageIdx = Number(h.locator.replace(/^paged-text:/, ""));
       if (locatorPageIdx === pageIdx) {
-        this.applyHighlightOverlay(h, pageEl);
+        this.applyHighlightOverlay(h, innerEl);
       }
     }
 
     this.stageEl.replaceChildren(pageEl);
+    // 翻页动画 — 在 direction 决定的 class 上跑 keyframes. 双 rAF 让
+    // browser 在替换后 commit layout, 再加 class 触发 transition.
+    // direction 由 turnTo() / findInBook() / goTo() 在 replaceChildren
+    // 之前设置, 跟 foliate 的"方向感知"行为对齐。
+    const animClass = `ez-reader__page-loaded--${dir}`;
+    pageEl.classList.add(animClass);
+    const onAnimationEnd = () => {
+      pageEl.classList.remove(animClass);
+      pageEl.removeEventListener("animationend", onAnimationEnd);
+    };
+    pageEl.addEventListener("animationend", onAnimationEnd);
 
     // Hook selectionchange for this page — re-attach on every render.
     //
@@ -491,3 +553,16 @@ const highlightColor = (color?: HighlightSpec["color"]): string => {
 
 /** Minimal CSS.escape polyfill — only handles the chars our IDs use. */
 const cssEscape = (value: string): string => value.replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
+
+/**
+ * Strip HTML tags for full-text search. We use this instead of parsing the
+ * page into a DOM because (a) the input is already HTML-escaped at the
+ * TXT adapter boundary, (b) we only need a flat text stream for indexOf,
+ * and (c) avoiding a parser keeps the search hot path cheap.
+ *
+ * `&nbsp;` / `&` etc. are not decoded — `indexOf` works on raw
+ * substrings, and the user typed the same raw substring. Decoding
+ * would mismatch HTML entities that are uncommon in book content.
+ */
+const stripHtmlTags = (html: string): string =>
+  html.replace(/<[^>]*>/g, " ");

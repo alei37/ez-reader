@@ -130,11 +130,24 @@ export class AddToLibraryModal extends Modal {
     for (const entry of filtered) {
       const row = host.createDiv({ cls: "ez-reader__add-modal__row" });
       const checkbox = row.createEl("input", { attr: { type: "checkbox" } });
-      checkbox.checked = this.selected.has(entry.book.id);
-      checkbox.onchange = () => {
-        if (checkbox.checked) this.selected.add(entry.book.id);
-        else this.selected.delete(entry.book.id);
+      const applySelectionVisual = (): void => {
+        row.toggleClass("is-selected", this.selected.has(entry.book.id));
+      };
+      if (this.selected.has(entry.book.id)) row.addClass("is-selected");
+      const toggleSelection = (): void => {
+        if (this.selected.has(entry.book.id)) this.selected.delete(entry.book.id);
+        else this.selected.add(entry.book.id);
+        applySelectionVisual();
         if (summaryEl) summaryEl.textContent = `共 ${this.candidates.length} 本候选 · 已选 ${this.selected.size} 本`;
+      };
+      checkbox.checked = this.selected.has(entry.book.id);
+      checkbox.onchange = toggleSelection;
+      // 整行可点击切换(小复选框自身的 click 会冒泡到这里, 但我们忽略它,
+      // 让原生 checkbox 自己处理 — 避免双切换)
+      row.onclick = (event: MouseEvent) => {
+        if (event.target === checkbox) return;
+        toggleSelection();
+        checkbox.checked = this.selected.has(entry.book.id);
       };
       // 封面缩略图(占位 / 已提取 / 提取中)
       const cover = row.createDiv({ cls: "ez-reader__add-modal__row__cover" });

@@ -39,6 +39,21 @@ export interface ReaderSession {
    */
   setOnIframeKeydown?(handler: (event: KeyboardEvent) => void): void;
 
+  /**
+   * Optional: in-book search. Returns the number of matches across the
+   * whole book (caller can show "X matches"). The implementation also
+   * jumps to the next match after the current position so the user sees
+   * the highlight immediately. Call repeatedly with the same query to
+   * cycle through matches; `findInBook(query, true)` resets to the first
+   * match.
+   *
+   * Engines without full-text indexing (TXT/MOBI chapter scan is fine,
+   * PDF text-layer scan is fine) implement this directly. Foliate does
+   * NOT have a built-in find API — the Foliate adapter walks chapter
+   * spine HTML textContent + builds CFI ranges from text offsets.
+   */
+  findInBook?(query: string, fromStart: boolean): Promise<number>;
+
   /** Returns the current position as a fraction in [0, 1]. */
   currentFraction(): Promise<number>;
 

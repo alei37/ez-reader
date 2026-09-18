@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  foliate-js@1.0.1: 28d2bb19077d5b1f553b4ac3232da14d10a8efe9b6f4fcee2ebdc8ea9299a3ea
+  foliate-js@1.0.1: 518859ab3100a602b45969098042d3dfb0fdba2d31522003837fc698d0381610
 
 importers:
 
@@ -16,7 +16,7 @@ importers:
         version: 0.4.6
       foliate-js:
         specifier: 1.0.1
-        version: 1.0.1(patch_hash=28d2bb19077d5b1f553b4ac3232da14d10a8efe9b6f4fcee2ebdc8ea9299a3ea)
+        version: 1.0.1(patch_hash=518859ab3100a602b45969098042d3dfb0fdba2d31522003837fc698d0381610)
     devDependencies:
       '@types/node':
         specifier: ^22.15.2
@@ -662,7 +662,7 @@ snapshots:
 
   fflate@0.8.3: {}
 
-  foliate-js@1.0.1(patch_hash=28d2bb19077d5b1f553b4ac3232da14d10a8efe9b6f4fcee2ebdc8ea9299a3ea):
+  foliate-js@1.0.1(patch_hash=518859ab3100a602b45969098042d3dfb0fdba2d31522003837fc698d0381610):
     dependencies:
       construct-style-sheets-polyfill: 3.1.0
 

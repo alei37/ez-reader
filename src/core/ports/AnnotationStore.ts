@@ -89,6 +89,14 @@ export interface AnnotationStore {
 
   loadCoverPaths(): Promise<Readonly<Record<string, string>>>;
   saveCoverPaths(coverPaths: Record<string, string>): Promise<void>;
+  /**
+   * P0-3 修复: 原子地 read-modify-write coverPaths map. 旧 `saveCoverPaths`
+   * 是 caller 先 loadCoverPaths (读 cache) 再 saveCoverPaths (写) — 两个
+   * 并发 caller 都可能在 T1-T2 之间读到同一份旧 map, 然后后写的覆盖先写
+   * 的, 丢 coverPath. 现在 patch callback 在 mutate 内部读最新 cache 再 merge,
+   * 串行化在 writeChain 上 — 跟 patchSettings 同样的语义.
+   */
+  patchCoverPaths(patch: (paths: Record<string, string>) => Record<string, string>): Promise<void>;
 
   /**
    * Return the timestamp at which `bookId` was first added to the user's

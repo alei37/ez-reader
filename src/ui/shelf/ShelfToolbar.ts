@@ -1,4 +1,5 @@
 import type { ShelfFilter, SortCriterion } from "../../core/types/ShelfFilter";
+import { SHELF_DENSITIES, SHELF_DENSITY_LABELS, type ShelfDensity } from "../../core/types/ReaderSettings";
 
 export type ViewMode = "grid" | "list";
 
@@ -10,6 +11,8 @@ export interface ShelfToolbarHandlers {
   onAddToLibrary: () => void;
   /** Bulk-add every discovered-but-unadded book. */
   onAddAllToLibrary?: () => void;
+  /** Cycle to the next shelf cover density (compact → default → spacious → large → compact). */
+  onCycleShelfDensity?: () => void;
 }
 
 export interface ShelfToolbarState {
@@ -19,6 +22,7 @@ export interface ShelfToolbarState {
   readonly totalCount: number;
   readonly visibleCount: number;
   readonly availableCount: number;
+  readonly shelfDensity: ShelfDensity;
 }
 
 const SORT_LABELS: Record<SortCriterion, string> = {
@@ -41,6 +45,7 @@ export class ShelfToolbar {
   private readonly gridButton: HTMLButtonElement;
   private readonly listButton: HTMLButtonElement;
   private readonly addAllButton: HTMLButtonElement;
+  private readonly densityButton: HTMLButtonElement;
 
   constructor(handlers: ShelfToolbarHandlers, initial: ShelfToolbarState) {
     this.handlers = handlers;
@@ -96,6 +101,17 @@ export class ShelfToolbar {
     this.gridButton.addEventListener("click", () => this.handlers.onViewModeChange("grid"));
     this.listButton.addEventListener("click", () => this.handlers.onViewModeChange("list"));
 
+    // Density cycle button: 紧凑 → 默认 → 宽松 → 超大 → 紧凑 …
+    // 用 SVG 而不是 lucide setIcon 是因为 toolbar 不直接依赖 obsidian
+    // (setIcon 由 caller 注不注入都可, 这里用 inline svg 保证可移植)
+    this.densityButton = this.root.createEl("button", {
+      attr: { type: "button", "aria-label": "切换封面密度", title: "点击循环切换封面密度" }
+    });
+    this.densityButton.addClass("ez-reader__shelf-toolbar__density");
+    this.densityButton.addEventListener("click", () => {
+      if (this.handlers.onCycleShelfDensity) this.handlers.onCycleShelfDensity();
+    });
+
     this.countLabel = this.root.createEl("span", { text: "" });
     this.countLabel.addClass("ez-reader__shelf-toolbar__count");
     this.update(initial);
@@ -113,6 +129,17 @@ export class ShelfToolbar {
     } else {
       this.countLabel.setText(`${state.visibleCount} / ${state.totalCount}`);
     }
+    this.renderDensityButton(state.shelfDensity);
+  }
+
+  private renderDensityButton(density: ShelfDensity): void {
+    // 重建内容 — 简单可靠, 4 个档位不值得搞 diff. SVG icon 用 2×2/3×3 grid
+    // 暗示密度, 当前档位用 label 文字明确.
+    this.densityButton.empty();
+    const iconWrap = this.densityButton.createDiv({ cls: "ez-reader__shelf-toolbar__density__icon" });
+    iconWrap.innerHTML = densityIconSvg(density);
+    this.densityButton.createSpan({ text: SHELF_DENSITY_LABELS[density] });
+    this.densityButton.setAttribute("title", `封面密度: ${SHELF_DENSITY_LABELS[density]} (点击循环)`);
   }
 
   focus(): void {
@@ -139,6 +166,38 @@ const countActiveFilters = (filter: ShelfFilter): number => {
   if (filter.progressBuckets && filter.progressBuckets.length > 0) count += 1;
   if (filter.recency) count += 1;
   return count;
+};
+
+/**
+ * Tiny SVG glyph showing how many cover cells fit a row at each density.
+ * 4 cells = compact (lots of small covers), 1 cell = large (one big
+ * cover per row). Pure inline SVG so the toolbar doesn't pull in a
+ * icon library.
+ */
+const densityIconSvg = (density: ShelfDensity): string => {
+  switch (density) {
+    case "compact":
+      return `<svg viewBox="0 0 14 14"><rect x="0" y="2" width="3" height="10" rx="0.5"/><rect x="4" y="2" width="3" height="10" rx="0.5"/><rect x="8" y="2" width="3" height="10" rx="0.5"/></svg>`;
+    case "default":
+      return `<svg viewBox="0 0 14 14"><rect x="0" y="2" width="6" height="10" rx="0.5"/><rect x="8" y="2" width="6" height="10" rx="0.5"/></svg>`;
+    case "spacious":
+      return `<svg viewBox="0 0 14 14"><rect x="1" y="2" width="5" height="10" rx="0.5"/><rect x="8" y="2" width="5" height="10" rx="0.5"/></svg>`;
+    case "large":
+      return `<svg viewBox="0 0 14 14"><rect x="3" y="2" width="8" height="10" rx="0.5"/></svg>`;
+  }
+};
+
+/**
+ * Cycle helper exported so ShelfView can persist the change to
+ * PluginSettings via patchSettings. 4 discrete steps only — no custom
+ * values; the slider would be too fine-grained for a viewport-relative
+ * property like cover size.
+ */
+export const nextShelfDensity = (current: ShelfDensity): ShelfDensity => {
+  const idx = SHELF_DENSITIES.indexOf(current);
+  const safeIdx = idx >= 0 ? idx : 1;
+  const nextIdx = (safeIdx + 1) % SHELF_DENSITIES.length;
+  return SHELF_DENSITIES[nextIdx] ?? "default";
 };
 
 // Re-export createDiv so the file stands alone.

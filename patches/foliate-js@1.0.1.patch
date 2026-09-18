@@ -67,3 +67,94 @@ index 6babab63987edac57076f1533026238ba90c455f..fb97f22228128742f21825a2433d4a43
 -customElements.define('foliate-view', View)
 +if (!customElements.get('foliate-view'))
 +    customElements.define('foliate-view', View)
+diff --git a/epub.js b/epub.js
+--- a/epub.js
++++ b/epub.js
+@@ -853,7 +853,52 @@
+             for (const el of doc.querySelectorAll('[style]'))
+                 el.setAttribute('style',
+                     await this.replaceCSS(el.getAttribute('style'), href, parents))
++            // ez-reader patch: <link rel="stylesheet" href="..."> gets rewritten
++            // by foliate to blob: URLs. Obsidian's CSP rejects blob: as a
++            // stylesheet source, and the browser parses <link rel=stylesheet>
++            // synchronously on iframe load, so a MutationObserver can't run
++            // between parse and CSP reject. Inline the content as <style>
++            // elements instead. Non-stylesheet links (canonical, prefetch,
++            // etc.) keep the original blob: href treatment.
++            for (const el of doc.querySelectorAll('link[rel~="stylesheet"][href]')) {
++                const cssHref = el.getAttribute('href');
++                const url = await this.loadHref(cssHref, href, parents);
++                const cssText = await fetch(url).then((r) => r.text()).catch(() => '');
++                const style = doc.createElement('style');
++                style.dataset['ezReaderInlinedFrom'] = cssHref;
++                style.textContent = cssText;
++                el.replaceWith(style);
++            }
+             // TODO: replace inline scripts? probably not worth the trouble
++            // ez-reader patch: strip <script> / nested <iframe>/<frame> elements
++            // and on* / javascript: URL attributes before serializing. The
++            // section iframe is sandboxed without `allow-scripts`
++            // (fixed-layout.js / paginator.js), so leaving them in causes
++            // "Blocked script execution in 'blob:...'" console errors on every
++            // page flip. Nested iframes inherit the parent's no-allow-scripts
++            // sandbox flag too, so their own scripts would also be blocked.
++            // Inline scripts in untrusted book content shouldn't run anyway.
++            // Use getElementsByTagNameNS('*', name) to also catch SVG-namespace
++            // <script> elements (querySelectorAll only matches the HTML
++            // namespace; XHTML+SVG-in-EPUB uses SVG namespace for embedded
++            // SVG scripts).
++            for (const el of doc.getElementsByTagNameNS('*', 'script')) el.remove()
++            for (const el of doc.getElementsByTagNameNS('*', 'iframe')) el.remove()
++            for (const el of doc.getElementsByTagNameNS('*', 'frame')) el.remove()
++            for (const el of doc.querySelectorAll('*')) {
++                for (const attr of Array.from(el.attributes)) {
++                    if (attr.name.toLowerCase().startsWith('on')) el.removeAttribute(attr.name)
++                    // href/src on click would be a javascript: URL that the
++                    // sandboxed iframe also blocks on user click.
++                    if ((attr.name === 'href' || attr.name === 'src' ||
++                        attr.name === 'action' || attr.name === 'formaction' ||
++                        attr.name === 'poster' || attr.name === 'data' ||
++                        attr.name === 'xlink:href')
++                        && /^\s*javascript:/i.test(attr.value)) {
++                        el.removeAttribute(attr.name)
++                    }
++                }
++            }
+             const result = new XMLSerializer().serializeToString(doc)
+             return this.createURL(href, result, item.mediaType, parent)
+         }
+@@ -864,15 +909,28 @@
+         return this.createURL(href, result, mediaType, parent)
+     }
+     async replaceCSS(str, href, parents = []) {
+-        const replacedUrls = await replaceSeries(str,
++        // ez-reader patch: inline `@import` content instead of letting
++        // foliate replace it with a `blob:` URL. Obsidian's CSP rejects
++        // `blob:` stylesheet loading (style-src 'unsafe-inline' 'self'
++        // https://fonts.googleapis.com), and the browser parses @import
++        // synchronously when textContent is assigned, so a MutationObserver
++        // can never run between assignment and parse. Inline is the only
++        // option. url() replacement is kept — image/font refs go through
++        // CSP img-src / font-src, not style-src.
++        const importRe = /@import\s*["']([^"'\n]*?)["']/gi;
++        const importMatches = [...str.matchAll(importRe)];
++        if (importMatches.length > 0) {
++            const inlines = await Promise.all(importMatches.map((m) =>
++                this.loadHref(m[1], href, parents)
++                    .then((url) => fetch(url).then((r) => r.text()).catch(() => ""))
++            ));
++            let i = 0;
++            str = str.replace(importRe, () => inlines[i++] ?? "");
++        }
++        return replaceSeries(str,
+             /url\(\s*["']?([^'"\n]*?)\s*["']?\s*\)/gi,
+             (_, url) => this.loadHref(url, href, parents)
+                 .then(url => `url("${url}")`))
+-        // apart from `url()`, strings can be used for `@import` (but why?!)
+-        return replaceSeries(replacedUrls,
+-            /@import\s*["']([^"'\n]*?)["']/gi,
+-            (_, url) => this.loadHref(url, href, parents)
+-                .then(url => `@import "${url}"`))
+     }
+     // find & replace all possible relative paths for all assets without parsing
+     replaceString(str, href, parents = []) {
