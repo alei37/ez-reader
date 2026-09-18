@@ -9,7 +9,7 @@
 **项目**: Obsidian 社区市场插件 `ez-reader`(从零重写,非 fork)。
 **位置**: `/home/ljl/dsh/ezreader/`
 **远程仓库**: `git@github.com:alei37/ez-reader.git`,分支 `main`
-**当前 HEAD**: `58f8e63` — "refactor: PagedTextSession dispose 精修 — off() self-remove + close() 发 event"
+**当前 HEAD**: `846de91` — "feat(reader): UX v3 — quick actions + inline note + tabs + chapter dots + 翻译复制"
 **测试/部署路径**: `/home/ljl/obsidian/obsidian_alei/.obsidian/plugins/ez-reader/`
 **架构**: 分层端口-适配器(Port/Adapter) + 严格 core/adapters/ui 分层。
 **支持格式**:
@@ -69,10 +69,12 @@
 ├── dist/                    ← CI 发布的预构建 (manifest.json + styles.css)
 ├── reports/                 ← 历史研究文档
 │   └── sunny-research-report.md  ← 项目早期研究笔记(过时但有 context)
-├── main.js                  ← 构建产物 (~842 KB, gitignored)
-├── styles.css               ← 全部样式 (~45 KB)
+├── main.js                  ← 构建产物 (~919 KB, gitignored)
+├── styles.css               ← 全部样式 (~71 KB)
 ├── tests/
-│   ├── core/                ← 单元测试 (Node --test)
+│   ├── core/                ← 单元测试 (Node --test) — 14 个 .test.ts 文件
+│   │   ├── stubs/obsidian-stub.mjs  ← obsidian types-only 的 stub + DOM helper install
+│   │   └── *.test.ts
 │   └── dist/core/           ← 测试 bundle (esbuild 产物)
 └── src/
     ├── main.ts              ← 入口
@@ -233,17 +235,24 @@ private makeTextReader(): BookReader {
 | `src/adapters/text/PagedTextSession.ts` | TXT + MOBI 共享的页面渲染 | 改翻页/选词/highlight |
 | `src/adapters/foliate/FoliateBookReader.ts` | EPUB foliate-js 封装 | 改 EPUB 行为、iframe 事件转发 |
 | `src/ui/reader/pdfOverlay.ts` | ~1200 行,PDF 选词/黄条/笔记侧边栏 | 改 PDF 体验,加 thought/highlight 功能 |
-| `src/ui/reader/ReaderView.ts` | ~1700 行,阅读器主视图 | 加阅读器功能、改键盘/手势/沉浸 |
-| `src/ui/reader/ReaderToolbar.ts` | 工具栏 (最左目录 icon,最右 close icon) | 改工具栏布局/按钮 |
-| `src/ui/reader/ReaderSelectionMenu.ts` | 选词浮层菜单(想法/摘录/翻译/复制) | 改菜单位置/快捷键 |
+| `src/ui/reader/ReaderView.ts` | ~1900 行,阅读器主视图 (含 tocMarkers / quick* / chapter 同步) | 加阅读器功能、改键盘/手势/沉浸 |
+| `src/ui/reader/ReaderToolbar.ts` | 工具栏 (最左目录 icon,最右 close icon) + 章节标记条 | 改工具栏布局/按钮 |
+| `src/ui/reader/ReaderSelectionMenu.ts` | 选词浮层菜单(想法/摘录/翻译/复制) + 快捷键小字提示 | 改菜单位置/快捷键 |
+| `src/ui/reader/ShortcutHelpModal.ts` | `?` 弹出的快捷键分组表格 modal | 改快捷键列表 |
+| `src/ui/reader/readerShortcuts.ts` | 纯函数键盘路由 (含 quickHighlight / quickBookmark) | 加/改快捷键 |
+| `src/ui/reader/BookmarksPanel.ts` | 书签面板 (chapter+%+时间上下文,jump+remove 共一行) | 改书签 UX |
+| `src/ui/reader/ExcerptsPanel.ts` | 摘录面板卡片式 (chapter+quote+note+tags+动作) | 改摘录 UX |
+| `src/ui/reader/SidebarNotesPanel.ts` | 笔记侧栏 (tabs 全部/想法/摘录 + inline note 编辑) | 改笔记 UX |
+| `src/ui/reader/TranslationDrawer.ts` | 翻译抽屉 (max-height 50vh + copy 按钮) | 改翻译 UX |
 | `src/ui/shelf/ShelfView.ts` | 书架主视图 + 右键菜单 | 改书架布局、增右键菜单项 |
 | `src/ui/shelf/AddToLibraryModal.ts` | 加入书籍弹窗,选书界面 | 改批量加入流程 |
-| `src/core/services/LibraryService.ts` | 489 行,library 状态管理 | 加新书操作、改排序/筛选 |
-| `src/core/services/ReadingService.ts` | ~150 行,reading/highlight/annotation 状态 | 加 annotation 类型 |
+| `src/core/services/LibraryService.ts` | ~500 行,library 状态管理 | 加新书操作、改排序/筛选 |
+| `src/core/services/ReadingService.ts` | ~160 行,reading/highlight/annotation 状态 + `updateExcerptNote` patch API | 加 annotation 类型 |
 | `src/core/entities/Book.ts` | Book interface | 加新字段(像 `pinnedAt`) |
 | `src/core/ports/BookReader.ts` | BookReader/ReaderSession 接口 | 加 reader 能力(zoom/highlight) |
-| `src/core/ports/AnnotationStore.ts` | 持久化接口 | 加新 store 方法 |
-| `styles.css` | 全部样式 (~45 KB) | 任何视觉调整 |
+| `src/core/ports/AnnotationStore.ts` | 持久化接口 (含 `updateExcerptNote`) | 加新 store 方法 |
+| `tests/stubs/obsidian-stub.mjs` | obsidian types-only stub + `installObsidianDomHelpers(HTMLElement)` | 加新 UI 测试时复用 |
+| `styles.css` | 全部样式 (~71 KB) | 任何视觉调整 |
 | `manifest.json` | 插件元数据 | 改版本、minAppVersion |
 | `esbuild.config.mjs` | 主构建 | 加新 worker/loader |
 
@@ -255,7 +264,7 @@ private makeTextReader(): BookReader {
 ```bash
 cd /home/ljl/dsh/ezreader
 pnpm install          # 第一次或依赖变了
-pnpm run build        # 产出 main.js (~842 KB)
+pnpm run build        # 产出 main.js (~919 KB)
 ```
 
 `pnpm run build` = `tsc --noEmit --skipLibCheck && node esbuild.config.mjs production`
@@ -269,7 +278,7 @@ pnpm test
 
 **测试在 `tests/core/` 下,只测 `core/` 里的服务, 不启动 Obsidian**。
 
-**当前**: 197/197 通过
+**当前**: 242/242 通过 (14 个 .test.ts,涵盖 core + ui panel/styling)
 
 **测试 bundle ESM/CJS interop**:
 - `esbuild.tests.config.mjs` externalize `obsidian`, `jsdom`, 和 Node built-ins (`path`, `fs`, `url`, `os`, `crypto`, `stream`, `buffer`, `util`, `events`, `assert`, `child_process`)
@@ -303,16 +312,11 @@ Obsidian 桌面版支持插件热重载(在设置里打开),改了代码后:
 
 ## 7. 已知 P1/P2 polish 项(不阻塞,留作下一轮)
 
-> 同步到 commit `58f8e63` (2026-09-18)。最近一轮修了:
-> - MOBI 内部 `<a href>` link-click 闭环 (`goToSpineId` + ReaderView handler)
-> - PagedTextSession dispose 精修 (off() self-remove + close() dispatch close event)
-> - PagedTextSession.selectionCleanup 翻页前解绑 (无 listener 累积)
-> - guessTitleFromText 5 类强信号 + 弱信号兜底(古文不误识别)
-> - sanitizeHtml 把 `<a href>` 改写到 `data-ez-reader-href`(避免 navigate away)
-> - foliate-js patch: inline `@import blob:` + 删除 `<script>` + 删 on* + javascript: URL
-> - cover cache race fix + patchCoverPaths 原子化
-> - 真进度持久化(ReadingService.onChange → LibraryService.updateReading 同步)
-> - 笔记 note 字段可折叠
+> 同步到 commit `846de91` (2026-09-18,feat(reader): UX v3 — quick actions + inline note + tabs + chapter dots + 翻译复制)。最近一轮修了:
+> - **8 项 P2 reader 交互优化**(详见 §11),目标是减少 modal 打断、加快注释流
+> - 6 项 P1 用户反馈(bookmark/excerpt panel UX,详见 §11)
+> - **Red badge 改灰色**(toolbar 书签 / 摘录按钮右上角之前像待办, 现在 `var(--background-modifier-border)` 灰底)
+> - **EPUB chapter 实时同步** — foliate `relocate` 事件 detail 没 chapter 字段, 之前 ReaderView 只在 `if (detail.chapter)` 分支更新 → `this.chapter` 永远是 "" → 保存的书签 chapter 全空. 现在 `openSession` 完成后立即调 `currentChapter()`,relocate 触发时也实时读 `session.currentChapter()` → toolbar / bookmark modal / 摘录面板全部能拿到真实章节标题
 
 ### P1(用户体验)
 - **MOBI 大文件 parser 阻塞主线程** — 2-5s 同步解压,UI 假死(需要 Web Worker 化)
@@ -322,7 +326,6 @@ Obsidian 桌面版支持插件热重载(在设置里打开),改了代码后:
 ### P2(代码质量)
 - **CI/release workflow** — 没 `.github/workflows/release.yml` 自动打 zip
 - **Manifest description / README 截图** — 准备 public release 前可补
-- **`AGENTS.md` 行数仍偏 stale** — pdfOverlay/ReaderView/ReadingService 实际行数已变
 - **`buildAppearanceCss` / `buildPagedTextCss` 还存在** — 共享 `themeColors` 已拆, 但 buildAppearanceCss / buildPagedTextCss 各自仍有颜色变量重复, 进一步可统一
 
 ### 已知用户体验细节
@@ -399,6 +402,136 @@ feat: TXT/MOBI reader + PDF 跳转 + 沉浸/panel fix + 置顶功能
 ## 10. 一句话总结
 
 这是一个**从零重写的 Obsidian 阅读器插件**,核心是用分层架构支持 EPUB + PDF + TXT + MOBI/AZW3,正在打磨阅读器体验对标微信读书。**重点是 esbuild `await import("obsidian")` 陷阱、Obsidian PDFView DOM 兼容性、CSP blob: 拒绝**这三类坑;**改完一定要 `pnpm run build` + 部署 + 让用户在 Obsidian 真实环境测试**。
+
+---
+
+## 11. Reader UX v3 详解 (commit `846de91`)
+
+> 这一轮目标是 **减少 modal 打断、加快注释流**,对标微信读书 / Apple Books 的"一键 + 上下文可见"。
+
+### 11.1 Quick actions (无 modal)
+
+| 快捷键 | 行为 | 实现位置 |
+|---|---|---|
+| `H` (裸) | quickHighlight — 选词后直接保存摘录 + 黄色高亮 | `ReaderView.quickHighlight` → `saveExcerptCore(text, "", [], quick=true)` |
+| `B` (裸) | quickBookmark — 一键加书签, label = `chapter · %` | `ReaderView.quickBookmark` → `composeQuickBookmarkLabel(chapter, fraction)` |
+| `Shift+H` | excerpt (modal) — 保留原有弹出 note + tags 输入的流程 | `ReaderView.saveExcerptFromSelection` |
+
+**设计动机**: 微信读书 / Apple Books / Readwise 的"加书签/高亮"都是一键, modal 流打断阅读流. v3 把这两个高频动作降到单键, modal 流仍保留作为 `Shift+H` 路径.
+
+### 11.2 Selection menu 快捷键提示
+
+`ReaderSelectionMenu` 构造时接受 `hints?: { thought, excerpt, translate, copy }`. 按钮渲染时把快捷键作为小字 hint (`.ez-reader__selection-menu__hint`) 显示在主 label 下方 — 用户不按 `?` 也能发现快捷键. CSS 媒体查询 `< 500px` 自动隐藏 hint (移动端 popover 挤不下).
+
+ReaderView 注入的 hints:
+- `想法`: `Shift+T`
+- `摘录`: `Shift+H`
+- `翻译`: `undefined` (翻译直接走 Shift+T 重叠, 不显示)
+- `复制`: `C`
+
+### 11.3 ShortcutHelpModal (`?` 键)
+
+`src/ui/reader/ShortcutHelpModal.ts` — `?` 按下时弹出的分组表格 modal. 替代之前 `Notice` 长文本 (被截断 + 自动消失).
+
+分组: 翻页 / 注释 — 一键保存 / 注释 — 翻译 / 复制 / 面板 / 沉浸 / 搜索 / 其它. 每个键用 `<kbd>` 标签呈现, Esc 关闭.
+
+底部 footer 显示用户当前的 `prev / next / sidebar / toc / translate / highlight` 实际绑定 — 一眼看出"我改过没".
+
+### 11.4 Inline note 编辑 (核心 UX)
+
+**问题**: SidebarNotesPanel 之前只能通过 ✎ 按钮打开 modal 改 note, 用户路径太长.
+
+**P2 方案**:
+- `SidebarNotesHandlers.onUpdateNote?: (excerpt, note) => Promise<void>` — 新增 handler
+- 点 ▸ 展开 → **自动进 contenteditable** (`data-editing="1"` sentinel 标志, 避开 jsdom 不支持的 `isContentEditable`)
+- blur / Cmd+Enter / **再点 ▸ 收起** → 自动 commit (调 `onUpdateNote`)
+- Esc → 还原原文字 (cancel)
+- 失败 → 回滚 DOM textContent 到原 note, console.warn
+
+**数据层新增 API**:
+```ts
+// AnnotationStore
+updateExcerptNote(bookId, excerptId, patch: { note?, tags? }): Promise<void>
+
+// ReadingService — 同上包装
+updateExcerptNote(bookId, excerptId, patch)
+
+// ReaderView
+updateExcerptNoteInline(excerpt, note): Promise<void>  // 包装给 UI
+editExcerpt: 改用 patch 路径 (原 remove+add 太重, 现在不重写 highlight)
+```
+
+### 11.5 Notes panel tabs
+
+`SidebarNotesPanel.typeFilter: "all" | "thought" | "excerpt"`. 顶部 [全部 / 想法 / 摘录] tab 一对一, 每个 tab 带 count chip.
+
+- thought = `!excerpt.text?.trim()` (openFreeThoughtModal 创建的)
+- excerpt = `!!excerpt.text?.trim()` (选词保存的)
+
+数量无论多少都显示 tabs (不像搜索框 ≥5 条才显示).
+
+### 11.6 TranslationDrawer 改进
+
+- `max-height: 50vh` — 长译文不再撑出屏幕, body 内部 `overflow-y: auto`
+- 新增 `onCopy?: (translation) => Promise<void> | void` handler
+- "复制" 按钮 — 复制成功后短暂变 "✓ 已复制" (1.5s 后还原)
+
+ReaderView 注入 `onCopy: copyTextToClipboard` (复用 selection menu 同一 `navigator.clipboard.writeText` 路径).
+
+### 11.7 章节标记条 (chapter markers)
+
+`ReaderToolbar.tocMarkersBar` — 进度条正下方一行 (高度 6px, max-width 320px). 每个点对应一个 toc item 的 fraction 位置.
+
+**被动记录机制**:
+- `ReaderView.tocFractions: Map<id, number>` — 滚动过程中 relocate handler 拿到 chapter label → 在 tocItems 里找匹配 id → 写 `(id, fraction)`. **只在第一次记录** (Map.has 检查).
+- `toolbarState()` 把 tocFractions + tocItems 拼成 `{ id, label, fraction }[]` 传给 toolbar.
+- `updateTocMarkers()` 用 inline style `left: ${frac * 100}%` 渲染小圆点.
+
+**交互**:
+- Hover → 圆点变 1.4x + 主题色 (Obsidian `--interactive-accent`)
+- Click → `onJumpToc(id)` → `ReaderView.jumpToTocById(id)` → `session.goToToc(id)`
+- 0% / 100% 端点跳过 (跟 slider 端点重合)
+- 没 markers 时容器 `is-empty` class → `height: 0`, 不占空间
+
+**注意**: 第一次打开书时 markers 为空, 用户滚几屏后才出现. 这是设计权衡 — 主动 seek 探测所有 toc item 会有性能成本 + 闪烁. 被动方案自然稳定.
+
+### 11.8 Toolbar 红 badge 改灰
+
+`.ez-reader__reader-toolbar__badge` 之前用 `var(--color-red, var(--interactive-accent))` 红底 + 白字 — 用户说"像待办". 改用 `var(--background-modifier-border, var(--background-modifier-hover))` 灰底 + `var(--text-muted)` 灰字. 不再像 unread badge.
+
+### 11.9 书签面板 UX (P1 反馈轮)
+
+- jump 按钮和 × 删除按钮**同一行** (`.ez-reader__bookmark-row__action-row`), 之前 remove 单独占一行, 浪费纵向空间.
+- chapter / % / 时间上下文显示 (context-line 在 action-row 之上)
+- 空 chapter 的旧书签: 只渲染 % 和时间, 不渲染空 `<span class="...__chapter">` 避免空白 chip.
+
+### 11.10 摘录面板 UX (P1 反馈轮)
+
+- 卡片式: chapter + 时间 → 原文 blockquote (浅灰底 + 蓝边) → note (浅黄底, 有 note 时) → tags → jump/delete 按钮
+- 自由想法 (`text === ""`, "+想法" 走 `openFreeThoughtModal` 创建的): 不渲染空 blockquote, 显示 `💭 自由想法` badge (斜体浅黄)
+
+### 11.11 EPUB 选词 menu 修复 (P1 反馈轮)
+
+`FoliateBookReader.bindSelectionChange.attach` 在原 `selectionchange` 之上加 `mouseup` / `pointerup` / `touchend` 三重兜底 — foliate 沙盒 iframe (`sandbox="allow-same-origin"`) 内 selectionchange 不可靠, 加上 pointer/touch 事件覆盖桌面 + 移动端.
+
+### 11.12 NotesPanel / BookmarksPanel / ExcerptsPanel header × 按钮 (P1 反馈轮)
+
+所有 reader panel header 现在统一有 × 按钮 (mobile / narrow layout). Esc 键也走同一条 `hideAllPanels` 路径 — 之前只关 tocPanel, 三个其他 panel Esc 没反应.
+
+### 11.13 测试基础设施
+
+新加 `tests/stubs/obsidian-stub.mjs`:
+- obsidian 是 types-only (`@types/obsidian` 不会出现在运行时)
+- esbuild alias: `"obsidian" → stubPath` (绝对路径 via `fileURLToPath`)
+- stub 导出 `Modal`, `App`, `Plugin`, `Setting`, `Notice`, `Platform`, `setIcon`, `setTooltip`, `default`
+- 关键导出 `installObsidianDomHelpers(HTMLElementCtor)` — 把 Obsidian 风格的 `createDiv`/`createEl`/`createSpan`/`empty`/`addClass`/`removeClass`/`toggleClass`/`setText` 工厂方法 patch 到给定构造函数的 prototype
+- jsdom 每个实例有独立的 `HTMLElement.prototype`, stub **不在加载时污染 globalThis.HTMLElement**, 而是让测试在 setup 后显式调 `installObsidianDomHelpers(globalThis.HTMLElement)`
+- 经验: jsdom 的 `note.isContentEditable` 是 undefined (contentEditable 属性不可观察), 用自己的 `data-editing="1"` sentinel 标志
+
+新加 `tests/core/ReaderPanelPolish.test.ts` — 15 个测试, 涵盖:
+- BookmarksPanel: chapter/%/时间渲染 / 排序 / action-row / 旧书签兼容
+- ExcerptsPanel: 卡片 / quote/note/tags 渲染 / thought badge (空 text 退化)
+- SidebarNotesPanel: × close button / tabs / inline note patch / tab filter
 
 ---
 
