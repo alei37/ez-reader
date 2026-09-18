@@ -21605,6 +21605,13 @@ var ReaderView = class extends import_obsidian15.ItemView {
     if (this.isImmersive) {
       this.ensureImmersiveExitButton(container);
     }
+    this.tocPanel = new TocPanel(
+      {
+        onJump: (item) => void this.jumpToTocItem(item),
+        onClose: () => this.hideAllPanels()
+      },
+      body
+    );
     this.notesPanel = new SidebarNotesPanel(
       {
         app: this.deps.app,
@@ -21628,13 +21635,6 @@ var ReaderView = class extends import_obsidian15.ItemView {
       this.notesPanel.hide();
     }
     this.host = body.createDiv({ cls: "ez-reader__reader__stage" });
-    this.tocPanel = new TocPanel(
-      {
-        onJump: (item) => void this.jumpToTocItem(item),
-        onClose: () => this.hideAllPanels()
-      },
-      body
-    );
     this.translationDrawer = new TranslationDrawer(
       {
         onSaveAsNote: (src, translated) => void this.saveTranslationAsNote(src, translated),

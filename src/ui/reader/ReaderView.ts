@@ -403,6 +403,18 @@ export class ReaderView extends ItemView {
       this.ensureImmersiveExitButton(container);
     }
 
+    // TocPanel 在 body 最左 (DOM 顺序第一), 这样 flex row 从左到右布局:
+    //   [tocPanel] [notesPanel] [stage]
+    // 用户反馈 toc 在最右看着别扭 — 之前放 stage 后面变成最右. 现在无论
+    // notesPanel 是否显示, tocPanel 永远在最左, stage 永远在最右.
+    this.tocPanel = new TocPanel(
+      {
+        onJump: (item) => void this.jumpToTocItem(item),
+        onClose: () => this.hideAllPanels()
+      },
+      body
+    );
+
     this.notesPanel = new SidebarNotesPanel(
       {
         app: this.deps.app,
@@ -427,16 +439,6 @@ export class ReaderView extends ItemView {
     }
 
     this.host = body.createDiv({ cls: "ez-reader__reader__stage" });
-
-    // TocPanel 现在是左侧边栏 (320px), 跟 notesPanel 同侧互斥显示 —
-    // v4 UX: 树状结构 + ▶/▼ 折叠, 不再是顶部下拉.
-    this.tocPanel = new TocPanel(
-      {
-        onJump: (item) => void this.jumpToTocItem(item),
-        onClose: () => this.hideAllPanels()
-      },
-      body
-    );
 
     this.translationDrawer = new TranslationDrawer(
       {
