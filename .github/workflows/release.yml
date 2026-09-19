@@ -1,0 +1,83 @@
+# GitHub Actions workflow: build + package + publish an Obsidian Community Plugin release.
+#
+# Triggered when a tag matching `v*` (e.g. v0.2.0, v1.0.0-rc1) is pushed to the
+# remote. The workflow:
+#   1. Installs pnpm dependencies (frozen lockfile, deterministic).
+#   2. Runs the production build (esbuild bundles src/main.ts -> main.js).
+#   3. Packages main.js + manifest.json + styles.css into a versioned zip
+#      (filename derived from manifest.json so we don't hard-code the version).
+#   4. Creates / updates a GitHub Release for the tag and attaches the zip
+#      plus the three raw plugin files so users can grab either form.
+#
+# Required secrets / permissions:
+#   - `GITHUB_TOKEN` — automatically provided by GitHub Actions; no manual
+#     setup needed. `softprops/action-gh-release@v2` uses it to create the
+#     release and upload assets.
+#
+# Notes:
+#   - Version is read dynamically from `manifest.json` (`jq -r .version`), so
+#     there is exactly one place to bump when cutting a release.
+#   - We do NOT touch `dist/` — that directory holds pre-built artifacts for
+#     local installs and is unrelated to the release pipeline.
+#   - Releases are created as `latest`; if you need a prerelease, edit the
+#     `prerelease:` line below or cut the tag as `v0.3.0-rc1` and the
+#     `softprops` action will respect any leading `pre`/`rc`/`beta` segment
+#     based on tag name conventions.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required for softprops/action-gh-release to create the release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build plugin
+        # tsc --noEmit --skipLibCheck ensures types still compile (esbuild
+        # alone doesn't catch type errors), then esbuild bundles main.js.
+        run: pnpm run build
+
+      - name: Zip release artifacts
+        # Version is pulled from manifest.json so we never hard-code "0.2.0"
+        # here — bumping the plugin just means editing manifest.json + tagging.
+        run: |
+          version=$(jq -r .version manifest.json)
+          zip ez-reader-${version}.zip main.js manifest.json styles.css
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The release body is intentionally short — README.md has the full
+          # user-facing changelog. Tag annotations are surfaced by GitHub
+          # automatically. Set generate_release_notes: true if you want
+          # GitHub to auto-aggregate merged PRs into the notes.
+          generate_release_notes: true
+          files: |
+            ez-reader-*.zip
+            main.js
+            manifest.json
+            styles.css
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
