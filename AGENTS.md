@@ -9,7 +9,7 @@
 **项目**: Obsidian 社区市场插件 `ez-reader`(从零重写,非 fork)。
 **位置**: `/home/ljl/dsh/ezreader/`
 **远程仓库**: `git@github.com:alei37/ez-reader.git`,分支 `main`
-**当前 HEAD**: `846de91` — "feat(reader): UX v3 — quick actions + inline note + tabs + chapter dots + 翻译复制"
+**当前 HEAD**: `75b69c0` — "chore: 删 15 个 unused index.ts barrel 文件"
 **测试/部署路径**: `/home/ljl/obsidian/obsidian_alei/.obsidian/plugins/ez-reader/`
 **架构**: 分层端口-适配器(Port/Adapter) + 严格 core/adapters/ui 分层。
 **支持格式**:
@@ -56,7 +56,7 @@
 ├── AGENTS.md                ← 你正在读
 ├── README.md                ← 用户面向文档 (中文)
 ├── PRIVACY.md
-├── manifest.json            ← plugin id: "ez-reader", version 0.1.0, mobile OK
+├── manifest.json            ← plugin id: "ez-reader", version 0.2.0, mobile OK
 ├── package.json             ← pnpm 11.9.0, Node >= 22.13, esbuild
 ├── pnpm-workspace.yaml      ← pnpm workspace (单包)
 ├── esbuild.config.mjs       ← 主构建 (src/main.ts → main.js)
@@ -69,10 +69,10 @@
 ├── dist/                    ← CI 发布的预构建 (manifest.json + styles.css)
 ├── reports/                 ← 历史研究文档
 │   └── sunny-research-report.md  ← 项目早期研究笔记(过时但有 context)
-├── main.js                  ← 构建产物 (~919 KB, gitignored)
-├── styles.css               ← 全部样式 (~71 KB)
+├── main.js                  ← 构建产物 (~929 KB, gitignored)
+├── styles.css               ← 全部样式 (~77 KB)
 ├── tests/
-│   ├── core/                ← 单元测试 (Node --test) — 14 个 .test.ts 文件
+│   ├── core/                ← 单元测试 (Node --test) — 29 个 .test.ts 文件
 │   │   ├── stubs/obsidian-stub.mjs  ← obsidian types-only 的 stub + DOM helper install
 │   │   └── *.test.ts
 │   └── dist/core/           ← 测试 bundle (esbuild 产物)
@@ -101,7 +101,7 @@
 - **plugin id**: `ez-reader` (manifest.json + Plugin 装配用)
 - **minAppVersion**: `1.12.7`
 - **isDesktopOnly**: `false` (移动端 OK)
-- **version**: `0.1.0` (没 bump,即使改了很多)
+- **version**: `0.2.0` (release prep commit `63c071b` 已 bump)
 
 ---
 
@@ -252,7 +252,7 @@ private makeTextReader(): BookReader {
 | `src/core/ports/BookReader.ts` | BookReader/ReaderSession 接口 | 加 reader 能力(zoom/highlight) |
 | `src/core/ports/AnnotationStore.ts` | 持久化接口 (含 `updateExcerptNote`) | 加新 store 方法 |
 | `tests/stubs/obsidian-stub.mjs` | obsidian types-only stub + `installObsidianDomHelpers(HTMLElement)` | 加新 UI 测试时复用 |
-| `styles.css` | 全部样式 (~71 KB) | 任何视觉调整 |
+| `styles.css` | 全部样式 (~77 KB) | 任何视觉调整 |
 | `manifest.json` | 插件元数据 | 改版本、minAppVersion |
 | `esbuild.config.mjs` | 主构建 | 加新 worker/loader |
 
@@ -264,7 +264,7 @@ private makeTextReader(): BookReader {
 ```bash
 cd /home/ljl/dsh/ezreader
 pnpm install          # 第一次或依赖变了
-pnpm run build        # 产出 main.js (~919 KB)
+pnpm run build        # 产出 main.js (~929 KB)
 ```
 
 `pnpm run build` = `tsc --noEmit --skipLibCheck && node esbuild.config.mjs production`
@@ -278,7 +278,7 @@ pnpm test
 
 **测试在 `tests/core/` 下,只测 `core/` 里的服务, 不启动 Obsidian**。
 
-**当前**: 242/242 通过 (14 个 .test.ts,涵盖 core + ui panel/styling)
+**当前**: 307/307 通过 (29 个 .test.ts,涵盖 core + ui panel/styling)
 
 **测试 bundle ESM/CJS interop**:
 - `esbuild.tests.config.mjs` externalize `obsidian`, `jsdom`, 和 Node built-ins (`path`, `fs`, `url`, `os`, `crypto`, `stream`, `buffer`, `util`, `events`, `assert`, `child_process`)
@@ -312,11 +312,12 @@ Obsidian 桌面版支持插件热重载(在设置里打开),改了代码后:
 
 ## 7. 已知 P1/P2 polish 项(不阻塞,留作下一轮)
 
-> 同步到 commit `846de91` (2026-09-18,feat(reader): UX v3 — quick actions + inline note + tabs + chapter dots + 翻译复制)。最近一轮修了:
-> - **8 项 P2 reader 交互优化**(详见 §11),目标是减少 modal 打断、加快注释流
-> - 6 项 P1 用户反馈(bookmark/excerpt panel UX,详见 §11)
-> - **Red badge 改灰色**(toolbar 书签 / 摘录按钮右上角之前像待办, 现在 `var(--background-modifier-border)` 灰底)
-> - **EPUB chapter 实时同步** — foliate `relocate` 事件 detail 没 chapter 字段, 之前 ReaderView 只在 `if (detail.chapter)` 分支更新 → `this.chapter` 永远是 "" → 保存的书签 chapter 全空. 现在 `openSession` 完成后立即调 `currentChapter()`,relocate 触发时也实时读 `session.currentChapter()` → toolbar / bookmark modal / 摘录面板全部能拿到真实章节标题
+> 同步到 commit `75b69c0` (2026-09-19,chore: 删 15 个 unused index.ts barrel 文件)。最近三轮修了:
+> - **v5 TocPanel**(commit `87e3194`,详见 §12)— 键盘导航 + 自动滚到当前章节 + 面包屑 + 章节计数 chip + 搜索高亮 + 进度点 (visited/current/unvisited)
+> - **v6 TocPanel**(commit `a67aa9c`,详见 §13)— header 两行重排 + 加宽 320→380px + 缩进竖线修复 + visited 持久化 (AnnotationSnapshot.visitedTocIdsByBookId)
+> - **UX v3**(commit `846de91`,详见 §11)— 8 项 P2 reader 优化 + 6 项 P1 反馈轮 + 红 badge 改灰 + EPUB chapter 实时同步
+> - **TOC 移到 body 最左**(commit `442feb7`)— 之前在 stage 右边变成最右, 现在 flex row 永远是 [toc] [notes] [stage]
+> - **cleanup**(commit `75b69c0`,详见 §14)— 删 15 个 dead barrel 文件
 
 ### P1(用户体验)
 - **MOBI 大文件 parser 阻塞主线程** — 2-5s 同步解压,UI 假死(需要 Web Worker 化)
@@ -532,6 +533,275 @@ ReaderView 注入 `onCopy: copyTextToClipboard` (复用 selection menu 同一 `n
 - BookmarksPanel: chapter/%/时间渲染 / 排序 / action-row / 旧书签兼容
 - ExcerptsPanel: 卡片 / quote/note/tags 渲染 / thought badge (空 text 退化)
 - SidebarNotesPanel: × close button / tabs / inline note patch / tab filter
+
+---
+
+## 12. TocPanel v5 详解 (commit `87e3194`)
+
+> 这一轮把目录面板从"只支持鼠标点击"升级到"键盘 + 自动滚动 + 进度可视化",对标 Obsidian 自带 outline panel 的体感. 文件 `src/ui/reader/TocPanel.ts` 从 ~470 行扩到 823 行.
+
+### 12.1 键盘导航 (↑↓ Home End ←→ Enter Space Esc)
+
+**设计动机**: 用户反馈"目录打开后只能鼠标点章节, 频繁操作很慢". v5 加键盘 navigation — 不用离开键盘就能滚整个 TOC.
+
+**实现位置**: `src/ui/reader/TocPanel.ts:601-680` (`handleKeyDown`).
+
+| 键 | 行为 |
+|---|---|
+| `↓` / `↑` | moveFocus(±1) — 上下移动焦点, 跨过折叠的 children |
+| `Home` / `End` | 跳到第一个 / 最后一个可见 row |
+| `→` | 父项 toggle(展开→折叠 / 折叠→展开); 叶子无动作 |
+| `←` | 父项且展开 → 折叠; 否则跳到父 row |
+| `Enter` / `Space` | 跳到 focused row (调 `onJump(item)`) |
+| `Esc` | 让 ReaderView 统一处理 (关 panel) |
+
+**capture-phase + contains 检查**避免跟 Obsidian 全局快捷键冲突:
+- listener 挂在 `panel root` 上, `addEventListener("keydown", handler, true)` (capture)
+- handler 第一行 `if (!this.root.contains(target)) return;` — 焦点在 panel 外直接 return, 让 ReaderView 容器层 handler 接管 (翻页/页码)
+- ReaderView 容器层 handler (在 `ReaderView.bindKeyboardNavigation:760-780`) 又做了一次 `if (this.tocPanel?.isVisible() && this.tocPanel.contains(event.target)) return;` 兜底, 防止 Home/End/Space 在 panel 内触发翻页
+
+**焦点视觉**:
+- `data-toc-id` 标记每个 row, focused row 加 `.is-focused` class → CSS outline (`.ez-reader__toc-row.is-focused:2264`)
+- 当前章节也 focused 时用 inset shadow (避免 outline 喧宾夺主): `.ez-reader__toc-row.is-focused.is-active:2268`
+- 焦点初值跟 active row (`setActive` / `show` / `toggle` 三处都设); 关 panel 时清掉 (`hide` 调 `focusedId = null`)
+- 焦点在 search input 时让浏览器自己处理 (Esc 清空 query 等), 不接管
+
+### 12.2 scrollActiveIntoView — setActive 时自动滚到可视区
+
+**问题**: 用户开 panel 时, active row 可能不在可视区 (scroll position 是阅读器的, 跟 panel 无关), 用户得手动滚 panel 才能看到当前章节.
+
+**实现位置**: `src/ui/reader/TocPanel.ts:298-309` (方法) + 调用点在 `setActive:190`, `show:214`, `toggle:239`.
+
+**机制**:
+- `private scrolledIds: Set<string>` — 记录已自动滚过的 id
+- `scrollActiveIntoView(id)` — 第一次见到这个 id 时 `scrollIntoView({block:"nearest"})`, 同 id 后续 setActive 直接 return
+- `setToc` 时 `scrolledIds = new Set()` 重置 (换书)
+
+**为什么 dedup**: `relocate` 事件在用户翻页 / scroll 时高频触发, ReaderView 每次都 `setActive(match.id)` (在 ReaderView:1085). 如果不 dedup, 每次都 scrollIntoView 会打断用户手动滚动 panel.
+
+**show() 处的特殊处理**: 如果 panel 之前 hidden, setActive 时 `scrollIntoView` 是 no-op (隐藏元素没 scroll position). show() 里手动 force 一次 (`scrolledIds` 不考虑这种情况).
+
+### 12.3 面包屑 (current chapter path)
+
+**设计动机**: 用户看大书 (e.g. "PART I → Chapter 2 → 2.3 Linear Stress-Strain"), 想跳回上层时不需要从根滚. 面包屑直接显示祖先链.
+
+**实现位置**: `src/ui/reader/TocPanel.ts:359-399` (`renderBreadcrumb`).
+
+**DOM 结构**:
+- 面包屑独立 row: `.ez-reader__toc-breadcrumb-row` (位于 header 下方, tree 上方)
+- 容器为空时加 `.is-empty` class → `display: none` (高度 0, 不占空间): CSS `styles.css:2223`
+- 每个祖先一个 `.ez-reader__toc-breadcrumb__item`, 中间用 `›` sep
+- 最后一个 item 加 `.is-current` (粗体, 不可点); 其他加 `.is-link` (hover 背景, click 调 `onJump(item)`)
+
+**祖先链算法**:
+- `ancestorPathOf(tree, activeId)` — 递归 tree, 找到 active 节点的路径 (返回所有祖先 id)
+- chain = [...ancestors, activeNode.item] — 当前章节算最后一节
+
+### 12.4 章节计数 chip `(N 章)`
+
+**位置**: `src/ui/reader/TocPanel.ts:319-326`, 紧跟 header `<h3>` 标题.
+
+**CSS**: `.ez-reader__toc-count:2195` — 灰底小字 (11px, `var(--background-modifier-border)`), 圆角 chip. `flex: 0 0 auto` 防止被挤没.
+
+**渲染条件**: `items.length > 0` 才显示 (空 TOC 不显示 "0 章").
+
+### 12.5 搜索高亮 `<mark>`
+
+**位置**: `src/ui/reader/TocPanel.ts:523-547` (`fillLabelWithHighlight`).
+
+**机制**:
+- 搜索 query lowercase (`toLocaleLowerCase`), label 同样 lowercase 做 `indexOf`
+- 匹配子串 wrap 进 `<mark class="ez-reader__toc-highlight">`, 其他部分 textNode 保留 case
+- case-insensitive 匹配, 但 visual 上保留 label 原 case (textContent, 不解析 HTML, 安全)
+
+**CSS**: `.ez-reader__toc-highlight:2255` — `var(--text-highlight-bg)` 黄色背景, `border-radius: 2px`, 不影响 layout.
+
+**例子**: label = "Chapter 2: Wave Propagation", query = "wave" → `<mark>Wave</mark> Propagation`.
+
+### 12.6 进度点 (visited / current / unvisited)
+
+**设计动机**: 让用户一眼看出"哪些章节看过 / 现在在哪 / 哪些没碰过". 大书目录很长, 颜色提示比纯文本可读性强得多.
+
+**位置**:
+- DOM: `src/ui/reader/TocPanel.ts:505-506` (每个 row 末尾加 `.ez-reader__toc-progress-dot` span)
+- CSS: `.ez-reader__toc-progress-dot:2275-2298` (3 个状态 class: `.is-current` 蓝 / `.is-visited` 绿 / `.is-unvisited` 灰)
+- class 切换: `refreshVisitedStyles:582-597` — 根据 `this.visitedIds` + `this.activeId` 给每个 dot 加 class
+
+**数据来源**:
+- `setVisited(ids: Iterable<string>)` API — ReaderView 在 `relocate` 时把 `this.tocFractions.keys()` 传过来 (ReaderView:1109)
+- `tocFractions: Map<id, number>` — ReaderView 被动记录 (chapter label 匹配 tocItems 找到 id, 写 `(id, fraction)`), **只在第一次记录** (`Map.has` 检查)
+
+**v5 阶段没有持久化**: visited ids 仅在 session 内有效 (关 viewer / 重开就丢). v6 才加持久化 (§13.4).
+
+### 12.7 `contains()` API (给 ReaderView)
+
+**位置**: `src/ui/reader/TocPanel.ts:258-261`.
+
+**用途**: ReaderView.bindKeyboardNavigation 在 capture 阶段做 `if (this.tocPanel?.isVisible() && this.tocPanel.contains(event.target)) return;` (ReaderView:769). 用 `this.root.contains(node)` 判断事件是否在 panel 内, 决定是否跳过自己处理.
+
+**实现**:
+```ts
+contains(node: EventTarget | Node | null): boolean {
+  if (!node || !(node instanceof Node)) return false;
+  return this.root.contains(node);
+}
+```
+
+**注意**: 入参是 `EventTarget`, 但 `Node.contains` 要 `Node`. 加 instanceof 兜底. 也不接受 React synthetic event 之类的 (本项目不用 React, 不用管).
+
+### 12.8 测试基础设施 (v5 增量)
+
+**新增**: `tests/core/TocPanel.test.ts` 扩到 1008 行 (从原来 ~84 行), 共 ~80+ 个测试 (从 296 → 296+v5 增量, 最终 v5 跑完 296 通过).
+
+**覆盖**:
+- 键盘: ↑↓HomeEnd←→EnterSpaceEsc 每个键单独 case, capture-phase 验证, ReaderView 容器层互不冲突
+- scrollActiveIntoView: dedup (同 id 不重复滚), setToc 时清空
+- 面包屑: ancestor 链正确, is-empty 时 hidden, click 调 onJump
+- chip: items.length > 0 才显示
+- 搜索高亮: `<mark>` 包裹, case-insensitive, 不破坏 label
+- 进度点: visited/current/unvisited 三态 class 切换, setVisited 后正确刷新
+- contains(): true/false 各种入参
+
+---
+
+## 13. TocPanel v6 详解 (commit `a67aa9c`)
+
+> v5 解决了"能用键盘"+"看见进度", v6 解决"布局在长目录里稳不住"+"进度跨 session 还在". 4 个 fix 一口气做了, 文件改 751 行 (+大部分是 §13.1 重排).
+
+### 13.1 Header 重排成两行 (面包屑挪到独立行)
+
+**问题**: v5 header 把"标题 + N章 chip + × + search input + 面包屑"全挤一行. items ≥ 8 时 flex-wrap 把 search 挤没, 或面包屑被裁掉.
+
+**方案**:
+- header 第一行: `.ez-reader__toc-header` — 标题 + count chip + × + search input (8+ items 时)
+- header 第二行: `.ez-reader__toc-breadcrumb-row` — 独立 div, 跟 §12.3 同一节点
+- 面包屑 row 之前在 `renderHeader` 里**创建**, 现在挪出来 — `renderBreadcrumb` 只填内容 (`renderHeader:356` 一行 `this.root.createDiv({ cls: "ez-reader__toc-breadcrumb-row" })`)
+
+**CSS 不变**: 面包屑 row 已经有 `border-bottom: 1px solid` (styles.css:2216), 跟 header 自然分隔. `is-empty` 时 `display: none` 高度 0.
+
+**实现位置**: `src/ui/reader/TocPanel.ts:311-357` (`renderHeader`).
+
+### 13.2 Panel 加宽 + 缩进减少
+
+**问题**:
+- 之前 `flex-basis: 320px` — 60% 用户长章节 label 被截断 ("Chapter 2: Wave Propag..." 看不全)
+- 每层缩进 18px (12 + 6) — depth 4+ 的 leaf 太靠右, label 实际空间 < 100px
+
+**方案**:
+- `flex-basis: 320px → 380px` (styles.css:2007) — 多 60px 给 label
+- 每层缩进 `18px → 14px` (8 margin + 6 padding, styles.css:2183-2186)
+- label padding `6px → 4px`, dot margin `right 8 → 4`, `left 4 → 2` (styles.css:2167, 2280-2281) — 进一步挤出空间
+
+**结果**: 380px panel, 14px 缩进/层, depth 5 leaf label 仍有 ~150px, 够看 "3.2.1 Linear Stress-Strain Relations".
+
+**CSS 位置**: `styles.css:2006-2015` (panel 容器), `:2183-2190` (children 容器).
+
+### 13.3 缩进竖线修复 (depth=0 dashed 改成 solid)
+
+**问题**: 用户反馈 depth=1 父项竖线缺失, 看不出层级关系.
+
+**调查**:
+- 之前 `.ez-reader__toc-children` 在 depth=0 时被一个特殊 CSS rule 覆写成 `border-left: 1px dashed` (v4 之前的设计, 试图把 root 那一层跟子层视觉分开)
+- 结果: 在某些 Obsidian 主题下 (e.g. 默认 dark), dashed 颜色跟 solid 几乎看不出来, 看着像缺失
+
+**修复** (styles.css:2183-2186):
+```css
+.ez-reader__toc-children {
+  margin-left: 8px;
+  border-left: 1px solid var(--background-modifier-border);
+  padding-left: 6px;
+}
+```
+移除 depth=0 dashed 特殊覆写, 所有 children 容器统一 solid 竖线. 同时 CSS 注释解释了"用户反馈 ... 现在统一 solid".
+
+**测试加固**: `buildTocTree` 加测试 — 深度跳级 (0→2→1→3, 即 EPUB toc 偶尔有的不规则嵌套) 仍正确归类; 父节点 children 容器 + toggle 视觉一致.
+
+### 13.4 visited 持久化 (data.json 存)
+
+**设计动机**: v5 进度点只在 session 内有效. 用户关 viewer → 重开 → 全灰. 不符合"进度可视化"的初衷.
+
+**架构** — 跟 §11.4 inline note patch 一样的 4 层设计:
+
+| 层 | 新增 | 文件:行 |
+|---|---|---|
+| **Schema** | `AnnotationSnapshot.visitedTocIdsByBookId?: Record<BookId, string[]>` | `src/core/ports/AnnotationStore.ts:49-55` |
+| **Port** | `AnnotationStore.loadVisitedTocIds / saveVisitedTocIds` | `AnnotationStore.ts:109-121` |
+| **Service** | `ReadingService.getVisitedTocIds / saveVisitedTocIds` 包装 | `src/core/services/ReadingService.ts:148-164` |
+| **Adapter** | `ObsidianAnnotationStore.loadVisitedTocIds / saveVisitedTocIds` + `sanitizeVisitedTocIdsMap` | `src/adapters/obsidian/ObsidianAnnotationStore.ts:185-205` (sanitize), `:477-498` (实现) |
+| **ReaderView** | openSession 后立即 load; tocFractions 新增时 debounce 300ms 写盘; onClose flush | `src/ui/reader/ReaderView.ts:1519-1550` |
+
+**Adapter 细节** (`ObsidianAnnotationStore.ts`):
+- `loadVisitedTocIds(bookId)` — `await this.load(); return snapshot.visitedTocIdsByBookId?.[bookId] ?? [];` — 旧 data.json 没字段时 fallback 空数组
+- `saveVisitedTocIds(bookId, ids)` — 在 `mutate` 内 read-modify-write (跟 `setPinnedAt` 同样的模式), 避免两个并发 caller 互相覆盖. caller 自己保证去重 (ReaderView 用 `Set` 维护 `tocFractions.keys()`)
+- `sanitizeVisitedTocIdsMap(input)` — `load()` 时跑一遍, 过滤掉非 string / 空串 / 重复 / 非 array 的 value. 损坏 data.json 不阻塞 load, 丢坏 entry 留好的.
+
+**ReaderView 细节**:
+- `openSession` 在 `setToc` **之前** (`ReaderView:1195-1210`) — 从 store 拉历史 visited ids, 写进 `tocFractions` (用 0 占位 fraction, 因为历史没有真实位置). 然后 `setToc` + `setVisited` — 进度点从打开就有绿色, 不需要等下次 relocate.
+- 触发: `relocate` handler 在 `tocFractions.has(activeTocId)` 为 false 时 (即新章节第一次看到) 写 fraction + `setVisited` + `schedulePersistVisited()` (`ReaderView:1104-1112`)
+- `schedulePersistVisited` — 300ms debounce (`ReaderView:1519-1527`), 跟 progress 一个时间常量但独立 timer. `flushVisited` 比对 `persistVisitedLastSnapshot`, 相同就不写盘.
+- `onClose` (`ReaderView:518-522`) — clear timer, 立即 `flushVisited()`, 保证关 viewer 时未写盘的新 visited id 立即持久化 (避免"刚翻的章节没保存 → 关 → 重启丢失").
+
+**Set 跨 setToc 不重置** (`TocPanel.ts:155-159`):
+> P2 polish: 不要重置 visitedIds — ReaderView 在 openSession 完成后会先调 readingService.getVisitedTocIds() → setVisited, 接着才调 setToc. 如果 setToc 把 visitedIds 清掉, 刚才 setVisited 写的就丢了, 进度点全变灰. 让 visited 状态自然延续, 跨 setToc (如重新加载同一本书) 不丢.
+
+**CSS / DOM 不变**: 进度点还是 `is-current` / `is-visited` / `is-unvisited` (§12.6). 颜色还是 蓝 / 绿 / 灰. 只是数据从 session 内变成 data.json 持久.
+
+---
+
+## 14. Cleanup — 删 15 个 unused index.ts barrel (commit `75b69c0`)
+
+> 一次大扫除, 删掉 15 个 dead barrel 文件, build clean + 307/307 测试通过. 没有功能改动.
+
+### 14.1 为什么删
+
+**背景**: `commit e478132 refactor: 拆分为 core/adapters/ui 三层架构(脚手架)` 在每个子目录加了 `index.ts` 做 barrel, 形式如:
+
+```ts
+// src/adapters/foliate/index.ts (被删)
+export * from "./FoliateBookReader";
+```
+
+**问题**:
+- `Plugin.ts` 全部走具体路径 (`from "./adapters/obsidian/CoverCache"` 等), **没有任何地方 import 这些 barrel**
+- `tests/` 也走具体路径
+- 等于 15 个 dead file, 增加 `git grep` / IDE outline 噪音, 让"哪些是 public API"模糊
+
+**调查**: `git grep -l 'from ".*index"' src/` 在删之前跑, 0 命中. 删掉不需要任何替代.
+
+### 14.2 删了什么
+
+15 个文件 (`commit 75b69c0`, 53 行总删除):
+
+```
+src/adapters/foliate/index.ts
+src/adapters/index.ts
+src/adapters/obsidian/index.ts
+src/adapters/text/index.ts
+src/adapters/translation/index.ts
+src/core/entities/index.ts
+src/core/index.ts
+src/core/ports/index.ts
+src/core/services/index.ts
+src/core/types/index.ts
+src/platform/index.ts
+src/ui/index.ts
+src/ui/reader/index.ts
+src/ui/settings/index.ts
+src/ui/shelf/index.ts
+```
+
+### 14.3 没引入替代
+
+- 现有 import 全部走具体文件, 不依赖 barrel
+- 未来如果要做"单入口 public API", 重新加 `src/index.ts` 即可, 但现在没需求就别留
+
+### 14.4 验证
+
+- `pnpm run build` clean, `main.js` + `styles.css` 正常生成
+- `pnpm test` 307/307 通过
+- 没破坏任何东西
+
+**注意**: `src/platform/index.ts` 也在删之列 — `src/platform/` 目录本身只有 1 个文件 (空目录会被删, 或者保留), 但 commit 里保留目录本身, 只删 index.ts. 这层架构 (跟 `core/adapters/ui` 平行的 platform) 在代码里没真用, 删了反而更干净.
 
 ---
 
