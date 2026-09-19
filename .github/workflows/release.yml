@@ -17,8 +17,10 @@
 # Notes:
 #   - Version is read dynamically from `manifest.json` (`jq -r .version`), so
 #     there is exactly one place to bump when cutting a release.
-#   - We do NOT touch `dist/` — that directory holds pre-built artifacts for
-#     local installs and is unrelated to the release pipeline.
+#   - This workflow does NOT touch `dist/` — that directory holds pre-built
+#     artifacts for local manual installs. `dist/` is kept in sync with the
+#     current HEAD via separate `chore: refresh dist/` commits (e.g. commit
+#     `2931850`); it's unrelated to the release pipeline itself.
 #   - Releases are created as `latest`; if you need a prerelease, edit the
 #     `prerelease:` line below or cut the tag as `v0.3.0-rc1` and the
 #     `softprops` action will respect any leading `pre`/`rc`/`beta` segment

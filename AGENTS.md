@@ -396,7 +396,9 @@ feat: TXT/MOBI reader + PDF 跳转 + 沉浸/panel fix + 置顶功能
 ### 9.3 Commit 时常见文件
 - 改了 UI → 必须 `pnpm run build` 后 commit 新的 `main.js` + `styles.css`
 - 改了测试 → 跑 `pnpm test` 全通过再 commit
-- `dist/manifest.json` 和 `dist/styles.css` 是 CI 发布的预构建(不动)
+- `dist/manifest.json` 和 `dist/styles.css` 是给"手动 zip 安装"用户的预构建(平时不动)
+  - 但 release 前**应当**用单独的 `chore: refresh dist/` commit 把它们 sync 到当前 HEAD
+  - GitHub Actions release workflow 不动 `dist/` — workflow 直接从 build 后的 `main.js` + `manifest.json` + `styles.css` 打 zip
 
 ---
 
