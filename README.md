@@ -2,6 +2,12 @@
 
 EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图书馆 — EPUB / PDF / TXT / MOBI / AZW3 电子书躺在 Vault 的任意位置,你在 Obsidian 里打开阅读、做笔记、记录进度,产出仍是普通 Markdown,跟 vault 里的其它笔记无缝打通。
 
+![个人书架 (Shelf)](docs/screenshots/shelf.webp)
+
+> 个人书架:网格视图、状态 pill (在读 / 已读完 / 暂弃 / 未开始)、封面 + 标题 + 路径 + 进度 + 格式 + ★ 收藏。
+
+数据流一览:
+
 ```text
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Shelf  (个人书架)                                                     │
@@ -71,6 +77,12 @@ EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图�
 - **沉浸模式** (`Shift+F`):pad / 桌面隐藏工具栏,顶部 80 px 滑动 / 鼠标移入 / 触摸调出。pad 启动时按设置自动进入。
 - **进度记忆**:默认开,可关。打开书自动跳到上次位置 (cfi / page)。
 - **章节标题**:nav-group 顶部永久小字显示当前章节,微信读书风格。
+- **目录面板 (`T`)**:
+  - 左侧 320→380px 边栏,树状结构 (`▾`/`▸` 折叠、缩进 + 竖线连接父/子)。
+  - **键盘导航**: `↑↓` 移动焦点、`Home/End` 跳首末、`←/→` 折叠或跳父、`Enter/Space` 跳转、`Esc` 关闭。
+  - **面包屑**:头部独立行显示当前章节的祖先链(`Chapter 2 › 2.1 › 2.1.2`),祖先可点击跳转。
+  - **进度可视化**:每个 row 末尾 6px 圆点 — 已读绿、当前蓝、未读灰;已访问章节持久化到 `data.json`(关 viewer / 重启 Obsidian 后还在)。
+  - **自动滚动**:打开面板自动滚到当前章节;搜索支持 `<mark>` 高亮。
 - **多设备同步**:状态、书签、摘录、笔记都走 vault 内的 `data.json` + markdown 笔记,通过 Syncthing / git 在多设备同步 (`.obsidian/` 之外的部分)。
 
 #### PDF
@@ -254,7 +266,7 @@ cp main.js styles.css manifest.json /path/to/<Vault>/.obsidian/plugins/ez-reader
 ## 开发工作流
 
 ```bash
-pnpm test            # 单元测试 (145 个 case)
+pnpm test            # 单元测试 (307/307 通过, 29 个 .test.ts)
 pnpm run build       # 类型检查 + esbuild 打包
 pnpm run dev         # watch 模式 (主进程变化,需 Obsidian 端 reload)
 pnpm run dev:web     # watch 模式 (client-plugin)
