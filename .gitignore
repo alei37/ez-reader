@@ -16,6 +16,13 @@ coverage/
 tests/dist/
 release-staging/
 
+# Internal handoff + research docs — for AI agents / future maintainers,
+# NOT for end users. Public repo users only need README + CHANGELOG.
+# These files still exist locally for hand-off, but tracked history stops here.
+AGENTS.md
+PDF-PLUS-ANALYSIS.md
+reports/
+
 # Never commit credentials, private keys, or machine-specific secrets.
 .env
 .env.*
