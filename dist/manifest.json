@@ -1,7 +1,7 @@
 {
   "id": "ez-reader",
   "name": "EzReader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.12.7",
   "description": "Read local ebooks with progress, bookmarks, excerpts, and research notes, with optional online translation. 在本地阅读电子书，支持进度、书签、摘录、研究笔记与可选的在线翻译。",
   "author": "alei37",
