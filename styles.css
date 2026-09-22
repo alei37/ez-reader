@@ -3210,12 +3210,28 @@
      outer wrapper never grows past the host during page-load
      animations. */
   overflow: hidden;
+
+  /* Appearance-driven custom properties. PagedTextSession updates these
+     via `style.setProperty(...)` on the root element when the user
+     switches theme / font / line-height / margin / max-width. Default
+     values match DEFAULT_READER_APPEARANCE; any reader that wants to
+     override appearance without touching the plugin code can override
+     these vars in a custom snippet. */
+  --ez-reader-paged-bg: var(--background-primary);
+  --ez-reader-paged-fg: var(--text-normal);
+  --ez-reader-paged-color-scheme: light dark;
+  --ez-reader-paged-font-scale: 1;
+  --ez-reader-paged-font-family: "Source Serif Pro", "Iowan Old Style",
+    "Apple Garamond", Georgia, "Times New Roman", "Songti SC", "STSong",
+    serif;
+  --ez-reader-paged-line-height: 1.6;
+  --ez-reader-paged-letter-spacing: 0em;
+  --ez-reader-paged-max-width: 720px;
+  --ez-reader-paged-margin: 32px;
 }
 
 .ez-reader__paged-text {
-  /* 字号 / 行距 / 边距 / 主题全部通过 PagedTextSession.buildPagedTextCss
-     内联到 <style data-ez-reader-paged-text-styles> 注入, 运行时切换。
-     这里只负责 layout 和滚动行为。 */
+  /* Layout + scrolling */
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
@@ -3227,6 +3243,42 @@
   -webkit-user-select: text;
   /* 防止 iOS Safari 长按弹出系统菜单 */
   -webkit-touch-callout: default;
+
+  /* Appearance-driven (read from vars on .ez-reader__paged-text-root) */
+  font-size: calc(1em * var(--ez-reader-paged-font-scale));
+  line-height: var(--ez-reader-paged-line-height);
+  color: var(--ez-reader-paged-fg);
+  background: var(--ez-reader-paged-bg);
+  color-scheme: var(--ez-reader-paged-color-scheme);
+  padding: 24px var(--ez-reader-paged-margin) 64px;
+  box-sizing: border-box;
+  font-family: var(--ez-reader-paged-font-family);
+  letter-spacing: var(--ez-reader-paged-letter-spacing);
+}
+
+/* 阅读页内容容器宽度限制 — 大屏阅读体验关键,默认 720px。 */
+.ez-reader__paged-text__inner {
+  max-width: var(--ez-reader-paged-max-width);
+  margin: 0 auto;
+}
+
+.ez-reader__paged-text p { margin: 0 0 1em 0; }
+.ez-reader__paged-text a {
+  color: inherit;
+  text-decoration: underline;
+}
+.ez-reader__paged-text img {
+  max-width: 100%;
+  height: auto;
+}
+.ez-reader__paged-text h1,
+.ez-reader__paged-text h2,
+.ez-reader__paged-text h3,
+.ez-reader__paged-text h4,
+.ez-reader__paged-text h5,
+.ez-reader__paged-text h6 {
+  line-height: var(--ez-reader-paged-line-height);
+  margin: 1.2em 0 0.6em;
 }
 
 .ez-reader__paged-text-page {

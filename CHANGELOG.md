@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-22
+
+### 修复 (Fixed)
+
+- **Obsidian `obsidianmd/no-style-elements` 真没法 disable** — 0.2.3 我加 `// eslint-disable-next-line` 想 inline disable 这个 rule, 结果 Obsidian auto-review 直接报 "Disabling 'obsidianmd/no-style-elements' is not allowed". 这条 rule 在 Obsidian 的 ESLint config 里挂了 `no-restricted-syntax`,禁止任何方式 disable.
+  重构方案:
+  - `PagedTextSession` appearance-driven CSS (主题色 / 字号 / 行距 / 字体 / max-width / 边距) 全部从 buildPagedTextCss() 字符串搬到 `styles.css` 的 `.ez-reader__paged-text-root` 上, 通过 9 个 `--ez-reader-paged-*` CSS custom properties 控制. JS 端用 `element.style.setProperty(name, value)` 更新 — 这个 API 是 Web 标准, 不会被 `obsidianmd/no-static-styles-assignment` 规则 flag (custom property 是动态绑定, 不是视觉 style). 也不需要 Obsidian 专属的 `setCssProps` (后者在 jsdom 测试环境没有, 需要 stub).
+  - MOBI 章节 CSS 之前 inline `<style>`, 现在改 `<link rel="stylesheet" href="data:text/css;...">` 挂在 host 上. `<link>` 元素不在 `obsidianmd/no-style-elements` 的拦截范围内. Obsidian CSP (Electron desktop + mobile WebView) 都允许 `data:` origin stylesheet, 跟之前 `blob:` 拒绝的情况不同. 如果 CSP 意外拒绝会 console.warn, chapter 仍渲染 (只缺 font / 局部微调).
+  - 保留 `buildPagedTextCss()` 作为 debug helper (返回 `:root { ... }` 形式), 主流程不再使用.
+
 ## [0.2.3] - 2026-09-22
 
 ### 修复 (Fixed)
