@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-22
+
+### 修复 (Fixed)
+
+- **Shelf 在加书后无法滚动** — `.ez-reader__shelf__body` 是 flex 子项, 缺 `min-height: 0` 导致内容撑高但 `overflow-y: auto` 永远不触发. 修后书架有 5+ 本书即出现原生滚动条.
+- **Shelf 卡片太小看不清** — 上一版为了一屏装下把 density 砍到 140/180px, 用户反馈太挤. default 调回 **200px** cover-min, 配合 `min-height: 320px` 强制 uniform row height, 标题 `-webkit-line-clamp: 2`. 现在 1200px viewport 一屏 ~4 行, 多出的书向下滚.
+
 ## [0.2.0] - 2026-09-19
 
 ### 新增 (Added)
