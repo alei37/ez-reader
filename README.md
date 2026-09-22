@@ -1,6 +1,31 @@
 # EzReader
 
-> **English summary** — EzReader is an Obsidian community-plugin reader that turns your Vault into a personal library. It opens EPUB / PDF / TXT / MOBI / AZW3 books stored anywhere in the Vault, tracks progress, and lets you take Markdown-native bookmarks, excerpts, and thoughts that link back into your other notes. A Goodreads-style shelf surfaces all your books with filters and sort; the reader mirrors the WeRead / Apple Books feel with theme/font controls, page-turn animations, and a keyboard-driven selection menu (Translate / Excerpt / Thought / Copy). Optional online translation providers (Youdao / DeepL / Google) can be configured in settings. Full key map and quick-start are below.
+## Overview (English)
+
+EzReader is an Obsidian community plugin that turns your Vault into a personal library. Books live anywhere in the Vault as ordinary files; you open them inside Obsidian to read, annotate, and track progress. All annotations are stored as plain Markdown with `[[wikilinks]]`, so they integrate seamlessly with the rest of your notes.
+
+### Features
+
+- **Multi-format support** — EPUB (via [foliate-js](https://github.com/johnfactotum/foliate-js) 1.0.1), PDF (via Obsidian's built-in PDF viewer with a custom overlay for highlights and selection menu), TXT (custom paged renderer with paragraph-aware pagination), MOBI / AZW3 (via [@lingo-reader/mobi-parser](https://github.com/lingo-reader/mobi-parser)).
+- **Goodreads-style shelf** — sortable, filterable, pinnable; cover thumbnail + status pill (Reading / Finished / Abandoned / Not started) + path + progress + format + ★ favorite.
+- **WeRead / Apple Books feel** — theme, font, and line-height controls, page-turn animation, touch swipe, keyboard navigation, floating selection menu.
+- **Quick actions** — `H` to highlight + save excerpt, `B` to add a bookmark, `S` for the notes sidebar, `T` for the TOC, `← / →` for page navigation, `Esc` to close panels.
+- **Markdown-native annotations** — bookmarks, excerpts, and thoughts are stored as `.md` files inside your Vault. They double-link with your other notes naturally.
+- **Translation drawer** — Youdao / DeepL / Google. Long translations live in a 50vh scrollable drawer with a copy button.
+- **Keyboard shortcut help** — press `?` inside the reader to see every shortcut grouped by category, including the `prev / next / sidebar / toc / translate / highlight` bindings you have customized.
+- **Mobile-friendly** — `isDesktopOnly: false`. Tested on Android via Syncthing; works on iOS via Obsidian Sync.
+
+### Quick Start (English)
+
+1. **Install** — Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/alei37/ez-reader/releases/latest) and drop them into `<Vault>/.obsidian/plugins/ez-reader/`. Or build from source (`pnpm run build`).
+2. **Enable the plugin** — Open Obsidian → Settings → Community plugins → enable **EzReader**. The OnboardingModal pops up the first time.
+3. **Open the Shelf** — Click the 📚 ribbon icon on the left, or run "EzReader: Open Shelf" from the command palette.
+4. **Add books** — Click "+ Add" in the toolbar, pick EPUB / PDF / TXT / MOBI files from your Vault, confirm. Covers are auto-extracted.
+5. **Read** — Click any cover on the Shelf to open the reader. The reader remembers where you left off and jumps to your last progress. After 180ms of selection, the [Thought / Excerpt / Translate / Copy] menu pops up.
+
+For the full key map, press `?` inside the reader. The most common shortcuts are `H` (quick highlight), `B` (quick bookmark), `S` (notes sidebar), `T` (TOC), `← / →` (page), `Esc` (close panel).
+
+## 中文简介
 
 EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图书馆 — EPUB / PDF / TXT / MOBI / AZW3 电子书躺在 Vault 的任意位置,你在 Obsidian 里打开阅读、做笔记、记录进度,产出仍是普通 Markdown,跟 vault 里的其它笔记无缝打通。
 

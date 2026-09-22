@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-22
+
+### 修复 (Fixed)
+
+- **community.obsidian.md auto-review 收尾** — 针对 0.2.2 还在跑的检查项补:
+  - **Release 不再带 zip** — `.github/workflows/release.yml` 不再 `zip ez-reader-X.Y.Z.zip`,只发 `main.js` / `manifest.json` / `styles.css` 三个原始文件. 0.2.1 / 0.2.2 release 现存的 zip asset 已经通过 GitHub API 删掉. Obsidian community directory 只下原始三件套,zip 是 unsupported,review 会 flag.
+  - **README 加英文 sections** — 顶部加 `## Overview (English)` + `### Features` + `### Quick Start (English)`,覆盖 multi-format / shelf / quick actions / translation / mobile 等要点,英文段落占 README 前 ~25%. Obsidian review "An English description is required" 通过.
+- **Release workflow** — 移除 zip 打包 + 上传 step,简化 build pipeline.
+
 ## [0.2.2] - 2026-09-22
 
 ### 修复 (Fixed)

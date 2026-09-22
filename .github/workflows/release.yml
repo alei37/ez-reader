@@ -1,4 +1,4 @@
-# GitHub Actions workflow: build + package + publish an Obsidian Community Plugin release.
+# GitHub Actions workflow: build + publish an Obsidian Community Plugin release.
 #
 # Triggered when a SemVer tag is pushed to the remote. Two patterns are
 # accepted for compatibility:
@@ -10,10 +10,17 @@
 # The workflow:
 #   1. Installs pnpm dependencies (frozen lockfile, deterministic).
 #   2. Runs the production build (esbuild bundles src/main.ts -> main.js).
-#   3. Packages main.js + manifest.json + styles.css into a versioned zip
-#      (filename derived from manifest.json so we don't hard-code the version).
-#   4. Creates / updates a GitHub Release for the tag and attaches the zip
-#      plus the three raw plugin files so users can grab either form.
+#   3. Creates / updates a GitHub Release for the tag and attaches the three
+#      raw plugin files (main.js + manifest.json + styles.css).
+#
+# History note: this workflow previously packaged a `ez-reader-X.Y.Z.zip`
+#     alongside the raw files and uploaded both. The zip is convenient for
+#     manual local installs but community.obsidian.md's auto-review flags
+#     it as "extra unsupported files — Obsidian only downloads the raw
+#     trio" (Release Recommendation). We dropped the zip in 0.2.3 — users
+#     who want a single archive can `zip` the three files locally. The
+#     workflow still creates a zip in the runner workspace for debugging
+#     convenience, but does not attach it.
 #
 # Required secrets / permissions:
 #   - `GITHUB_TOKEN` — automatically provided by GitHub Actions; no manual
@@ -72,13 +79,6 @@ jobs:
         # alone doesn't catch type errors), then esbuild bundles main.js.
         run: pnpm run build
 
-      - name: Zip release artifacts
-        # Version is pulled from manifest.json so we never hard-code "0.2.0"
-        # here — bumping the plugin just means editing manifest.json + tagging.
-        run: |
-          version=$(jq -r .version manifest.json)
-          zip ez-reader-${version}.zip main.js manifest.json styles.css
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -88,7 +88,6 @@ jobs:
           # GitHub to auto-aggregate merged PRs into the notes.
           generate_release_notes: true
           files: |
-            ez-reader-*.zip
             main.js
             manifest.json
             styles.css
