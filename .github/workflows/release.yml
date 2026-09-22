@@ -37,7 +37,10 @@ name: Release
 on:
   push:
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+*"
+      # 接受任何 dot-separated 形式 (SemVer), 例如 0.2.1 / 1.0.0 / 0.3.0-rc.1
+      # GitHub Actions tag patterns 只支持 glob, 不是 regex
+      - "*.*.*"
+      # 兼容 legacy v-prefixed tags (v0.2.0, v0.2.1) — 已经在用的旧 tag
       - "v*"
 
 
