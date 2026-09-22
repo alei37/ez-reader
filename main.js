@@ -15428,20 +15428,14 @@ var PagedTextSession = class {
   content;
   stageEl;
   host;
-  /**
-   * Per-chapter `<link rel="stylesheet">` elements injected on `element`
-   * for MOBI chapter CSS. Replaces the previous inline `<style>` element
-   * — Obsidian's auto-review `obsidianmd/no-style-elements` rule forbids
-   * `<style>` in the main document and disallows eslint-disable of that
-   * rule. We use `<link href="data:text/css;...">` instead: `<link>`
-   * elements are not flagged, and Obsidian CSP permits `data:` origin
-   * stylesheets in both desktop Electron and mobile WebView.
-   * `chapterLinks` is tracked so close() can remove them.
-   */
-  chapterLinks = [];
-  injectedCss = /* @__PURE__ */ new Set();
   currentAppearance;
   disposers = /* @__PURE__ */ new Set();
+  /**
+   * Whether we have already logged the "MOBI chapter CSS dropped" info
+   * message this session. Set after the first chapter that ships CSS so
+   * we don't spam the console on every page turn.
+   */
+  warnedChapterCssDropped = false;
   /** Selection listeners re-attached on every renderPage; tracked separately
    *  so we can drop them before adding the next pair. P1 polish: before this
    *  set existed, every page flip appended two listeners + one cleanup closure
@@ -15522,15 +15516,6 @@ var PagedTextSession = class {
     }
     for (const off of this.disposers) off();
     this.disposers.clear();
-    this.injectedCss.clear();
-    for (const link of this.chapterLinks) {
-      try {
-        link.remove();
-      } catch (error) {
-        console.warn("[ez-reader] failed to remove chapter link", error);
-      }
-    }
-    this.chapterLinks.length = 0;
     try {
       this.element.remove();
     } catch (error) {
@@ -15724,24 +15709,11 @@ var PagedTextSession = class {
     const page = this.content.pages[pageIdx];
     if (!page) return;
     this.currentPageIndex = pageIdx;
-    if (page.css) {
-      for (const part of page.css) {
-        if (this.injectedCss.has(part.id)) continue;
-        this.injectedCss.add(part.id);
-        try {
-          const link = document.createElement("link");
-          link.rel = "stylesheet";
-          link.dataset["ezReaderPagedChapterCss"] = part.id;
-          link.href = `data:text/css;charset=utf-8,${encodeURIComponent(part.text)}`;
-          this.chapterLinks.push(link);
-          this.element.append(link);
-        } catch (error) {
-          console.warn(
-            "[ez-reader] failed to inject chapter stylesheet via <link data:>; chapter may render with default styles",
-            error
-          );
-        }
-      }
+    if (page.css && page.css.length > 0 && !this.warnedChapterCssDropped) {
+      this.warnedChapterCssDropped = true;
+      console.info(
+        `[ez-reader] MOBI book ships ${page.css.length} chapter stylesheet(s); Obsidian's auto-review forbids dynamic CSS injection in the main document, so chapter-specific CSS is not applied. The book will render with the plugin's default paged-text styles.`
+      );
     }
     const pageEl = document.createElement("article");
     pageEl.classList.add("ez-reader__paged-text-page");

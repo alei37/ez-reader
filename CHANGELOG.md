@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-09-22
+
+### 修复 (Fixed)
+
+- **MOBI per-chapter CSS 注入彻底放弃** — 0.2.4 auto-review 又发现:
+  - `obsidianmd/no-style-elements` 规则实际覆盖 `<link>` 元素 + `<style>` 元素 + 不允许 disable 任何一种. 0.2.3/0.2.4 每次换方案都被新一轮 flag。无法在主文档注入 CSS 是 Obsidian 硬约束。
+  - 修复:`PagedTextSession.renderPage` 不再 append chapter `<link>`, 拿到 `page.css` 只 `console.info` 一次(per book first chapter),告诉用户 MOBI 书的 chapter-specific CSS 没应用,book 仍按 plugin 默认样式渲染。
+  - 影响: MOBI 章节级字体 / 颜色 / 局部微调不再生效。base styles.css 覆盖大部分场景 (theme color, font family preset, font scale, line height, max-width, margin),95%+ MOBI book 应该无可见变化。
+  - Future: 如果 user 报告某本 MOBI 渲染问题, 可以用 Shadow DOM 重建 (shadow root 的 `<style>` 不在主文档 lint 范围)。但需要重新评估 selection / event / 焦点 处理。
+
 ## [0.2.4] - 2026-09-22
 
 ### 修复 (Fixed)

@@ -29,9 +29,13 @@ export interface PagedTextPage {
    * Per-chapter stylesheets (MOBI only). The MOBI parser hands us
    * `blob:` URLs for these — Obsidian's CSP refuses to load stylesheets
    * from `blob:` URLs (style-src does not include `blob:`), so the
-   * adapter layer pre-fetches the CSS text and we inject it as a
-   * `<link rel="stylesheet" href="data:text/css;...">` element on the
-   * host. Each `id` is injected at most once per session.
+   * adapter layer pre-fetches the CSS text. Since 0.2.5 the text is
+   * **parsed and dropped** at the PagedTextSession layer (see
+   * `renderPage` comment): Obsidian's `obsidianmd/no-style-elements`
+   * auto-review rule forbids any dynamic CSS injection in the main
+   * document (covers both `<style>` and `<link>` elements) and blocks
+   * `eslint-disable` of the rule itself. Future work could revisit
+   * this via Shadow DOM if a specific book surfaces rendering issues.
    */
   readonly css?: ReadonlyArray<{ id: string; text: string }>;
   /** Optional chapter title used by `currentChapter()`. */
@@ -124,20 +128,14 @@ export class PagedTextSession implements ReaderSession {
   private readonly content: PagedTextContent;
   private readonly stageEl: HTMLElement;
   private readonly host: HTMLElement;
-  /**
-   * Per-chapter `<link rel="stylesheet">` elements injected on `element`
-   * for MOBI chapter CSS. Replaces the previous inline `<style>` element
-   * — Obsidian's auto-review `obsidianmd/no-style-elements` rule forbids
-   * `<style>` in the main document and disallows eslint-disable of that
-   * rule. We use `<link href="data:text/css;...">` instead: `<link>`
-   * elements are not flagged, and Obsidian CSP permits `data:` origin
-   * stylesheets in both desktop Electron and mobile WebView.
-   * `chapterLinks` is tracked so close() can remove them.
-   */
-  private readonly chapterLinks: HTMLLinkElement[] = [];
-  private readonly injectedCss = new Set<string>();
   private currentAppearance: ReaderAppearance;
   private readonly disposers = new Set<() => void>();
+  /**
+   * Whether we have already logged the "MOBI chapter CSS dropped" info
+   * message this session. Set after the first chapter that ships CSS so
+   * we don't spam the console on every page turn.
+   */
+  private warnedChapterCssDropped = false;
   /** Selection listeners re-attached on every renderPage; tracked separately
    *  so we can drop them before adding the next pair. P1 polish: before this
    *  set existed, every page flip appended two listeners + one cleanup closure
@@ -254,19 +252,6 @@ export class PagedTextSession implements ReaderSession {
     }
     for (const off of this.disposers) off();
     this.disposers.clear();
-    this.injectedCss.clear();
-    // Remove per-chapter <link> stylesheet elements so the browser can
-    // release their stylesheets. Without this, a long-lived session
-    // that visits many chapters accumulates them in the DOM even after
-    // element.remove() (because remove() doesn't fire unload events).
-    for (const link of this.chapterLinks) {
-      try {
-        link.remove();
-      } catch (error) {
-        console.warn("[ez-reader] failed to remove chapter link", error);
-      }
-    }
-    this.chapterLinks.length = 0;
     try {
       this.element.remove();
     } catch (error) {
@@ -492,36 +477,35 @@ export class PagedTextSession implements ReaderSession {
     if (!page) return;
     this.currentPageIndex = pageIdx;
 
-    // Inject any per-chapter CSS that hasn't been injected yet (MOBI only).
-    // P0 修复: 之前用 `<link rel="stylesheet" href="blob:...">`, Obsidian CSP
-    // 拒绝 `blob:` 源 stylesheet, 控制台一直刷 "Refused to load the
-    // stylesheet 'blob:...'" 警告. 改成 inline `<style>` (CSP 允许
-    // 'unsafe-inline'). 后来 0.2.3 走 Obsidian auto-review 又发现:
-    // `obsidianmd/no-style-elements` rule 在 main document 禁止 `<style>`
-    // 元素 + 不允许 eslint-disable,只能换 `<link>` + data: URL. Obsidian CSP
-    // 在 desktop / mobile 都允许 `data:` 源 stylesheet (Electron 默认允许,
-    // 移动端 WebView 也允许),所以这是当前最佳替代方案. 如果 CSP 拒绝会
-    // 在 console warn,但 chapter 仍会渲染 — 只缺字体 / 微调.
-    if (page.css) {
-      for (const part of page.css) {
-        if (this.injectedCss.has(part.id)) continue;
-        this.injectedCss.add(part.id);
-        try {
-          const link = document.createElement("link");
-          link.rel = "stylesheet";
-          link.dataset["ezReaderPagedChapterCss"] = part.id;
-          // encodeURIComponent so CSS syntax (`{`, `}`, `:`, `;`, etc.)
-          // survives the data: URL round-trip without quoting headaches.
-          link.href = `data:text/css;charset=utf-8,${encodeURIComponent(part.text)}`;
-          this.chapterLinks.push(link);
-          this.element.append(link);
-        } catch (error) {
-          console.warn(
-            "[ez-reader] failed to inject chapter stylesheet via <link data:>; chapter may render with default styles",
-            error
-          );
-        }
-      }
+    // Per-chapter CSS (MOBI only) — 0.2.5: we no longer inject it.
+    //
+    // History:
+    //   - Original: <link rel="stylesheet" href="blob:..."> — Obsidian CSP
+    //     refuses blob: origin stylesheets.
+    //   - 0.2.0: inline <style> element appended to host — works, but
+    //     Obsidian's `obsidianmd/no-style-elements` rule (auto-review)
+    //     forbids <style> elements in the main document AND blocks any
+    //     eslint-disable of that rule (no-restricted-syntax).
+    //   - 0.2.3: tried <style> with inline disable comment — auto-review
+    //     rejected the disable itself.
+    //   - 0.2.4: switched to <link rel="stylesheet" href="data:text/css;...">.
+    //     0.2.4 auto-review revealed the rule ALSO blocks <link> elements
+    //     created via document.createElement — same rule, just broader
+    //     wording.
+    //   - 0.2.5 (this): drop the feature. Per-chapter CSS for MOBI is
+    //     mostly minor overrides (font-family, color tweaks). The base
+    //     styles in styles.css cover the vast majority of chapter rendering.
+    //     We log a one-time info message so power users know their custom CSS
+    //     was not applied. (Future: revisit with Shadow DOM if a user reports
+    //     a specific book where the default styles are insufficient.)
+    if (page.css && page.css.length > 0 && !this.warnedChapterCssDropped) {
+      this.warnedChapterCssDropped = true;
+      console.info(
+        `[ez-reader] MOBI book ships ${page.css.length} chapter stylesheet(s); ` +
+          "Obsidian's auto-review forbids dynamic CSS injection in the main " +
+          "document, so chapter-specific CSS is not applied. The book will " +
+          "render with the plugin's default paged-text styles."
+      );
     }
 
     // Wrap with a fresh container so the page-load animation can play.
