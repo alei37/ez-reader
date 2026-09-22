@@ -1,7 +1,13 @@
 # GitHub Actions workflow: build + package + publish an Obsidian Community Plugin release.
 #
-# Triggered when a tag matching `v*` (e.g. v0.2.0, v1.0.0-rc1) is pushed to the
-# remote. The workflow:
+# Triggered when a SemVer tag is pushed to the remote. Two patterns are
+# accepted for compatibility:
+#   - `0.2.1` (recommended) — matches Obsidian community directory
+#     expectations (no `v` prefix; see https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin)
+#   - `v0.2.1` (legacy) — kept for older habits / pre-v0.2.1 history
+#   - `v0.3.0-rc1` (prerelease) — softprops recognizes `pre`/`rc`/`beta` segments
+#
+# The workflow:
 #   1. Installs pnpm dependencies (frozen lockfile, deterministic).
 #   2. Runs the production build (esbuild bundles src/main.ts -> main.js).
 #   3. Packages main.js + manifest.json + styles.css into a versioned zip
@@ -21,17 +27,19 @@
 #     artifacts for local manual installs. `dist/` is kept in sync with the
 #     current HEAD via separate `chore: refresh dist/` commits (e.g. commit
 #     `2931850`); it's unrelated to the release pipeline itself.
-#   - Releases are created as `latest`; if you need a prerelease, edit the
-#     `prerelease:` line below or cut the tag as `v0.3.0-rc1` and the
-#     `softprops` action will respect any leading `pre`/`rc`/`beta` segment
-#     based on tag name conventions.
+#   - Tag → release mapping: `softprops/action-gh-release@v2` creates a
+#     release for whatever tag triggered the workflow. So `0.2.1` tag push
+#     creates a `0.2.1` release (no v prefix), which is what community.obsidian.md
+#     matches against `manifest.json` `version`.
 
 name: Release
 
 on:
   push:
     tags:
+      - "[0-9]+.[0-9]+.[0-9]+*"
       - "v*"
+
 
 jobs:
   build:
