@@ -103,14 +103,21 @@
 
 .ez-reader__shelf__body {
   flex: 1 1 auto;
+  /* fix(shelf): 让 flex item 在 content > 视口时能 shrink 触发 overflow.
+   * 没这一行, min-height 默认 auto = 内容高度, body 拒绝缩小 → 滚动条不出现,
+   * 整页被 view-content (overflow:hidden) 截掉. */
+  min-height: 0;
   overflow-y: auto;
-  padding: 8px 20px 20px 20px;
+  padding: 8px 16px 16px 16px;
+  /* Firefox 细滚动条 — 用 Obsidian 主题色. 默认 16px 太显眼, 8-10px 更像 native overlay. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--background-modifier-border-hover, var(--background-modifier-border)) transparent;
 }
 
 .ez-reader__shelf__body.is-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--ez-reader-shelf-cover-min, 220px), 1fr));
-  gap: 24px;
+  gap: 16px;
 }
 
 .ez-reader__shelf__body.is-list {
@@ -119,27 +126,49 @@
   gap: 12px;
 }
 
+/* WebKit / Blink 细滚动条 — overlay 风格: 8px 宽, 主题色 thumb, transparent track.
+ * 触发用户感知 "这里能滚". 默认 webkit 滚动条 16px 在 dark theme 下几乎不可见. */
+.ez-reader__shelf__body::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.ez-reader__shelf__body::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border-hover, var(--background-modifier-border));
+  border-radius: 4px;
+}
+.ez-reader__shelf__body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+.ez-reader__shelf__body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 /* ---- Shelf density (用户可调, 4 档) ----
    compact / default / spacious / large — 影响 grid 列最小宽度 和 list cover
-   像素尺寸. CSS 变量驱动, JS 只设 data-shelf-density, 不直接改 width. */
+   像素尺寸. CSS 变量驱动, JS 只设 data-shelf-density, 不直接改 width.
+   fix(shelf): default 220→180, compact 160→140 — 用户反馈 "加书后挤",
+   核心问题是 default 档最小宽度让 ~3-4 列就撑满 viewport, 加上 24px gap
+   每行卡片占空间大. 缩到 180 / 16px gap 后, 桌面 1200px viewport 一排可装
+   6 列 (180×6 + 16×5 = 1160px), 配合可见滚动条, "挤" 的感觉明显缓解.
+   mobile @media (max-width: 700px) 仍写死 minmax(110px, 1fr), 不受密度 var 影响. */
 .ez-reader__shelf__body[data-shelf-density="compact"] {
-  --ez-reader-shelf-cover-min: 160px;
-  --ez-reader-shelf-list-cover: 28px;
+  --ez-reader-shelf-cover-min: 140px;
+  --ez-reader-shelf-list-cover: 24px;
   --ez-reader-shelf-list-info-max: 1fr;
 }
 .ez-reader__shelf__body[data-shelf-density="default"] {
-  --ez-reader-shelf-cover-min: 220px;
-  --ez-reader-shelf-list-cover: 40px;
+  --ez-reader-shelf-cover-min: 180px;
+  --ez-reader-shelf-list-cover: 36px;
   --ez-reader-shelf-list-info-max: 1fr;
 }
 .ez-reader__shelf__body[data-shelf-density="spacious"] {
-  --ez-reader-shelf-cover-min: 280px;
-  --ez-reader-shelf-list-cover: 56px;
+  --ez-reader-shelf-cover-min: 260px;
+  --ez-reader-shelf-list-cover: 52px;
   --ez-reader-shelf-list-info-max: 1fr;
 }
 .ez-reader__shelf__body[data-shelf-density="large"] {
-  --ez-reader-shelf-cover-min: 340px;
-  --ez-reader-shelf-list-cover: 72px;
+  --ez-reader-shelf-cover-min: 320px;
+  --ez-reader-shelf-list-cover: 68px;
   --ez-reader-shelf-list-info-max: 1fr;
 }
 
