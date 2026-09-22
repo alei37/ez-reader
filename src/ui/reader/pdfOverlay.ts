@@ -441,12 +441,12 @@ export class PdfOverlay {
       const allDivs = [item.div, ...(item.extraDivs ?? [])];
       if (!pageEl) {
         // 页元素不在 DOM (懒加载/翻页) — 把 highlight 藏起来
-        for (const div of allDivs) div.style.display = "none";
+        for (const div of allDivs) div.setCssProps({ display: "none" });
         continue;
       }
       const rects = findTextOnPageInLayer(pageEl, item.searchText);
       if (rects.length === 0) {
-        for (const div of allDivs) div.style.display = "none";
+        for (const div of allDivs) div.setCssProps({ display: "none" });
         continue;
       }
       // 重新分配的 rect 数可能跟上次不同 (zoom 后 word break 变了) — 清掉旧的
@@ -456,11 +456,13 @@ export class PdfOverlay {
       const primary = rects[0];
       const tail = rects.slice(1);
       if (primary) {
-        item.div.style.display = "";
-        item.div.style.left = `${primary.left}px`;
-        item.div.style.top = `${primary.top}px`;
-        item.div.style.width = `${primary.width}px`;
-        item.div.style.height = `${primary.height}px`;
+        item.div.setCssProps({
+          display: "",
+          left: `${primary.left}px`,
+          top: `${primary.top}px`,
+          width: `${primary.width}px`,
+          height: `${primary.height}px`
+        });
       }
       for (const r of tail) {
         const newDiv = drawHighlight(this.highlightLayer, r, item.excerptId, item.searchText);
@@ -563,7 +565,7 @@ export class PdfOverlay {
   }
 
   private hideMenu(): void {
-    this.menuEl.style.display = "none";
+    this.menuEl.setCssProps({ display: "none" });
   }
 
   private toggleNotesPanel(): void {
@@ -959,7 +961,7 @@ const createSelectionMenu = (
 ): HTMLElement => {
   const menu = document.createElement("div");
   menu.className = "ez-reader__pdf-overlay-menu";
-  menu.style.display = "none";
+  menu.setCssProps({ display: "none" });
 
   const mkBtn = (label: string, cls: string, onClick: () => void): HTMLButtonElement => {
     const btn = menu.createEl("button", { text: label, cls: `ez-reader__pdf-overlay-menu__btn ${cls}` });
@@ -985,10 +987,12 @@ const createSelectionMenu = (
 };
 
 const showMenuAt = (menu: HTMLElement, rect: DOMRect): void => {
-  menu.style.display = "flex";
   // 先放屏幕外测尺寸, 避免 anchor 到错误位置
-  menu.style.left = "-9999px";
-  menu.style.top = "-9999px";
+  menu.setCssProps({
+    display: "flex",
+    left: "-9999px",
+    top: "-9999px"
+  });
   // P2: 复用 selectionMenuPosition 的纯函数 — 跟 ReaderSelectionMenu 用同一个
   // 算法, 包括多行选区强制上方 + 视口边距约束, 行为一致。
   requestAnimationFrame(() => {
@@ -997,8 +1001,10 @@ const showMenuAt = (menu: HTMLElement, rect: DOMRect): void => {
       width: window.innerWidth,
       height: window.innerHeight
     });
-    menu.style.left = `${pos.left}px`;
-    menu.style.top = `${pos.top}px`;
+    menu.setCssProps({
+      left: `${pos.left}px`,
+      top: `${pos.top}px`
+    });
   });
 };
 
@@ -1187,10 +1193,12 @@ const drawHighlight = (
   hl.className = "ez-reader__pdf-overlay-highlight";
   hl.dataset.excerptId = excerptId;
   hl.dataset.searchText = searchText;
-  hl.style.left = `${rect.left}px`;
-  hl.style.top = `${rect.top}px`;
-  hl.style.width = `${rect.width}px`;
-  hl.style.height = `${rect.height}px`;
+  hl.setCssProps({
+    left: `${rect.left}px`,
+    top: `${rect.top}px`,
+    width: `${rect.width}px`,
+    height: `${rect.height}px`
+  });
   layer.appendChild(hl);
   return hl;
 };

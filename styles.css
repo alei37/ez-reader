@@ -3206,6 +3206,10 @@
   height: 100%;
   display: block;
   position: relative;
+  /* Inner stage handles its own overflow-y:auto; root clips so the
+     outer wrapper never grows past the host during page-load
+     animations. */
+  overflow: hidden;
 }
 
 .ez-reader__paged-text {

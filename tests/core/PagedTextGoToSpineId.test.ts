@@ -9,7 +9,8 @@ import { DEFAULT_READER_APPEARANCE } from "../../src/core/types/ReaderSettings";
 const dom = new JSDOM("<!DOCTYPE html><html><body></body></html>");
 const DOM_GLOBALS = [
   "document", "window", "Node", "NodeFilter", "DocumentFragment",
-  "Range", "HTMLElement", "HTMLStyleElement", "Text", "requestAnimationFrame"
+  "Range", "HTMLElement", "HTMLStyleElement", "Text", "requestAnimationFrame",
+  "DOMParser"
 ];
 for (const key of DOM_GLOBALS) {
   (globalThis as Record<string, unknown>)[key] = (dom.window as unknown as Record<string, unknown>)[key];

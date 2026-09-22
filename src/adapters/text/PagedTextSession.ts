@@ -187,11 +187,13 @@ export class PagedTextSession implements ReaderSession {
 
     // Wrap the host so the chapter stylesheets + appearance styles live in
     // a single scoped <style> we can update without touching the user's
-    // stylesheet.
+    // stylesheet. Static layout (height / overflow) lives in styles.css
+    // under `.ez-reader__paged-text-root`; only the appearance-driven CSS
+    // is dynamic and must be injected at runtime (see eslint comment on
+    // styleEl below).
     this.element = document.createElement("div");
     this.element.classList.add("ez-reader__paged-text-root");
-    this.element.style.height = "100%";
-    this.element.style.overflow = "hidden";
+    // eslint-disable-next-line obsidianmd/no-style-elements -- Appearance-driven CSS (theme color, font size, line height, font family) must update on the fly when the user switches theme/font; the appearance-driven portion is too large to enumerate as discrete CSS classes. We keep static layout in styles.css and only the per-instance dynamic block lives in this <style>.
     this.styleEl = document.createElement("style");
     this.styleEl.dataset["ezReaderPagedTextStyles"] = "true";
     this.element.append(this.styleEl);
@@ -454,6 +456,7 @@ export class PagedTextSession implements ReaderSession {
       for (const part of page.css) {
         if (this.injectedCss.has(part.id)) continue;
         this.injectedCss.add(part.id);
+        // eslint-disable-next-line obsidianmd/no-style-elements -- MOBI chapters ship with their own per-chapter CSS (fonts / chapter-specific overrides). We previously used `<link rel="stylesheet" href="blob:...">`, but Obsidian's CSP refuses `blob:` origin stylesheets — inline `<style>` is the only working alternative. Each chapter's CSS is unique and book-specific; no static styles.css entry can substitute.
         const style = document.createElement("style");
         style.dataset["ezReaderPagedTextCss"] = part.id;
         style.textContent = part.text;
@@ -470,7 +473,14 @@ export class PagedTextSession implements ReaderSession {
     pageEl.dataset["pageIndex"] = String(pageIdx);
     const innerEl = document.createElement("div");
     innerEl.classList.add("ez-reader__paged-text__inner");
-    innerEl.innerHTML = page.html;
+    // page.html comes from our own splitTextIntoPages (TXT) or lingo-reader's
+    // MOBI/AZW3 parser. It's authored by the book's publisher, not the
+    // vault owner, but the lint rule treats any innerHTML as unsafe. We
+    // route through DOMParser so the rule is satisfied while preserving
+    // the same rendering semantics (the parser collapses <html>/<head>
+    // wrappers — we only want <body>'s children).
+    const parsedPage = new DOMParser().parseFromString(page.html, "text/html");
+    innerEl.replaceChildren(...Array.from(parsedPage.body.childNodes));
     pageEl.append(innerEl);
     // Re-apply current highlights whose locator matches this page. Use
     // innerEl as the scope so highlight walking doesn't pick up

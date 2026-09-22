@@ -32,15 +32,15 @@
 type GroupByCallback<T> = (item: T, index: number) => unknown;
 
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-empty-interface
+  // eslint-disable-next-line @typescript-eslint/no-empty-interface -- TS module augmentation: declares signatures on global constructors (Object / Map / Promise / ReadableStream). Members live inline; the empty-body check is a false positive for ambient augmentation.
   interface ObjectConstructor {
     groupBy<T>(items: Iterable<T>, callback: GroupByCallback<T>): Record<string, T[]>;
   }
-  // eslint-disable-next-line @typescript-eslint/no-empty-interface
+  // eslint-disable-next-line @typescript-eslint/no-empty-interface -- see ObjectConstructor above; Map receives the same module augmentation pattern.
   interface MapConstructor {
     groupBy<K, T>(items: Iterable<T>, callback: GroupByCallback<T>): Map<K, T[]>;
   }
-  // eslint-disable-next-line @typescript-eslint/no-empty-interface
+  // eslint-disable-next-line @typescript-eslint/no-empty-interface -- see ObjectConstructor above; Promise receives the same module augmentation pattern.
   interface PromiseConstructor {
     withResolvers<T>(): {
       promise: Promise<T>;
@@ -48,7 +48,7 @@ declare global {
       reject: (reason?: unknown) => void;
     };
   }
-  // eslint-disable-next-line @typescript-eslint/no-empty-interface
+  // eslint-disable-next-line @typescript-eslint/no-empty-interface -- see ObjectConstructor above; ReadableStream prototype receives the same module augmentation pattern.
   interface ReadableStream<R> {
     [Symbol.asyncIterator](): AsyncIterableIterator<R>;
   }
@@ -146,9 +146,12 @@ if (
 // Date/RegExp/typed-arrays are NOT preserved, but foliate doesn't put any
 // of those through structuredClone in its public surface.
 //
-// Note: install onto both globalThis.structuredClone and the structuredClone
-// identifier some bundlers capture at module init time. The conditional
-// preserves the native implementation if it exists.
+// Note: install onto globalThis.structuredClone. The previous eval fallback
+// for free-binding environments is removed — Obsidian's auto-review
+// flags eval, and Obsidian's Electron / Android WebView runtimes never
+// capture structuredClone as a separate free binding (no bundler
+// indirection in this code path). The globalThis install covers every
+// runtime lookup foliate-js exercises.
 if (typeof (globalThis as { structuredClone?: unknown }).structuredClone !== "function") {
   const jsonClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
   Object.defineProperty(globalThis, "structuredClone", {
@@ -156,18 +159,6 @@ if (typeof (globalThis as { structuredClone?: unknown }).structuredClone !== "fu
     writable: true,
     configurable: true
   });
-  // Some shimmed environments expose structuredClone as a free binding.
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const _probe = (0, eval)("typeof structuredClone");
-    if (_probe === "undefined") {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const _assign = (0, eval)("structuredClone = (v) => JSON.parse(JSON.stringify(v))");
-      void _assign;
-    }
-  } catch {
-    // indirect eval blocked — that's fine, globalThis assignment above suffices
-  }
 }
 
 // crypto.subtle.digest SHA-1 fallback — foliate-js 1.0.1's epub.js hashes
@@ -221,9 +212,14 @@ installSha1DigestFallback();
 
 // Diagnostic helper — emitted once at startup so we can see which modern
 // APIs the current WebView is missing. Helps triage Android white screens.
+// We deliberately don't include navigator.userAgent here: Obsidian's
+// auto-review flags navigator-based OS detection, and Platform.isAndroid
+// / Platform.isDesktop etc. are the supported way to detect environment
+// from a plugin context. The polyfill module runs before Obsidian is
+// fully booted, so it can't import Platform — instead we just report
+// the missing APIs and let the host plugin decide what to do with them.
 interface PolyfillReport {
   readonly missing: ReadonlyArray<string>;
-  readonly userAgent: string;
 }
 export const collectPolyfillReport = (): PolyfillReport => {
   const checks: ReadonlyArray<readonly [string, unknown]> = [
@@ -238,7 +234,7 @@ export const collectPolyfillReport = (): PolyfillReport => {
     ["customElements", typeof customElements !== "undefined"]
   ];
   const missing = checks.filter(([, present]) => !present).map(([name]) => name);
-  return { missing, userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "n/a" };
+  return { missing };
 };
 
 export {};

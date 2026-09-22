@@ -30,7 +30,8 @@ const DOM_GLOBALS = [
   "HTMLElement",
   "HTMLStyleElement",
   "Text",
-  "requestAnimationFrame"
+  "requestAnimationFrame",
+  "DOMParser"
 ];
 for (const key of DOM_GLOBALS) {
   previousGlobals[key] = (globalThis as Record<string, unknown>)[key];

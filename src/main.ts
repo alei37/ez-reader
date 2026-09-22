@@ -13,9 +13,7 @@ const polyfillReport = collectPolyfillReport();
 if (polyfillReport.missing.length > 0) {
   console.info(
     "[ez-reader] WebView missing APIs (polyfilled where possible):",
-    polyfillReport.missing.join(", "),
-    "| UA:",
-    polyfillReport.userAgent
+    polyfillReport.missing.join(", ")
   );
 }
 

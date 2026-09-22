@@ -1,5 +1,7 @@
 # EzReader
 
+> **English summary** — EzReader is an Obsidian community-plugin reader that turns your Vault into a personal library. It opens EPUB / PDF / TXT / MOBI / AZW3 books stored anywhere in the Vault, tracks progress, and lets you take Markdown-native bookmarks, excerpts, and thoughts that link back into your other notes. A Goodreads-style shelf surfaces all your books with filters and sort; the reader mirrors the WeRead / Apple Books feel with theme/font controls, page-turn animations, and a keyboard-driven selection menu (Translate / Excerpt / Thought / Copy). Optional online translation providers (Youdao / DeepL / Google) can be configured in settings. Full key map and quick-start are below.
+
 EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图书馆 — EPUB / PDF / TXT / MOBI / AZW3 电子书躺在 Vault 的任意位置,你在 Obsidian 里打开阅读、做笔记、记录进度,产出仍是普通 Markdown,跟 vault 里的其它笔记无缝打通。
 
 ![个人书架 (Shelf)](docs/screenshots/shelf.webp)

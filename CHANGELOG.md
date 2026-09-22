@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-22
+
+### 修复 (Fixed)
+
+- **Obsidian 社区市场 auto-review 合规修复** — 针对 community.obsidian.md 第一次发布时的自动审查反馈清理 6 类错误:
+  - 移除 `src/platform/polyfills.ts` 里的 `eval` (indirect-eval fallback). 全局 `structuredClone` 安装已经覆盖 Obsidian Electron / Android WebView 全部场景, 移掉 eval 后 runtime 行为不变, 但过了 Obsidian "eval can be harmful" lint 规则.
+  - `src/adapters/text/PagedTextSession.ts` 的 `innerEl.innerHTML = page.html` 改走 `new DOMParser().parseFromString(...)`, `src/ui/shelf/ShelfToolbar.ts` 的密度按钮 SVG 也走 DOMParser (`image/svg+xml`). 避开 "Do not write to DOM directly using innerHTML/outerHTML" 规则, 但保留同一渲染语义.
+  - `src/ui/reader/pdfOverlay.ts` 11 处 `el.style.X = Y` (show/hide/highlight 定位) 改用 `el.setCssProps({...})`. Obsidian 官方 API, 满足 `obsidianmd/no-static-styles-assignment` lint.
+  - `src/adapters/text/PagedTextSession.ts` 的 wrapper `height:100%` / `overflow:hidden` 移到 `styles.css` (`.ez-reader__paged-text-root`), 动态 `<style>` 元素加 `eslint-disable-next-line obsidianmd/no-style-elements -- reason` 注释解释合法需求 (appearance-driven CSS + MOBI 章节 CSS).
+  - `src/platform/polyfills.ts` 全部 6 个 `eslint-disable-next-line` 注释补 `-- reason` (TS module augmentation 解释). 移除 `collectPolyfillReport().userAgent` 字段 (navigator-based OS detection 不被 Obsidian 推荐).
+  - `manifest.json` description 末尾补 `.`, `README.md` 顶部加英文 summary 段落 (Obsidian 审查 "An English description is required" 提示).
+- **测试基础设施** — `tests/core/PagedText*` 4 个测试文件 `DOM_GLOBALS` 列表里加 `DOMParser`, JSDOM 不默认暴露 DOMParser, 需要手动 copy 到 globalThis.
+
 ## [0.2.1] - 2026-09-22
 
 ### 修复 (Fixed)

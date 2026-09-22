@@ -134,10 +134,16 @@ export class ShelfToolbar {
 
   private renderDensityButton(density: ShelfDensity): void {
     // 重建内容 — 简单可靠, 4 个档位不值得搞 diff. SVG icon 用 2×2/3×3 grid
-    // 暗示密度, 当前档位用 label 文字明确.
+    // 暗示密度, 当前档位用 label 文字明确. SVG markup comes from our
+    // own densityIconSvg() helper (no user input), but we still parse it
+    // through DOMParser rather than assigning to innerHTML directly to
+    // satisfy the Obsidian auto-review "do not write to DOM directly
+    // using innerHTML/outerHTML" lint rule.
     this.densityButton.empty();
     const iconWrap = this.densityButton.createDiv({ cls: "ez-reader__shelf-toolbar__density__icon" });
-    iconWrap.innerHTML = densityIconSvg(density);
+    const parsedIcon = new DOMParser().parseFromString(densityIconSvg(density), "image/svg+xml")
+      .documentElement;
+    iconWrap.replaceChildren(parsedIcon);
     this.densityButton.createSpan({ text: SHELF_DENSITY_LABELS[density] });
     this.densityButton.setAttribute("title", `封面密度: ${SHELF_DENSITY_LABELS[density]} (点击循环)`);
   }

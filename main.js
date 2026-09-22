@@ -12846,12 +12846,12 @@ var init_pdfOverlay = __esm({
           const pageEl = findPageElement2(this.container, item.pageNumber);
           const allDivs = [item.div, ...item.extraDivs ?? []];
           if (!pageEl) {
-            for (const div of allDivs) div.style.display = "none";
+            for (const div of allDivs) div.setCssProps({ display: "none" });
             continue;
           }
           const rects = findTextOnPage(pageEl, item.searchText);
           if (rects.length === 0) {
-            for (const div of allDivs) div.style.display = "none";
+            for (const div of allDivs) div.setCssProps({ display: "none" });
             continue;
           }
           for (const div of item.extraDivs ?? []) div.remove();
@@ -12859,11 +12859,13 @@ var init_pdfOverlay = __esm({
           const primary = rects[0];
           const tail = rects.slice(1);
           if (primary) {
-            item.div.style.display = "";
-            item.div.style.left = `${primary.left}px`;
-            item.div.style.top = `${primary.top}px`;
-            item.div.style.width = `${primary.width}px`;
-            item.div.style.height = `${primary.height}px`;
+            item.div.setCssProps({
+              display: "",
+              left: `${primary.left}px`,
+              top: `${primary.top}px`,
+              width: `${primary.width}px`,
+              height: `${primary.height}px`
+            });
           }
           for (const r3 of tail) {
             const newDiv = drawHighlight(this.highlightLayer, r3, item.excerptId, item.searchText);
@@ -12949,7 +12951,7 @@ var init_pdfOverlay = __esm({
         }
       }
       hideMenu() {
-        this.menuEl.style.display = "none";
+        this.menuEl.setCssProps({ display: "none" });
       }
       toggleNotesPanel() {
         const isOpen = this.notesPanel.classList.toggle("is-open");
@@ -13297,7 +13299,7 @@ ${result.text}`, 1e4);
     createSelectionMenu = (parent, handlers) => {
       const menu = document.createElement("div");
       menu.className = "ez-reader__pdf-overlay-menu";
-      menu.style.display = "none";
+      menu.setCssProps({ display: "none" });
       const mkBtn = (label, cls, onClick) => {
         const btn = menu.createEl("button", { text: label, cls: `ez-reader__pdf-overlay-menu__btn ${cls}` });
         btn.addEventListener("click", (event) => {
@@ -13315,17 +13317,21 @@ ${result.text}`, 1e4);
       return menu;
     };
     showMenuAt = (menu, rect) => {
-      menu.style.display = "flex";
-      menu.style.left = "-9999px";
-      menu.style.top = "-9999px";
+      menu.setCssProps({
+        display: "flex",
+        left: "-9999px",
+        top: "-9999px"
+      });
       requestAnimationFrame(() => {
         const menuRect = menu.getBoundingClientRect();
         const pos = computeSelectionMenuPosition(rect, menuRect, {
           width: window.innerWidth,
           height: window.innerHeight
         });
-        menu.style.left = `${pos.left}px`;
-        menu.style.top = `${pos.top}px`;
+        menu.setCssProps({
+          left: `${pos.left}px`,
+          top: `${pos.top}px`
+        });
       });
     };
     createNotesButton = (parent, opts) => {
@@ -13462,10 +13468,12 @@ ${result.text}`, 1e4);
       hl.className = "ez-reader__pdf-overlay-highlight";
       hl.dataset.excerptId = excerptId;
       hl.dataset.searchText = searchText;
-      hl.style.left = `${rect.left}px`;
-      hl.style.top = `${rect.top}px`;
-      hl.style.width = `${rect.width}px`;
-      hl.style.height = `${rect.height}px`;
+      hl.setCssProps({
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`
+      });
       layer.appendChild(hl);
       return hl;
     };
@@ -13648,14 +13656,6 @@ if (typeof globalThis.structuredClone !== "function") {
     writable: true,
     configurable: true
   });
-  try {
-    const _probe = (0, eval)("typeof structuredClone");
-    if (_probe === "undefined") {
-      const _assign = (0, eval)("structuredClone = (v) => JSON.parse(JSON.stringify(v))");
-      void _assign;
-    }
-  } catch {
-  }
 }
 var installSha1DigestFallback = () => {
   const cryptoObj = globalThis.crypto;
@@ -13705,7 +13705,7 @@ var collectPolyfillReport = () => {
     ["customElements", typeof customElements !== "undefined"]
   ];
   const missing = checks.filter(([, present]) => !present).map(([name]) => name);
-  return { missing, userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "n/a" };
+  return { missing };
 };
 
 // src/Plugin.ts
@@ -15507,8 +15507,6 @@ var PagedTextSession = class {
     this.currentAppearance = options.appearance;
     this.element = document.createElement("div");
     this.element.classList.add("ez-reader__paged-text-root");
-    this.element.style.height = "100%";
-    this.element.style.overflow = "hidden";
     this.styleEl = document.createElement("style");
     this.styleEl.dataset["ezReaderPagedTextStyles"] = "true";
     this.element.append(this.styleEl);
@@ -15728,7 +15726,8 @@ var PagedTextSession = class {
     pageEl.dataset["pageIndex"] = String(pageIdx);
     const innerEl = document.createElement("div");
     innerEl.classList.add("ez-reader__paged-text__inner");
-    innerEl.innerHTML = page.html;
+    const parsedPage = new DOMParser().parseFromString(page.html, "text/html");
+    innerEl.replaceChildren(...Array.from(parsedPage.body.childNodes));
     pageEl.append(innerEl);
     for (const h3 of this.highlights) {
       const locatorPageIdx = Number(h3.locator.replace(/^paged-text:/, ""));
@@ -18354,7 +18353,8 @@ var ShelfToolbar = class {
   renderDensityButton(density) {
     this.densityButton.empty();
     const iconWrap = this.densityButton.createDiv({ cls: "ez-reader__shelf-toolbar__density__icon" });
-    iconWrap.innerHTML = densityIconSvg(density);
+    const parsedIcon = new DOMParser().parseFromString(densityIconSvg(density), "image/svg+xml").documentElement;
+    iconWrap.replaceChildren(parsedIcon);
     this.densityButton.createSpan({ text: SHELF_DENSITY_LABELS[density] });
     this.densityButton.setAttribute("title", `\u5C01\u9762\u5BC6\u5EA6: ${SHELF_DENSITY_LABELS[density]} (\u70B9\u51FB\u5FAA\u73AF)`);
   }
@@ -23924,9 +23924,7 @@ var polyfillReport = collectPolyfillReport();
 if (polyfillReport.missing.length > 0) {
   console.info(
     "[ez-reader] WebView missing APIs (polyfilled where possible):",
-    polyfillReport.missing.join(", "),
-    "| UA:",
-    polyfillReport.userAgent
+    polyfillReport.missing.join(", ")
   );
 }
 var main_default = EzReaderPlugin;
