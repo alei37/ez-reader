@@ -118,6 +118,13 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--ez-reader-shelf-cover-min, 220px), 1fr));
   gap: 16px;
+  /* fix(shelf): 配合 .ez-reader__shelf-grid__item 的 min-height: 320px,
+   * 用 max-content 让每行高度 = 该行最高 item 的内容高度. 配合 item
+   * 内的 2-line title clamp + flex column 布局, 同 density 下所有 item
+   * 内容高度一致 → 整行整齐. 不用 1fr 是因为 1fr 会强制把行拉伸到
+   * 容器剩余空间, 出现"封面留白过多"的不自然感; max-content 是
+   * 内容驱动, 配合 item min-height 自然得到 uniform row height. */
+  grid-auto-rows: max-content;
 }
 
 .ez-reader__shelf__body.is-list {
@@ -146,19 +153,36 @@
 /* ---- Shelf density (用户可调, 4 档) ----
    compact / default / spacious / large — 影响 grid 列最小宽度 和 list cover
    像素尺寸. CSS 变量驱动, JS 只设 data-shelf-density, 不直接改 width.
-   fix(shelf): default 220→180, compact 160→140 — 用户反馈 "加书后挤",
-   核心问题是 default 档最小宽度让 ~3-4 列就撑满 viewport, 加上 24px gap
-   每行卡片占空间大. 缩到 180 / 16px gap 后, 桌面 1200px viewport 一排可装
-   6 列 (180×6 + 16×5 = 1160px), 配合可见滚动条, "挤" 的感觉明显缓解.
+
+   fix(shelf): 用户反馈 56 本书时卡片极小 (8 列 × 7 行一屏塞下, 标题被截).
+   上一轮 (e9a1c15) 把 default 调到 180px + compact 140px 想"缓解挤",
+   结果是: 卡片太小看不清标题, 而且整页塞满反而让滚动条看不出来.
+   用户原话: "是不是书籍固定高度, 超过页面的就可以向下滚动查看".
+
+   本轮方案:
+   1) 调大 default 档到 200px — 用户能看清标题的中等大小;
+      compact 改 160px (更紧凑, 给老用户); spacious/large 保持 260/320.
+   2) .ez-reader__shelf-grid__item 加 min-height: 320px, 配合 grid-auto-rows:
+      max-content (见上面 .is-grid 块) → 同 density 下所有行高度一致,
+      用户看到的是 uniform row + 翻页/滚动浏览, 而非"一屏塞下 56 本".
+   3) .ez-reader__shelf-grid__title 加 -webkit-line-clamp: 2 (见下面 title 块),
+      长标题最多 2 行, 避免撑高行.
+
+   桌面 1200px viewport 预期布局:
+   - default 200:  5 列 × ~341px 自然高 → 4 行可见 (~1364px), 滚动出现 ✓
+   - compact 160:  6 列 × 320px (forced) → 4 行可见, 滚动出现 ✓
+   - spacious 260: 4 列 × ~421px → 3 行可见, 滚动出现 ✓
+   - large 320:    3 列 × ~501px → 2-3 行可见, 滚动出现 ✓
+
    mobile @media (max-width: 700px) 仍写死 minmax(110px, 1fr), 不受密度 var 影响. */
 .ez-reader__shelf__body[data-shelf-density="compact"] {
-  --ez-reader-shelf-cover-min: 140px;
-  --ez-reader-shelf-list-cover: 24px;
+  --ez-reader-shelf-cover-min: 160px;
+  --ez-reader-shelf-list-cover: 28px;
   --ez-reader-shelf-list-info-max: 1fr;
 }
 .ez-reader__shelf__body[data-shelf-density="default"] {
-  --ez-reader-shelf-cover-min: 180px;
-  --ez-reader-shelf-list-cover: 36px;
+  --ez-reader-shelf-cover-min: 200px;
+  --ez-reader-shelf-list-cover: 40px;
   --ez-reader-shelf-list-info-max: 1fr;
 }
 .ez-reader__shelf__body[data-shelf-density="spacious"] {
@@ -215,6 +239,14 @@
   flex-direction: column;
   width: 100%;
   min-width: 0;
+  /* fix(shelf): 用户反馈"卡片固定高度, 超过页面就向下滚动". 320px =
+   * default 档 cover 200 × 4/3 aspect ≈ 267px + meta 38px (2 行 title +
+   * 1 行 author + 8+2 padding) + footer 36px (status pill + format/lang).
+   * 这个下限保证所有 density 下卡片都不会太小. compact 160 档 cover 只
+   * 有 ~213px, min-height 强制到 320, 让 compact 也保持合理高度.
+   * 配合 .is-grid 上的 grid-auto-rows: max-content → 同 density 下
+   * 所有行高度一致 (uniform row height). */
+  min-height: 320px;
 }
 
 .ez-reader__shelf-list__item {
@@ -367,12 +399,23 @@
   padding: 6px 8px;
 }
 
-.ez-reader__shelf-grid__title,
 .ez-reader__shelf-list__title {
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* fix(shelf): 网格卡片标题允许 2 行 (line-clamp: 2), 配合 item min-height
+ * + grid-auto-rows: max-content → 长标题不再撑高行. List 模式仍 1 行
+ * (横向布局, 1 行足够, 2 行会跟右侧进度条冲突). */
+.ez-reader__shelf-grid__title {
+  font-weight: 600;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .ez-reader__shelf-grid__author,
