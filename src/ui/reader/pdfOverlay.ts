@@ -91,10 +91,10 @@ const debounce = <Args extends unknown[]>(
   fn: (...args: Args) => void,
   ms: number
 ): ((...args: Args) => void) => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: number | undefined;
   return (...args: Args) => {
-    if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
+    if (timer !== undefined) window.clearTimeout(timer);
+    timer = window.setTimeout(() => fn(...args), ms);
   };
 };
 
@@ -309,10 +309,10 @@ export class PdfOverlay {
         // 简化: 永远调一次 reposition, 内部判断 visible / hidden / in-place.
         this.repositionHighlights();
         lastUpdate = now;
-        rafHandle = requestAnimationFrame(tick);
+        rafHandle = window.requestAnimationFrame(tick);
       };
-      rafHandle = requestAnimationFrame(tick);
-      this.disposers.push(() => cancelAnimationFrame(rafHandle));
+      rafHandle = window.requestAnimationFrame(tick);
+      this.disposers.push(() => window.cancelAnimationFrame(rafHandle));
     }
 
     // workspace 变化 — 检测 leaf 是否还在
@@ -327,15 +327,15 @@ export class PdfOverlay {
     // 之前 PdfOverlay 完全不存 PDF 进度, reading.position 永远是 null,
     // progressFraction 一直返回 0, PDF 永远 "untouched". 现在 mutation
     // observer 监听 .pdf-page.active 变化触发更新.
-    let persistTimer: ReturnType<typeof setTimeout> | undefined;
+    let persistTimer: number | undefined;
     const schedulePositionPersist = (): void => {
-      if (persistTimer !== undefined) clearTimeout(persistTimer);
+      if (persistTimer !== undefined) window.clearTimeout(persistTimer);
       // 250ms debounce — 用户快速滚动时不会触发 10+ 次 IO
-      persistTimer = setTimeout(() => void this.persistCurrentPosition(), 250);
+      persistTimer = window.setTimeout(() => void this.persistCurrentPosition(), 250);
     };
     this.disposers.push(() => {
       if (persistTimer !== undefined) {
-        clearTimeout(persistTimer);
+        window.clearTimeout(persistTimer);
         persistTimer = undefined;
       }
     });
@@ -669,7 +669,7 @@ export class PdfOverlay {
     // `.is-hidden { display: none }`,导致点 × 关不掉 (issue: 翻译后 ×
     // 无效). 默认 CSS 已经是 `display: flex`, 只需要 removeClass("is-hidden").
     popover.setCssProps({ left: "-9999px", top: "-9999px" });
-    requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
       const popoverRect = popover.getBoundingClientRect();
       const pos = computeSelectionMenuPosition(anchorRect, popoverRect, {
         width: window.innerWidth,
@@ -1127,7 +1127,7 @@ const showMenuAt = (menu: HTMLElement, rect: DOMRect): void => {
   });
   // P2: 复用 selectionMenuPosition 的纯函数 — 跟 ReaderSelectionMenu 用同一个
   // 算法, 包括多行选区强制上方 + 视口边距约束, 行为一致。
-  requestAnimationFrame(() => {
+  window.requestAnimationFrame(() => {
     const menuRect = menu.getBoundingClientRect();
     const pos = computeSelectionMenuPosition(rect, menuRect, {
       width: window.innerWidth,

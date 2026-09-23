@@ -2963,7 +2963,6 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-}
 
 /* P1: 点击 PDF 黄条 → 笔记面板 focus flash. */
 .ez-reader__pdf-overlay-row--focus {
