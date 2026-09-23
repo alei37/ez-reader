@@ -161,11 +161,9 @@ export class LibraryService {
     }
 
     const inLibrary = [...this.entries.values()].filter((entry) => entry.book.addedToLibraryAt !== null).length;
-    // eslint-disable-next-line no-console -- intentional startup diagnostic for first-time vault scan results
     console.info(`[ez-reader] Library scan: ${this.entries.size} book(s) discovered, ${inLibrary} in library.`);
     for (const entry of this.entries.values()) {
       const flag = entry.book.addedToLibraryAt !== null ? "+" : "-";
-      // eslint-disable-next-line no-console -- intentional startup diagnostic listing each discovered book
       console.info(`[ez-reader]   [${flag}] ${entry.book.locator.format.toUpperCase().padEnd(4)} ${entry.book.locator.path}`);
     }
 

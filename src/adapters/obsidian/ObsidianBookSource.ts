@@ -83,7 +83,6 @@ export class ObsidianBookSource implements BookSource {
       }
     }
 
-    // eslint-disable-next-line no-console -- intentional: reports scan statistics (vault.getFiles count vs adapter-walk additions) on plugin load so the user can spot indexing regressions
     console.info(
       `[ez-reader] Scan: vault.getFiles()=${totalFromGetFiles}, adapter additions=${acceptedFromAdapter}, total seen=${seenPaths.size}.`
     );

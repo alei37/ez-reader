@@ -638,7 +638,6 @@ class FoliateSession implements ReaderSession {
           if (!href) return;
           if (link.dataset["ezReaderInlined"] === "1") return;
           link.dataset["ezReaderInlined"] = "1";
-          // eslint-disable-next-line no-restricted-globals -- fetches blob: URLs (foliate-js injects chapter CSS via blob: <link> elements that Obsidian's CSP blocks). requestUrl doesn't support blob: URLs, so the browser fetch is the only option.
           fetch(href)
             .then((response) => response.text())
             .then((cssText) => {
@@ -664,7 +663,6 @@ class FoliateSession implements ReaderSession {
           if (matches.length === 0) continue;
           if (style.dataset["ezReaderInlinedImports"] === "1") continue;
           style.dataset["ezReaderInlinedImports"] = "1";
-          // eslint-disable-next-line no-restricted-globals -- fetches blob: URLs referenced from @import "blob:..." inside <style> text (foliate-js rewrites @import url(...) to @import "blob:..."). requestUrl doesn't support blob: URLs.
           Promise.all(matches.map((m) => fetch(m[1]).then((r) => r.text())))
             .then((cssTexts) => {
               let newText = text;

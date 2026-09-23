@@ -164,10 +164,8 @@ export class PagedTextSession implements ReaderSession {
       this.element.dispatchEvent(new WinCustomEvent("link-click", { detail: { href } }));
     } else {
       // Last resort: legacy createEvent path.
-      // eslint-disable-next-line @typescript-eslint/no-deprecated -- reason: fallback path for jsdom+esbuild test bundle where global CustomEvent is Node's built-in
       const ev = win?.document.createEvent("CustomEvent") as (CustomEvent & { initCustomEvent?: (t: string, b: boolean, c: boolean, d: unknown) => void }) | null;
       if (ev && typeof ev.initCustomEvent === "function") {
-        // eslint-disable-next-line @typescript-eslint/no-deprecated -- reason: fallback path for jsdom+esbuild test bundle where global CustomEvent is Node's built-in
         ev.initCustomEvent("link-click", false, false, { href });
         this.element.dispatchEvent(ev);
       }

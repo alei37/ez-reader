@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-09-23
+
+### 修复 (Fixed)
+
+- **0.2.6 引入了新 Errors, 回滚** — 0.2.6 我加 eslint-disable 注释给 3 类规则 (no-console, no-restricted-globals, @typescript-eslint/no-deprecated), 结果 review 报 "Disabling 'X' is not allowed" — Obsidian 把这 3 条 rule 锁死了不允许 disable.
+  - 删全部 18 处 `eslint-disable-next-line` 注释 (12 no-console + 4 no-restricted-globals + 2 no-deprecated)
+  - 底层 `console.*` / `fetch()` / `initCustomEvent` 调用保留, 跑 warning 而不是 error
+  - 跟 0.2.5 review 比, warning 数量基本一致 (Expected `fetch` warning, Expected `console.log` warning, Recommendation `initCustomEvent deprecated`)
+  - 但 Errors 清空, auto-review 应该 Completed
+
 ## [0.2.6] - 2026-09-22
 
 ### 修复 (Fixed)
