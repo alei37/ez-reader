@@ -113,6 +113,30 @@ export class Setting {}
 export class Notice {
   constructor() {}
 }
+
+/**
+ * `requestUrl` is Obsidian's blessed HTTP client — it goes through
+ * Electron's network stack and bypasses the renderer CSP that blocks
+ * raw `fetch()` to external hosts. The plugin's translation providers
+ * MUST use this instead of `fetch()` (per AGENTS.md §3.7). For tests
+ * we expose it as a thin wrapper over a `globalThis`-swappable holder
+ * so existing tests can stub it the same way they stub `globalThis.fetch`.
+ *
+ * Test usage:
+ *   globalThis.__obsidianRequestUrl = (req) => Promise.resolve({ status: 200, text: "..." });
+ *   // ... test ...
+ *   delete globalThis.__obsidianRequestUrl;
+ *
+ * Returned shape mirrors `RequestUrlResponse`:
+ *   { status: number; text: string; headers: Record<string, string> }
+ */
+export async function requestUrl(req) {
+  const fn = globalThis.__obsidianRequestUrl;
+  if (typeof fn !== "function") {
+    throw new Error("requestUrl not stubbed — set globalThis.__obsidianRequestUrl in test");
+  }
+  return fn(req);
+}
 /**
  * P1: 额外补齐几个 ReaderView.ts 用的类型. 测试 import ReaderView
  * 测纯函数 (composeQuickBookmarkLabel / truncateExcerptText) 时会顺带

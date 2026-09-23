@@ -1,3 +1,4 @@
+import { requestUrl } from "obsidian";
 import type {
   TranslationProvider,
   TranslationRequest,
@@ -9,8 +10,9 @@ import type {
  * things every provider ends up duplicating:
  *
  *   1. `formatError(error: unknown)` — safely stringify a thrown value.
- *   2. `fetchJson<T>(url, init)`      — fetch + JSON parse + HTTP error mapping,
- *                                       with consistent Chinese error messages.
+ *   2. `fetchJson<T>(url, init)`      — requestUrl + JSON parse + HTTP error
+ *                                       mapping, with consistent Chinese
+ *                                       error messages.
  *   3. `checkEmptyKey(apiKey)`        — trim + non-empty check.
  *
  * Subclasses implement `validateKey` and `translate`, plus
@@ -21,6 +23,15 @@ import type {
  *   - locale mapping (`toXxxLocale`)
  *   - auth (API-key header, OAuth token, signed form body)
  *   - response shape handling
+ *
+ * Why `requestUrl` and not `fetch`?
+ * --------------------------------
+ * Obsidian's renderer process has a Content-Security-Policy that blocks
+ * raw `fetch()` to external hosts — calling `fetch()` returns "Failed to
+ * fetch" because the renderer doesn't have a network grant for `https://`.
+ * `requestUrl` is Obsidian's blessed HTTP client: it goes through the
+ * main process / Node's net stack, sidesteps the renderer CSP, and is
+ * the documented API for plugins (see AGENTS.md §3.7 locked-rule note).
  */
 export abstract class BaseTranslationProvider implements TranslationProvider {
   abstract readonly id: string;
@@ -49,12 +60,17 @@ export abstract class BaseTranslationProvider implements TranslationProvider {
   }
 
   /**
-   * Fetch + parse JSON + translate HTTP failure into a Chinese error message.
-   * Returns the parsed payload on success.
+   * HTTP call + parse JSON + translate HTTP failure into a Chinese error
+   * message. Returns the parsed payload on success.
    *
    * `options.providerName` overrides the error prefix for this one call —
    * used by Google's auth step to emit "Google 鉴权" instead of "Google"
    * so the user knows which subsystem failed.
+   *
+   * Uses Obsidian's `requestUrl` (not raw `fetch`) — see class doc for
+   * why. `throw: false` keeps error mapping consistent across all HTTP
+   * status codes (otherwise requestUrl throws before we can extract the
+   * body for `formatHttpError`).
    */
   protected async fetchJson<T>(
     url: string,
@@ -62,21 +78,30 @@ export abstract class BaseTranslationProvider implements TranslationProvider {
     options?: { providerName?: string }
   ): Promise<T> {
     const name = options?.providerName ?? this.providerName;
-    let response: Response;
+    let response: { status: number; text: string };
     try {
-      response = await fetch(url, init);
+      response = await requestUrl({
+        url,
+        method: typeof init.method === "string" ? init.method : "GET",
+        headers: this.stringifyHeaders(init.headers),
+        body: typeof init.body === "string" ? init.body : undefined,
+        throw: false
+      });
     } catch (error) {
+      // requestUrl throws when throw:true AND for connection-level failures
+      // (DNS, refused, reset, TLS). Wrap with our Chinese prefix so the user
+      // sees consistent error wording.
       throw new Error(`网络请求失败: ${this.formatError(error)}`);
     }
     let payload: T;
     try {
-      payload = (await response.json()) as T;
+      payload = JSON.parse(response.text) as T;
     } catch (error) {
       throw new Error(
         `${name} 返回了非 JSON 响应 (HTTP ${response.status}): ${this.formatError(error)}`
       );
     }
-    if (!response.ok) {
+    if (response.status >= 400) {
       throw new Error(this.formatHttpError(response.status, payload));
     }
     return payload;
@@ -89,5 +114,29 @@ export abstract class BaseTranslationProvider implements TranslationProvider {
   protected checkEmptyKey(apiKey: string): string | null {
     const trimmed = apiKey.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  /**
+   * `Headers | Record<string, string> | undefined` → flat string record.
+   * requestUrl takes `Record<string, string>`; convert Headers / array
+   * tuples for callers that pass those.
+   */
+  private stringifyHeaders(
+    headers: RequestInit["headers"]
+  ): Record<string, string> | undefined {
+    if (!headers) return undefined;
+    if (headers instanceof Headers) {
+      const out: Record<string, string> = {};
+      headers.forEach((value, key) => {
+        out[key] = value;
+      });
+      return out;
+    }
+    if (Array.isArray(headers)) {
+      const out: Record<string, string> = {};
+      for (const [key, value] of headers) out[key] = value;
+      return out;
+    }
+    return headers;
   }
 }

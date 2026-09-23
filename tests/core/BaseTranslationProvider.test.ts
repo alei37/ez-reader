@@ -6,7 +6,7 @@ import type { TranslationRequest, TranslationResult } from "../../src/core/ports
 /**
  * Minimal concrete subclass for testing the base class helpers in isolation.
  * We don't need network behaviour — just `formatError`, `checkEmptyKey`,
- * and the `fetchJson` plumbing (which we test with mocked global fetch).
+ * and the `fetchJson` plumbing (which we test with a mocked requestUrl).
  */
 class TestProvider extends BaseTranslationProvider {
   readonly id = "test";
@@ -42,12 +42,18 @@ class TestProvider extends BaseTranslationProvider {
   }
 }
 
-const setupFetchStub = (impl: typeof globalThis.fetch): void => {
-  globalThis.fetch = impl as typeof globalThis.fetch;
+/**
+ * Stub `requestUrl` for the duration of one test by setting
+ * `globalThis.__obsidianRequestUrl`. Mirrors how older tests stubbed
+ * `globalThis.fetch` — the obsidian-stub.mjs wrapper routes the named
+ * import through this global so tests can swap implementations.
+ */
+type RequestUrlFn = (req: unknown) => Promise<{ status: number; text: string }>;
+const setupRequestUrlStub = (impl: RequestUrlFn): void => {
+  (globalThis as { __obsidianRequestUrl?: RequestUrlFn }).__obsidianRequestUrl = impl;
 };
-const restoreFetch = (saved: typeof globalThis.fetch | undefined): void => {
-  if (saved) globalThis.fetch = saved;
-  else delete (globalThis as { fetch?: typeof globalThis.fetch }).fetch;
+const restoreRequestUrl = (): void => {
+  delete (globalThis as { __obsidianRequestUrl?: RequestUrlFn }).__obsidianRequestUrl;
 };
 
 test("formatError: Error instance → 拿 message", () => {
@@ -77,61 +83,52 @@ test("checkEmptyKey: 有效 → trim 后", () => {
 });
 
 test("fetchJson: 网络错误 → 抛 '网络请求失败'", async () => {
-  const saved = globalThis.fetch;
-  setupFetchStub(() => Promise.reject(new Error("ECONNREFUSED")));
+  setupRequestUrlStub(() => Promise.reject(new Error("ECONNREFUSED")));
   try {
     const p = new TestProvider();
     await assert.rejects(p.callFetchJson("http://x", {}), /网络请求失败.*ECONNREFUSED/);
   } finally {
-    restoreFetch(saved);
+    restoreRequestUrl();
   }
 });
 
 test("fetchJson: 非 JSON 响应 → 抛 '返回了非 JSON 响应'", async () => {
-  const saved = globalThis.fetch;
-  setupFetchStub(() =>
-    Promise.resolve(new Response("<html>not json</html>", { status: 200 }))
-  );
+  setupRequestUrlStub(() => Promise.resolve({ status: 200, text: "<html>not json</html>" }));
   try {
     const p = new TestProvider();
     await assert.rejects(p.callFetchJson("http://x", {}), /Test 返回了非 JSON 响应/);
   } finally {
-    restoreFetch(saved);
+    restoreRequestUrl();
   }
 });
 
 test("fetchJson: HTTP 4xx → 抛 formatHttpError 消息", async () => {
-  const saved = globalThis.fetch;
-  setupFetchStub(() =>
-    Promise.resolve(new Response(JSON.stringify({ code: 42 }), { status: 418 }))
+  setupRequestUrlStub(() =>
+    Promise.resolve({ status: 418, text: JSON.stringify({ code: 42 }) })
   );
   try {
     const p = new TestProvider();
     await assert.rejects(p.callFetchJson("http://x", {}), /Test HTTP 418/);
   } finally {
-    restoreFetch(saved);
+    restoreRequestUrl();
   }
 });
 
 test("fetchJson: HTTP 2xx + 有效 JSON → 返回 payload", async () => {
-  const saved = globalThis.fetch;
-  setupFetchStub(() =>
-    Promise.resolve(new Response(JSON.stringify({ hello: "world" }), { status: 200 }))
+  setupRequestUrlStub(() =>
+    Promise.resolve({ status: 200, text: JSON.stringify({ hello: "world" }) })
   );
   try {
     const p = new TestProvider();
     const result = await p.callFetchJson<{ hello: string }>("http://x", {});
     assert.deepEqual(result, { hello: "world" });
   } finally {
-    restoreFetch(saved);
+    restoreRequestUrl();
   }
 });
 
 test("fetchJson: options.providerName 覆盖错误前缀", async () => {
-  const saved = globalThis.fetch;
-  setupFetchStub(() =>
-    Promise.resolve(new Response("<html>nope</html>", { status: 200 }))
-  );
+  setupRequestUrlStub(() => Promise.resolve({ status: 200, text: "<html>nope</html>" }));
   try {
     const p = new TestProvider();
     await assert.rejects(
@@ -139,6 +136,6 @@ test("fetchJson: options.providerName 覆盖错误前缀", async () => {
       /Test Auth 返回了非 JSON 响应/
     );
   } finally {
-    restoreFetch(saved);
+    restoreRequestUrl();
   }
 });
