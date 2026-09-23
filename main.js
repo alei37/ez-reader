@@ -12177,12 +12177,12 @@ var ShortcutHelpModal_exports = {};
 __export(ShortcutHelpModal_exports, {
   ShortcutHelpModal: () => ShortcutHelpModal
 });
-var import_obsidian12, ShortcutHelpModal;
+var import_obsidian13, ShortcutHelpModal;
 var init_ShortcutHelpModal = __esm({
   "src/ui/reader/ShortcutHelpModal.ts"() {
     "use strict";
-    import_obsidian12 = require("obsidian");
-    ShortcutHelpModal = class extends import_obsidian12.Modal {
+    import_obsidian13 = require("obsidian");
+    ShortcutHelpModal = class extends import_obsidian13.Modal {
       constructor(app, shortcuts) {
         super(app);
         this.shortcuts = shortcuts;
@@ -12276,12 +12276,12 @@ var BookmarkModal_exports = {};
 __export(BookmarkModal_exports, {
   BookmarkModal: () => BookmarkModal
 });
-var import_obsidian13, BookmarkModal;
+var import_obsidian14, BookmarkModal;
 var init_BookmarkModal = __esm({
   "src/ui/reader/BookmarkModal.ts"() {
     "use strict";
-    import_obsidian13 = require("obsidian");
-    BookmarkModal = class extends import_obsidian13.Modal {
+    import_obsidian14 = require("obsidian");
+    BookmarkModal = class extends import_obsidian14.Modal {
       resolver = null;
       context;
       fallbackLabel;
@@ -12367,12 +12367,12 @@ var ExcerptModal_exports = {};
 __export(ExcerptModal_exports, {
   ExcerptModal: () => ExcerptModal
 });
-var import_obsidian14, ExcerptModal, parseTags2;
+var import_obsidian15, ExcerptModal, parseTags2;
 var init_ExcerptModal = __esm({
   "src/ui/reader/ExcerptModal.ts"() {
     "use strict";
-    import_obsidian14 = require("obsidian");
-    ExcerptModal = class extends import_obsidian14.Modal {
+    import_obsidian15 = require("obsidian");
+    ExcerptModal = class extends import_obsidian15.Modal {
       input;
       resolver = null;
       constructor(app, input) {
@@ -12538,11 +12538,11 @@ __export(pdfOverlay_exports, {
   PdfOverlay: () => PdfOverlay,
   findPdfOverlayForLeaf: () => findPdfOverlayForLeaf
 });
-var import_obsidian17, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, drawHighlight, findPdfTotalPages;
+var import_obsidian18, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable;
 var init_pdfOverlay = __esm({
   "src/ui/reader/pdfOverlay.ts"() {
     "use strict";
-    import_obsidian17 = require("obsidian");
+    import_obsidian18 = require("obsidian");
     init_highlight();
     init_selectionMenuPosition();
     PDF_VIEW_TYPE = "pdf";
@@ -12606,6 +12606,11 @@ var init_pdfOverlay = __esm({
       notesPanel;
       highlightLayer;
       searchBar;
+      /** P2: PDF 选词翻译的浮动小弹窗 — 替代之前的 `new Notice` toast (3 秒消失
+       *  还盖在最上面, 译文长就截掉, 用户复制也不方便). 挂到 `document.body`,
+       *  position: fixed, 锚定到选词 rect 附近 (复用 selectionMenuPosition).
+       *  内容: 原文 (小) + 译文 (主) + 复制 / 换语言重译 / × 按钮. */
+      translationPopoverEl;
       disposers = [];
       highlightsByExcerpt = /* @__PURE__ */ new Map();
       pendingSelection;
@@ -12636,6 +12641,10 @@ var init_pdfOverlay = __esm({
         this.searchBar = createSearchBar(document.body, {
           onSearch: (q2, fromStart) => void this.runPdfSearch(q2, fromStart),
           onClose: () => this.closePdfSearch()
+        });
+        this.translationPopoverEl = createTranslationPopover(document.body, {
+          onCopy: () => void this.handleCopyTranslation(),
+          onCycleTarget: () => void this.handleCycleTranslationTarget()
         });
         this.renderHighlightsDebounced = debounce2(() => void this.renderHighlights(), 250);
         this.repositionHighlightsDebounced = debounce2(() => this.repositionHighlights(), 100);
@@ -12684,7 +12693,7 @@ var init_pdfOverlay = __esm({
             return;
           }
           const locator = `#page=${pageNumber}`;
-          this.pendingSelection = { text, locator, pageNumber };
+          this.pendingSelection = { text, locator, pageNumber, rect };
           showMenuAt(this.menuEl, rect);
         };
         const onSelectionChangeDebounced = debounce2(onSelectionChange, 80);
@@ -12693,11 +12702,12 @@ var init_pdfOverlay = __esm({
         const onDocClick = (event) => {
           const target = event.target;
           if (!(target instanceof Node)) return;
-          if (this.menuEl.contains(target) || this.notesBtn.contains(target) || this.notesPanel.contains(target)) {
+          if (this.menuEl.contains(target) || this.notesBtn.contains(target) || this.notesPanel.contains(target) || this.translationPopoverEl.contains(target)) {
             return;
           }
           const sel = document.getSelection();
           if (!sel || sel.isCollapsed) this.hideMenu();
+          this.hideTranslationPopover();
         };
         document.addEventListener("mousedown", onDocClick);
         this.disposers.push(() => document.removeEventListener("mousedown", onDocClick));
@@ -12943,6 +12953,7 @@ var init_pdfOverlay = __esm({
         this.notesPanel.remove();
         this.highlightLayer.remove();
         this.searchBar.remove();
+        this.translationPopoverEl.remove();
         this.clearPdfSearchHighlights();
         this.pendingSelection = void 0;
         this.highlightsByExcerpt.clear();
@@ -12970,7 +12981,7 @@ var init_pdfOverlay = __esm({
             onRemoveBookmark: async (id) => {
               await this.opts.reading.removeBookmark(this.bookId, id);
               await this.refreshNotesPanel();
-              new import_obsidian17.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664");
+              new import_obsidian18.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664");
             },
             onRemoveExcerpt: async (id) => {
               await this.opts.reading.removeExcerpt(this.bookId, id);
@@ -12981,7 +12992,7 @@ var init_pdfOverlay = __esm({
                 this.highlightsByExcerpt.delete(id);
               }
               await this.refreshNotesPanel();
-              new import_obsidian17.Notice("\u6458\u5F55\u5DF2\u5220\u9664");
+              new import_obsidian18.Notice("\u6458\u5F55\u5DF2\u5220\u9664");
             }
           });
         } catch (error) {
@@ -12995,14 +13006,110 @@ var init_pdfOverlay = __esm({
       async handleTranslate() {
         if (!this.pendingSelection) return;
         const text = this.pendingSelection.text;
+        const rect = this.pendingSelection.rect;
         this.hideMenu();
+        this.showTranslationPopover(text, rect);
         try {
           const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
-          new import_obsidian17.Notice(`\u7FFB\u8BD1 (${this.targetLocale}):
-${result.text}`, 1e4);
+          this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          new import_obsidian17.Notice(`\u7FFB\u8BD1\u5931\u8D25: ${message}`);
+          this.renderTranslationError(text, message);
+        }
+      }
+      /**
+       * 在选区附近显示浮动翻译小弹窗, 显示「正在翻译…」状态。位置复用
+       * selectionMenuPosition 算法 — 跟选词菜单同位置, 不会跑到屏幕外。
+       */
+      showTranslationPopover(sourceText, anchorRect) {
+        const popover = this.translationPopoverEl;
+        const sourceEl = popover.querySelector(".ez-reader__pdf-translation__source");
+        const bodyEl = popover.querySelector(".ez-reader__pdf-translation__body");
+        const providerEl = popover.querySelector(".ez-reader__pdf-translation__provider");
+        if (sourceEl) sourceEl.setText(sourceText);
+        if (bodyEl) {
+          bodyEl.empty();
+          bodyEl.setText("\u6B63\u5728\u7FFB\u8BD1\u2026");
+          bodyEl.addClass("is-loading");
+          bodyEl.removeClass("is-error");
+        }
+        if (providerEl) providerEl.setText(`\u2192 ${this.targetLocale}`);
+        popover.removeClass("is-hidden");
+        popover.setCssProps({ left: "-9999px", top: "-9999px" });
+        requestAnimationFrame(() => {
+          const popoverRect = popover.getBoundingClientRect();
+          const pos = computeSelectionMenuPosition(anchorRect, popoverRect, {
+            width: window.innerWidth,
+            height: window.innerHeight
+          });
+          popover.setCssProps({ left: `${pos.left}px`, top: `${pos.top}px` });
+        });
+      }
+      renderTranslationResult(sourceText, translated, detected, providerId) {
+        const popover = this.translationPopoverEl;
+        const sourceEl = popover.querySelector(".ez-reader__pdf-translation__source");
+        const bodyEl = popover.querySelector(".ez-reader__pdf-translation__body");
+        const providerEl = popover.querySelector(".ez-reader__pdf-translation__provider");
+        if (sourceEl) sourceEl.setText(sourceText);
+        if (bodyEl) {
+          bodyEl.empty();
+          bodyEl.setText(translated);
+          bodyEl.removeClass("is-loading");
+          bodyEl.removeClass("is-error");
+        }
+        if (providerEl) {
+          const detectedPart = detected ? `\u68C0\u6D4B\u5230 ${detected} \xB7 ` : "";
+          providerEl.setText(`${detectedPart}${providerId} \xB7 \u2192 ${this.targetLocale}`);
+        }
+      }
+      renderTranslationError(sourceText, message) {
+        const popover = this.translationPopoverEl;
+        const sourceEl = popover.querySelector(".ez-reader__pdf-translation__source");
+        const bodyEl = popover.querySelector(".ez-reader__pdf-translation__body");
+        if (sourceEl) sourceEl.setText(sourceText);
+        if (bodyEl) {
+          bodyEl.empty();
+          bodyEl.setText(`\u7FFB\u8BD1\u5931\u8D25: ${message}`);
+          bodyEl.removeClass("is-loading");
+          bodyEl.addClass("is-error");
+        }
+      }
+      hideTranslationPopover() {
+        this.translationPopoverEl.addClass("is-hidden");
+      }
+      /** Popover 内「复制」按钮 — 把当前译文写到剪贴板, 按钮短暂 ✓ 提示。 */
+      async handleCopyTranslation() {
+        const bodyEl = this.translationPopoverEl.querySelector(".ez-reader__pdf-translation__body");
+        if (!bodyEl) return;
+        const translated = bodyEl.textContent ?? "";
+        try {
+          await navigator.clipboard.writeText(translated);
+          const btn = this.translationPopoverEl.querySelector(".ez-reader__pdf-translation__copy-btn");
+          if (btn) {
+            const original = btn.textContent ?? "\u590D\u5236";
+            btn.setText("\u2713 \u5DF2\u590D\u5236");
+            window.setTimeout(() => btn.setText(original), 1500);
+          }
+        } catch (error) {
+          console.warn("[ez-reader] copy translation failed", error);
+        }
+      }
+      /** Popover 内「换语言重译」按钮 — cycle 目标语言后复用 showTranslationPopover。 */
+      async handleCycleTranslationTarget() {
+        if (!this.pendingSelection) return;
+        const cycle = ["zh-CN", "en", "ja", "ko", "fr", "de"];
+        const currentIdx = cycle.indexOf(this.targetLocale);
+        const next = cycle[(currentIdx + 1) % cycle.length] ?? "zh-CN";
+        this.targetLocale = next;
+        const text = this.pendingSelection.text;
+        const rect = this.pendingSelection.rect;
+        this.showTranslationPopover(text, rect);
+        try {
+          const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
+          this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.renderTranslationError(text, message);
         }
       }
       async handleExcerpt() {
@@ -13028,7 +13135,7 @@ ${result.text}`, 1e4);
           await this.opts.reading.addExcerpt(excerpt);
         } catch (error) {
           console.warn("[ez-reader] handleExcerpt addExcerpt failed", error);
-          new import_obsidian17.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
+          new import_obsidian18.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
           return;
         }
         if (this.opts.noteWriter) {
@@ -13050,7 +13157,7 @@ ${result.text}`, 1e4);
             });
           } catch (error) {
             console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-            new import_obsidian17.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
+            new import_obsidian18.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
           }
         }
         const result = findHighlightRect(this.container, sel.pageNumber, sel.text);
@@ -13071,7 +13178,7 @@ ${result.text}`, 1e4);
         if (this.notesPanel.classList.contains("is-open")) {
           await this.refreshNotesPanel();
         }
-        new import_obsidian17.Notice("\u6458\u5F55\u5DF2\u4FDD\u5B58");
+        new import_obsidian18.Notice("\u6458\u5F55\u5DF2\u4FDD\u5B58");
       }
       /**
        * P0 修复: 之前 PDF selection menu 只有 "翻译/摘录/复制", 没有 "想法".
@@ -13105,7 +13212,7 @@ ${result.text}`, 1e4);
           await this.opts.reading.addExcerpt(excerpt);
         } catch (error) {
           console.warn("[ez-reader] handleThought addExcerpt failed", error);
-          new import_obsidian17.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
+          new import_obsidian18.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
           return;
         }
         if (this.opts.noteWriter) {
@@ -13127,7 +13234,7 @@ ${result.text}`, 1e4);
             });
           } catch (error) {
             console.warn("[ez-reader] handleThought noteWriter.appendExcerpt failed", error);
-            new import_obsidian17.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
+            new import_obsidian18.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
           }
         }
         const result = findHighlightRect(this.container, sel.pageNumber, sel.text);
@@ -13147,18 +13254,18 @@ ${result.text}`, 1e4);
         if (this.notesPanel.classList.contains("is-open")) {
           await this.refreshNotesPanel();
         }
-        new import_obsidian17.Notice(noteText.trim().length > 0 ? "\u60F3\u6CD5\u5DF2\u4FDD\u5B58" : "\u60F3\u6CD5 (\u7A7A) \u5DF2\u4FDD\u5B58");
+        new import_obsidian18.Notice(noteText.trim().length > 0 ? "\u60F3\u6CD5\u5DF2\u4FDD\u5B58" : "\u60F3\u6CD5 (\u7A7A) \u5DF2\u4FDD\u5B58");
       }
       async handleCopy() {
         if (!this.pendingSelection) return;
         const text = this.pendingSelection.text;
         try {
           await navigator.clipboard.writeText(text);
-          new import_obsidian17.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
+          new import_obsidian18.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
         } catch (error) {
           console.warn("[ez-reader] clipboard write failed", error);
           const message = error instanceof Error ? error.message : String(error);
-          new import_obsidian17.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
+          new import_obsidian18.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
         }
         this.hideMenu();
       }
@@ -13182,7 +13289,7 @@ ${result.text}`, 1e4);
         if (nextPage === null) {
           this.pdfFindMatchCount = 0;
           updatePdfSearchStatus(this.searchBar, 0);
-          new import_obsidian17.Notice(`PDF \u672A\u627E\u5230 "${trimmed}"`);
+          new import_obsidian18.Notice(`PDF \u672A\u627E\u5230 "${trimmed}"`);
           return;
         }
         this.pdfFindCurrentPage = nextPage;
@@ -13492,6 +13599,100 @@ ${result.text}`, 1e4);
       }
       return max2 > 0 ? max2 : null;
     };
+    createTranslationPopover = (parent, opts) => {
+      const root = document.createElement("div");
+      root.className = "ez-reader__pdf-translation is-hidden";
+      root.setAttribute("role", "dialog");
+      root.setAttribute("aria-label", "\u7FFB\u8BD1\u7ED3\u679C");
+      const header = document.createElement("div");
+      header.className = "ez-reader__pdf-translation__header";
+      const source = document.createElement("div");
+      source.className = "ez-reader__pdf-translation__source";
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "ez-reader__pdf-translation__close";
+      closeBtn.textContent = "\xD7";
+      closeBtn.title = "\u5173\u95ED";
+      closeBtn.setAttribute("aria-label", "\u5173\u95ED\u7FFB\u8BD1");
+      closeBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        root.addClass("is-hidden");
+      });
+      header.append(source, closeBtn);
+      const body = document.createElement("div");
+      body.className = "ez-reader__pdf-translation__body is-loading";
+      body.textContent = "\u6B63\u5728\u7FFB\u8BD1\u2026";
+      const provider = document.createElement("div");
+      provider.className = "ez-reader__pdf-translation__provider";
+      const actions = document.createElement("div");
+      actions.className = "ez-reader__pdf-translation__actions";
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "ez-reader__pdf-translation__copy-btn";
+      copyBtn.textContent = "\u590D\u5236";
+      copyBtn.setAttribute("aria-label", "\u590D\u5236\u8BD1\u6587");
+      copyBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        opts.onCopy();
+      });
+      const cycleBtn = document.createElement("button");
+      cycleBtn.type = "button";
+      cycleBtn.className = "ez-reader__pdf-translation__cycle-btn";
+      cycleBtn.textContent = "\u6362\u8BED\u8A00\u91CD\u8BD1";
+      cycleBtn.setAttribute("aria-label", "\u5207\u6362\u76EE\u6807\u8BED\u8A00\u540E\u91CD\u65B0\u7FFB\u8BD1");
+      cycleBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        opts.onCycleTarget();
+      });
+      actions.append(copyBtn, cycleBtn);
+      root.append(header, body, provider, actions);
+      makeDraggable(root, header);
+      parent.appendChild(root);
+      return root;
+    };
+    makeDraggable = (el, handle) => {
+      let dragState = null;
+      const cleanup = () => {
+        dragState = null;
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        el.removeClass("is-dragging");
+      };
+      const onMouseMove = (event) => {
+        if (!dragState) return;
+        const dx = event.clientX - dragState.startX;
+        const dy = event.clientY - dragState.startY;
+        const maxLeft = Math.max(0, window.innerWidth - dragState.width);
+        const maxTop = Math.max(0, window.innerHeight - dragState.height);
+        const newLeft = Math.max(0, Math.min(maxLeft, dragState.origLeft + dx));
+        const newTop = Math.max(0, Math.min(maxTop, dragState.origTop + dy));
+        el.setCssProps({ left: `${newLeft}px`, top: `${newTop}px` });
+      };
+      const onMouseUp = () => {
+        cleanup();
+      };
+      handle.addEventListener("mousedown", (event) => {
+        if (event.button !== 0) return;
+        const target = event.target;
+        if (target?.closest("button, input, select, textarea, [role='button']")) return;
+        event.preventDefault();
+        const rect = el.getBoundingClientRect();
+        dragState = {
+          startX: event.clientX,
+          startY: event.clientY,
+          origLeft: rect.left,
+          origTop: rect.top,
+          width: rect.width,
+          height: rect.height
+        };
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+        el.addClass("is-dragging");
+      });
+    };
   }
 });
 
@@ -13709,7 +13910,7 @@ var collectPolyfillReport = () => {
 };
 
 // src/Plugin.ts
-var import_obsidian18 = require("obsidian");
+var import_obsidian19 = require("obsidian");
 
 // src/adapters/obsidian/CoverCache.ts
 var import_obsidian = require("obsidian");
@@ -13954,8 +14155,11 @@ var DEFAULT_PLUGIN_SETTINGS = Object.freeze({
   uiLocale: "zh-CN",
   translation: null,
   defaultAppearance: DEFAULT_READER_APPEARANCE,
-  notesDirectory: "zz_\u9605\u8BFB\u4E0E\u7814\u7A76/\u9605\u8BFB\u7B14\u8BB0",
-  researchDirectory: "zz_\u9605\u8BFB\u4E0E\u7814\u7A76/\u4E3B\u9898\u7814\u7A76",
+  // 默认放在 vault 顶层一个统一目录 `ezreader-notes/` 下,两
+  // 个子目录分别存摘录笔记和主题研究。ObsidianNoteWriter
+  // 在第一次写笔记时会递归创建路径, 用户无需手动 mkdir.
+  notesDirectory: "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0",
+  researchDirectory: "ezreader-notes/\u4E3B\u9898\u7814\u7A76",
   libraryOwnerName: "",
   defaultNoteTemplate: "# {{title}}\n",
   readerOpenMode: "tab",
@@ -14631,7 +14835,7 @@ var ObsidianNoteWriter = class {
     const cached = this.cacheByPath.get(input.bookId);
     if (cached) return cached;
     const settings = await this.annotations.listSettings();
-    const baseDir = sanitizeDir(settings.notesDirectory || "zz_\u9605\u8BFB\u4E0E\u7814\u7A76/\u9605\u8BFB\u7B14\u8BB0");
+    const baseDir = sanitizeDir(settings.notesDirectory || "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0");
     await this.ensureDirectory(baseDir);
     const safeTitle = sanitizeFileBase(input.bookTitle || input.bookPath.split("/").pop() || input.bookId);
     const idTag = input.bookId.slice(0, 8);
@@ -16449,36 +16653,48 @@ var PdfCoverExtractor = class {
 };
 
 // src/adapters/translation/BaseTranslationProvider.ts
+var import_obsidian4 = require("obsidian");
 var BaseTranslationProvider = class {
   /** Stringify an unknown thrown value for error messages. */
   formatError(error) {
     return error instanceof Error ? error.message : String(error);
   }
   /**
-   * Fetch + parse JSON + translate HTTP failure into a Chinese error message.
-   * Returns the parsed payload on success.
+   * HTTP call + parse JSON + translate HTTP failure into a Chinese error
+   * message. Returns the parsed payload on success.
    *
    * `options.providerName` overrides the error prefix for this one call —
    * used by Google's auth step to emit "Google 鉴权" instead of "Google"
    * so the user knows which subsystem failed.
+   *
+   * Uses Obsidian's `requestUrl` (not raw `fetch`) — see class doc for
+   * why. `throw: false` keeps error mapping consistent across all HTTP
+   * status codes (otherwise requestUrl throws before we can extract the
+   * body for `formatHttpError`).
    */
   async fetchJson(url, init, options) {
     const name = options?.providerName ?? this.providerName;
     let response;
     try {
-      response = await fetch(url, init);
+      response = await (0, import_obsidian4.requestUrl)({
+        url,
+        method: typeof init.method === "string" ? init.method : "GET",
+        headers: this.stringifyHeaders(init.headers),
+        body: typeof init.body === "string" ? init.body : void 0,
+        throw: false
+      });
     } catch (error) {
       throw new Error(`\u7F51\u7EDC\u8BF7\u6C42\u5931\u8D25: ${this.formatError(error)}`);
     }
     let payload;
     try {
-      payload = await response.json();
+      payload = JSON.parse(response.text);
     } catch (error) {
       throw new Error(
         `${name} \u8FD4\u56DE\u4E86\u975E JSON \u54CD\u5E94 (HTTP ${response.status}): ${this.formatError(error)}`
       );
     }
-    if (!response.ok) {
+    if (response.status >= 400) {
       throw new Error(this.formatHttpError(response.status, payload));
     }
     return payload;
@@ -16490,6 +16706,27 @@ var BaseTranslationProvider = class {
   checkEmptyKey(apiKey) {
     const trimmed = apiKey.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+  /**
+   * `Headers | Record<string, string> | undefined` → flat string record.
+   * requestUrl takes `Record<string, string>`; convert Headers / array
+   * tuples for callers that pass those.
+   */
+  stringifyHeaders(headers) {
+    if (!headers) return void 0;
+    if (headers instanceof Headers) {
+      const out = {};
+      headers.forEach((value, key) => {
+        out[key] = value;
+      });
+      return out;
+    }
+    if (Array.isArray(headers)) {
+      const out = {};
+      for (const [key, value] of headers) out[key] = value;
+      return out;
+    }
+    return headers;
   }
 };
 
@@ -16765,7 +17002,7 @@ var YoudaoTranslationProvider = class extends BaseTranslationProvider {
   id = "youdao";
   displayName = "\u6709\u9053\u667A\u4E91 \xB7 \u6587\u672C\u7FFB\u8BD1";
   signupUrl = "https://ai.youdao.com/console/#/service-singleton/text";
-  signupHint = "\u6CE8\u518C\u6709\u9053\u667A\u4E91\u8D26\u53F7 \u2192 \u521B\u5EFA\u5E94\u7528 \u2192 \u9009\u300C\u6587\u672C\u7FFB\u8BD1\u300D \u2192 \u62FF\u5230 appKey + appSecret,JSON \u683C\u5F0F\u7C98\u8D34\u5230 key \u5B57\u6BB5";
+  signupHint = "\u6CE8\u518C\u6709\u9053\u667A\u4E91\u8D26\u53F7 \u2192 \u521B\u5EFA\u5E94\u7528 \u2192 \u9009\u300C\u6587\u672C\u7FFB\u8BD1\u300D \u2192 \u590D\u5236\u5E94\u7528 ID \u548C\u5E94\u7528\u5BC6\u94A5,\u5206\u522B\u586B\u5230\u4E0B\u9762\u4E24\u4E2A\u6846";
   providerName = "\u6709\u9053";
   /**
    * Youdao expects the key as JSON `{"appKey": "...", "appSecret": "..."}` so
@@ -17048,6 +17285,422 @@ var DeeplTranslationProvider = class extends BaseTranslationProvider {
         return `DeepL \u670D\u52A1\u6682\u65F6\u4E0D\u53EF\u7528 (HTTP ${status})\u3002`;
       default:
         return `DeepL HTTP \u9519\u8BEF ${status}: ${message ?? "\u672A\u77E5"}`;
+    }
+  }
+};
+
+// src/adapters/translation/MyMemoryTranslationProvider.ts
+var MYMEMORY_ENDPOINT = "https://api.mymemory.translated.net/get";
+var MYMEMORY_LOCALE_MAP = {
+  auto: "Autodetect",
+  "zh-CN": "zh-CN",
+  "zh-TW": "zh-TW",
+  "zh-HK": "zh-TW",
+  zh: "zh-CN",
+  en: "en-US",
+  "en-US": "en-US",
+  "en-GB": "en-GB",
+  ja: "ja",
+  "ja-JP": "ja",
+  ko: "ko",
+  "ko-KR": "ko",
+  fr: "fr",
+  "fr-FR": "fr",
+  de: "de",
+  "de-DE": "de",
+  es: "es",
+  "es-ES": "es",
+  pt: "pt-PT",
+  "pt-BR": "pt-BR",
+  "pt-PT": "pt-PT",
+  ru: "ru",
+  "ru-RU": "ru",
+  it: "it",
+  "it-IT": "it",
+  nl: "nl",
+  "nl-NL": "nl",
+  ar: "ar",
+  id: "id",
+  th: "th",
+  vi: "vi"
+};
+var toMyMemoryLocale = (locale) => MYMEMORY_LOCALE_MAP[locale] ?? locale;
+var parseDetectedSource2 = (_match, _requestedFrom) => null;
+var MyMemoryTranslationProvider = class extends BaseTranslationProvider {
+  id = "mymemory";
+  displayName = "MyMemory (\u514D\u8D39, \u65E0\u9700\u6CE8\u518C)";
+  signupUrl = "https://mymemory.translated.net/";
+  signupHint = "\u5B8C\u5168\u514D\u8D39,\u65E0\u9700\u6CE8\u518C\u4E5F\u65E0\u9700 API key\u3002\u6BCF\u5929\u6BCF\u4E2A IP 1 \u4E07\u5B57\u7B26\u989D\u5EA6,\u9002\u5408\u5076\u5C14\u67E5\u8BCD\u3002\u8D28\u91CF\u7565\u4F4E\u4E8E DeepL/Google";
+  providerName = "MyMemory";
+  /**
+   * MyMemory has no key. We accept any non-empty string (the plugin
+   * settings still requires an `apiKey` field for consistency, so we
+   * treat the literal "anonymous" as the default marker).
+   */
+  async validateKey(apiKey) {
+    return { ok: true };
+  }
+  async translate(_apiKey, request) {
+    const from = toMyMemoryLocale(request.source);
+    const to = toMyMemoryLocale(request.target);
+    const url = `${MYMEMORY_ENDPOINT}?q=${encodeURIComponent(request.text)}&langpair=${encodeURIComponent(`${from}|${to}`)}&de=email@example.com`;
+    const success = await this.fetchJson(url, {
+      method: "GET"
+    });
+    const status = success.responseStatus;
+    if (status !== 200 && status !== void 0) {
+      const detail = success.responseDetails ?? "\u672A\u77E5\u9519\u8BEF";
+      throw new Error(this.formatMyMemoryError(status, detail));
+    }
+    const translated = success.responseData?.translatedText?.trim();
+    if (!translated) {
+      throw new Error("MyMemory \u8FD4\u56DE\u4E86\u7A7A\u7684\u7FFB\u8BD1\u7ED3\u679C\u3002");
+    }
+    return {
+      text: translated,
+      detectedSource: parseDetectedSource2(success.responseData?.match, request.source),
+      providerId: this.id
+    };
+  }
+  formatMyMemoryError(status, detail) {
+    switch (status) {
+      case 403:
+        return "MyMemory \u6BCF\u65E5\u514D\u8D39\u989D\u5EA6\u5DF2\u7528\u5B8C(\u6BCF\u4E2A IP 1 \u4E07\u5B57\u7B26)\u3002\u660E\u5929\u91CD\u7F6E,\u6216\u6362\u6709\u9053/DeepL/Google\u3002";
+      case 429:
+        return "MyMemory \u9891\u7387\u9650\u5236:\u7A0D\u7B49\u51E0\u79D2\u91CD\u8BD5\u3002";
+      case 400:
+        return `MyMemory \u8BF7\u6C42\u65E0\u6548: ${detail}`;
+      default:
+        return `MyMemory \u9519\u8BEF ${status}: ${detail}`;
+    }
+  }
+  formatHttpError(status, body) {
+    const message = body && typeof body === "object" && "responseDetails" in body ? String(body.responseDetails ?? "") : "\u672A\u77E5";
+    return `MyMemory HTTP \u9519\u8BEF ${status}: ${message || "\u672A\u77E5\u9519\u8BEF"}`;
+  }
+};
+
+// src/adapters/translation/OpenAICompatibleTranslationProvider.ts
+var OPENAI_COMPATIBLE_DEFAULTS = Object.freeze({
+  baseUrl: "https://api.openai.com/v1",
+  apiKey: "",
+  model: "gpt-4o-mini"
+});
+var LOCALE_LABEL_MAP = {
+  auto: "the source language (auto-detect)",
+  "zh-CN": "Simplified Chinese",
+  "zh-TW": "Traditional Chinese",
+  "zh-HK": "Traditional Chinese (Hong Kong)",
+  zh: "Chinese",
+  en: "English",
+  "en-US": "English (American)",
+  "en-GB": "English (British)",
+  ja: "Japanese",
+  "ja-JP": "Japanese",
+  ko: "Korean",
+  "ko-KR": "Korean",
+  fr: "French",
+  "fr-FR": "French",
+  de: "German",
+  "de-DE": "German",
+  es: "Spanish",
+  "es-ES": "Spanish (European)",
+  pt: "Portuguese",
+  "pt-BR": "Portuguese (Brazilian)",
+  "pt-PT": "Portuguese (European)",
+  ru: "Russian",
+  "ru-RU": "Russian",
+  it: "Italian",
+  "it-IT": "Italian",
+  nl: "Dutch",
+  "nl-NL": "Dutch",
+  ar: "Arabic",
+  id: "Indonesian",
+  th: "Thai",
+  vi: "Vietnamese"
+};
+var toLocaleLabel = (locale) => LOCALE_LABEL_MAP[locale] ?? locale;
+var OpenAICompatibleTranslationProvider = class extends BaseTranslationProvider {
+  id = "openai-compatible";
+  displayName = "\u81EA\u5B9A\u4E49 LLM (OpenAI \u517C\u5BB9)";
+  signupUrl = "https://platform.openai.com/api-keys";
+  signupHint = "\u901A\u7528 OpenAI \u517C\u5BB9\u683C\u5F0F: \u586B API \u57FA\u7840\u5730\u5740\u3001Key\u3001\u6A21\u578B\u540D\u3002DeepSeek / \u667A\u8C31 / \u901A\u4E49 / OpenAI \u90FD\u652F\u6301\u3002";
+  providerName = "LLM";
+  /**
+   * The apiKey slot in settings is JSON `{baseUrl, apiKey, model}`. Empty
+   * strings are valid only when the user hasn't configured anything yet.
+   * We accept the JSON if all three fields are non-empty.
+   */
+  async validateKey(apiKey) {
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      return { ok: false, reason: "\u8BF7\u586B API \u57FA\u7840\u5730\u5740\u3001Key\u3001\u6A21\u578B\u540D(\u4E09\u4E2A\u90FD\u9700\u8981)\u3002" };
+    }
+    const parsed = this.parseConfig(trimmed);
+    if (!parsed) {
+      return {
+        ok: false,
+        reason: '\u914D\u7F6E\u5FC5\u987B\u662F JSON \u683C\u5F0F: {"baseUrl": "https://...", "apiKey": "sk-...", "model": "..."}'
+      };
+    }
+    if (!parsed.baseUrl || !parsed.apiKey || !parsed.model) {
+      return {
+        ok: false,
+        reason: "\u4E09\u4E2A\u5B57\u6BB5\u90FD\u5FC5\u586B: API \u57FA\u7840\u5730\u5740\u3001API Key\u3001\u6A21\u578B\u540D\u3002"
+      };
+    }
+    if (!this.isValidHttpUrl(parsed.baseUrl)) {
+      return {
+        ok: false,
+        reason: `API \u57FA\u7840\u5730\u5740\u683C\u5F0F\u4E0D\u5BF9: "${parsed.baseUrl}"\u3002\u9700\u8981 https:// \u5F00\u5934\u7684 URL\u3002`
+      };
+    }
+    return { ok: true };
+  }
+  async translate(rawConfig, request) {
+    const config = this.parseConfig(rawConfig) ?? OPENAI_COMPATIBLE_DEFAULTS;
+    const baseUrl = config.baseUrl.replace(/\/+$/, "");
+    const endpoint = `${baseUrl}/chat/completions`;
+    const targetLabel = toLocaleLabel(request.target);
+    const sourceLabel = toLocaleLabel(request.source);
+    const systemPrompt = "You are a professional translator. Translate the user's text accurately and naturally. Preserve the original meaning, tone, and formatting (paragraph breaks, lists, code). Output ONLY the translation \u2014 no preamble, no explanations, no quotation marks around it. If the input is already in the target language, return it unchanged.";
+    const userPrompt = request.source === "auto" ? `Translate the following text into ${targetLabel}:
+
+"""${request.text}"""` : `Translate the following text from ${sourceLabel} into ${targetLabel}:
+
+"""${request.text}"""`;
+    const body = {
+      model: config.model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      // Low temperature for deterministic translation; max_tokens scales
+      // with input length (input*4 is a rough upper bound for non-English
+      // — CJK is denser).
+      temperature: 0.2,
+      max_tokens: Math.max(256, Math.min(4096, request.text.length * 4))
+    };
+    const success = await this.fetchJson(endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${config.apiKey}`,
+        "Content-Type": "application/json; charset=utf-8"
+      },
+      body: JSON.stringify(body)
+    });
+    const choice = success.choices?.[0]?.message?.content;
+    if (!choice) {
+      throw new Error(`${this.providerName} \u8FD4\u56DE\u4E86\u7A7A\u7684\u9009\u62E9 (choices \u4E3A\u7A7A\u6216\u7F3A\u5C11 content \u5B57\u6BB5)\u3002`);
+    }
+    const translated = choice.trim();
+    if (!translated) {
+      throw new Error(`${this.providerName} \u8FD4\u56DE\u4E86\u7A7A\u7684\u7FFB\u8BD1\u7ED3\u679C\u3002`);
+    }
+    return {
+      text: translated,
+      detectedSource: null,
+      providerId: this.id
+    };
+  }
+  parseConfig(raw) {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return {
+        baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() : "",
+        apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "",
+        model: typeof parsed.model === "string" ? parsed.model.trim() : ""
+      };
+    } catch {
+      return null;
+    }
+  }
+  isValidHttpUrl(s3) {
+    try {
+      const url = new URL(s3);
+      return url.protocol === "https:" || url.protocol === "http:";
+    } catch {
+      return false;
+    }
+  }
+  formatHttpError(status, body) {
+    const message = body && typeof body === "object" && "error" in body ? body.error?.message ?? "Unknown error from LLM API." : "Unknown error from LLM API.";
+    switch (status) {
+      case 401:
+      case 403:
+        return `LLM \u9274\u6743\u5931\u8D25 (HTTP ${status}): ${message}\u3002\u8BF7\u68C0\u67E5 API Key \u662F\u5426\u6B63\u786E\u3002`;
+      case 404:
+        return `LLM endpoint 404: ${message}\u3002\u8BF7\u68C0\u67E5 API \u57FA\u7840\u5730\u5740(\u5E38\u89C1: \u6F0F\u4E86 /v1 \u540E\u7F00\u6216\u8DEF\u5F84\u5199\u9519)\u3002`;
+      case 429:
+        return `LLM \u9891\u7387/\u989D\u5EA6\u9650\u5236: ${message}`;
+      case 400:
+        return `LLM \u8BF7\u6C42\u53C2\u6570\u9519\u8BEF: ${message}`;
+      case 500:
+      case 502:
+      case 503:
+      case 504:
+        return `LLM \u670D\u52A1\u6682\u65F6\u4E0D\u53EF\u7528 (HTTP ${status}): ${message}`;
+      default:
+        return `LLM HTTP \u9519\u8BEF ${status}: ${message}`;
+    }
+  }
+};
+
+// src/adapters/translation/AnthropicCompatibleTranslationProvider.ts
+var ANTHROPIC_VERSION = "2023-06-01";
+var LOCALE_LABEL_MAP2 = {
+  auto: "the source language (auto-detect)",
+  "zh-CN": "Simplified Chinese",
+  "zh-TW": "Traditional Chinese",
+  "zh-HK": "Traditional Chinese (Hong Kong)",
+  zh: "Chinese",
+  en: "English",
+  "en-US": "English (American)",
+  "en-GB": "English (British)",
+  ja: "Japanese",
+  "ja-JP": "Japanese",
+  ko: "Korean",
+  "ko-KR": "Korean",
+  fr: "French",
+  "fr-FR": "French",
+  de: "German",
+  "de-DE": "German",
+  es: "Spanish",
+  "es-ES": "Spanish (European)",
+  pt: "Portuguese",
+  "pt-BR": "Portuguese (Brazilian)",
+  "pt-PT": "Portuguese (European)",
+  ru: "Russian",
+  "ru-RU": "Russian",
+  it: "Italian",
+  "it-IT": "Italian",
+  nl: "Dutch",
+  "nl-NL": "Dutch",
+  ar: "Arabic",
+  id: "Indonesian",
+  th: "Thai",
+  vi: "Vietnamese"
+};
+var toLocaleLabel2 = (locale) => LOCALE_LABEL_MAP2[locale] ?? locale;
+var AnthropicCompatibleTranslationProvider = class extends BaseTranslationProvider {
+  id = "anthropic-compatible";
+  displayName = "\u81EA\u5B9A\u4E49 LLM (Anthropic \u517C\u5BB9)";
+  signupUrl = "https://platform.anthropic.com/settings/keys";
+  signupHint = "Anthropic Messages API \u517C\u5BB9\u683C\u5F0F\u3002\u4F8B\u5982 MiniMax \u7528 https://api.minimax.cn/anthropic\u3002\u586B baseUrl + Key + \u6A21\u578B\u540D";
+  providerName = "LLM";
+  async validateKey(apiKey) {
+    const trimmed = apiKey.trim();
+    if (!trimmed) {
+      return { ok: false, reason: "\u8BF7\u586B API \u57FA\u7840\u5730\u5740\u3001Key\u3001\u6A21\u578B\u540D(\u4E09\u4E2A\u90FD\u9700\u8981)\u3002" };
+    }
+    const parsed = this.parseConfig(trimmed);
+    if (!parsed) {
+      return {
+        ok: false,
+        reason: '\u914D\u7F6E\u5FC5\u987B\u662F JSON \u683C\u5F0F: {"baseUrl": "https://...", "apiKey": "...", "model": "..."}'
+      };
+    }
+    if (!parsed.baseUrl || !parsed.apiKey || !parsed.model) {
+      return {
+        ok: false,
+        reason: "\u4E09\u4E2A\u5B57\u6BB5\u90FD\u5FC5\u586B: API \u57FA\u7840\u5730\u5740\u3001API Key\u3001\u6A21\u578B\u540D\u3002"
+      };
+    }
+    if (!this.isValidHttpUrl(parsed.baseUrl)) {
+      return {
+        ok: false,
+        reason: `API \u57FA\u7840\u5730\u5740\u683C\u5F0F\u4E0D\u5BF9: "${parsed.baseUrl}"\u3002\u9700\u8981 https:// \u5F00\u5934\u7684 URL\u3002`
+      };
+    }
+    return { ok: true };
+  }
+  async translate(rawConfig, request) {
+    const config = this.parseConfig(rawConfig);
+    if (!config) {
+      throw new Error("Anthropic \u517C\u5BB9 provider \u914D\u7F6E\u7F3A\u5931\u6216\u635F\u574F,\u8BF7\u5728\u63D2\u4EF6\u8BBE\u7F6E\u91CD\u65B0\u586B\u5199\u3002");
+    }
+    const baseUrl = config.baseUrl.replace(/\/+$/, "");
+    const endpoint = `${baseUrl}/v1/messages`;
+    const targetLabel = toLocaleLabel2(request.target);
+    const sourceLabel = toLocaleLabel2(request.source);
+    const systemPrompt = "You are a professional translator. Translate the user's text accurately and naturally. Preserve the original meaning, tone, and formatting (paragraph breaks, lists, code). Output ONLY the translation \u2014 no preamble, no explanations, no quotation marks around it. If the input is already in the target language, return it unchanged.";
+    const userPrompt = request.source === "auto" ? `Translate the following text into ${targetLabel}:
+
+"""${request.text}"""` : `Translate the following text from ${sourceLabel} into ${targetLabel}:
+
+"""${request.text}"""`;
+    const maxTokens = Math.max(256, Math.min(4096, request.text.length * 4));
+    const body = {
+      model: config.model,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }]
+    };
+    const success = await this.fetchJson(endpoint, {
+      method: "POST",
+      headers: {
+        "x-api-key": config.apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "Content-Type": "application/json; charset=utf-8"
+      },
+      body: JSON.stringify(body)
+    });
+    const textBlock = success.content?.find((b3) => b3.type === "text");
+    const translated = textBlock?.text?.trim();
+    if (!translated) {
+      const stopReason = success.stop_reason ?? "unknown";
+      throw new Error(`${this.providerName} \u8FD4\u56DE\u4E86\u7A7A\u7684\u7FFB\u8BD1\u7ED3\u679C (stop_reason=${stopReason})\u3002\u53EF\u80FD\u662F max_tokens \u4E0D\u591F,\u8BD5\u8BD5\u8C03\u5927\u6216\u7F29\u77ED\u8F93\u5165\u3002`);
+    }
+    return {
+      text: translated,
+      detectedSource: null,
+      providerId: this.id
+    };
+  }
+  parseConfig(raw) {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return {
+        baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl.trim() : "",
+        apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : "",
+        model: typeof parsed.model === "string" ? parsed.model.trim() : ""
+      };
+    } catch {
+      return null;
+    }
+  }
+  isValidHttpUrl(s3) {
+    try {
+      const url = new URL(s3);
+      return url.protocol === "https:" || url.protocol === "http:";
+    } catch {
+      return false;
+    }
+  }
+  formatHttpError(status, body) {
+    const message = body && typeof body === "object" && "error" in body ? body.error?.message ?? "Unknown error from LLM API." : "Unknown error from LLM API.";
+    switch (status) {
+      case 401:
+        return `LLM \u9274\u6743\u5931\u8D25 (HTTP ${status}): ${message}\u3002\u8BF7\u68C0\u67E5 API Key \u662F\u5426\u6B63\u786E\u3002`;
+      case 403:
+        return `LLM \u9274\u6743\u5931\u8D25 (HTTP ${status}): ${message}`;
+      case 404:
+        return `LLM endpoint 404: ${message}\u3002\u8BF7\u68C0\u67E5 API \u57FA\u7840\u5730\u5740(\u5E38\u89C1: \u6F0F\u4E86 /anthropic \u540E\u7F00)\u3002`;
+      case 429:
+        return `LLM \u9891\u7387/\u989D\u5EA6\u9650\u5236: ${message}`;
+      case 400:
+        return `LLM \u8BF7\u6C42\u53C2\u6570\u9519\u8BEF: ${message}\u3002\u53EF\u80FD\u662F\u6A21\u578B\u540D\u5199\u9519\u6216 max_tokens \u4E0D\u591F\u5927\u3002`;
+      case 500:
+      case 502:
+      case 503:
+      case 504:
+        return `LLM \u670D\u52A1\u6682\u65F6\u4E0D\u53EF\u7528 (HTTP ${status}): ${message}`;
+      default:
+        return `LLM HTTP \u9519\u8BEF ${status}: ${message}`;
     }
   }
 };
@@ -17730,11 +18383,11 @@ var TranslationCoordinator = class _TranslationCoordinator {
 };
 
 // src/ui/shelf/ShelfView.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/ui/shelf/AddToLibraryModal.ts
-var import_obsidian4 = require("obsidian");
-var AddToLibraryModal = class extends import_obsidian4.Modal {
+var import_obsidian5 = require("obsidian");
+var AddToLibraryModal = class extends import_obsidian5.Modal {
   service;
   covers;
   loader;
@@ -17908,7 +18561,7 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
   }) {
     const ids = [...this.selected];
     if (ids.length === 0) {
-      new import_obsidian4.Notice("\u8BF7\u5148\u52FE\u9009\u8981\u52A0\u5165\u7684\u4E66", 2e3);
+      new import_obsidian5.Notice("\u8BF7\u5148\u52FE\u9009\u8981\u52A0\u5165\u7684\u4E66", 2e3);
       return;
     }
     setActionsBusy(true);
@@ -17935,12 +18588,12 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
         const firstReason = rejected[0]?.reason;
         const message = firstReason instanceof Error ? firstReason.message : String(firstReason);
         const total = totalRejectedMessage(rejected.length, ids.length);
-        new import_obsidian4.Notice(`${total}: ${message}`);
+        new import_obsidian5.Notice(`${total}: ${message}`);
       }
     } catch (error) {
       console.error("[ez-reader] confirmSelection failed", error);
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian4.Notice(`\u52A0\u5165\u5931\u8D25: ${message}`);
+      new import_obsidian5.Notice(`\u52A0\u5165\u5931\u8D25: ${message}`);
       return;
     } finally {
       window.clearTimeout(timeoutHandle);
@@ -17967,7 +18620,7 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
     } catch (error) {
       console.error("[ez-reader] confirmAddAll failed", error);
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian4.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
+      new import_obsidian5.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
       return;
     } finally {
       window.clearTimeout(timeoutHandle);
@@ -18016,8 +18669,8 @@ var totalRejectedMessage = (rejected, total) => {
 };
 
 // src/ui/shelf/OnboardingModal.ts
-var import_obsidian5 = require("obsidian");
-var OnboardingModal = class extends import_obsidian5.Modal {
+var import_obsidian6 = require("obsidian");
+var OnboardingModal = class extends import_obsidian6.Modal {
   resolver = null;
   constructor(app) {
     super(app);
@@ -18083,7 +18736,7 @@ var OnboardingModal = class extends import_obsidian5.Modal {
 };
 
 // src/ui/shelf/ShelfFilters.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var STATUS_LABELS = {
   unread: "\u672A\u5F00\u59CB",
   reading: "\u5728\u8BFB",
@@ -18114,7 +18767,7 @@ var FORMAT_LABELS = {
   txt: "TXT"
 };
 var COMMON_LANGUAGES = ["zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de"];
-var ShelfFiltersModal = class extends import_obsidian6.Modal {
+var ShelfFiltersModal = class extends import_obsidian7.Modal {
   result;
   resolver = null;
   constructor(app, initial) {
@@ -18660,7 +19313,7 @@ var renderListItem = (entry, handlers, coverResourcePath) => {
 
 // src/ui/shelf/ShelfView.ts
 var SHELF_VIEW_TYPE = "ez-reader-shelf";
-var ShelfView = class extends import_obsidian7.ItemView {
+var ShelfView = class extends import_obsidian8.ItemView {
   deps;
   toolbar;
   body;
@@ -18756,7 +19409,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
       this.shelfDensity = previous;
       this.applyShelfDensityToDom();
       this.toolbar.update(this.toolbarState());
-      new import_obsidian7.Notice(`\u4FDD\u5B58\u5C01\u9762\u5BC6\u5EA6\u5931\u8D25, \u5DF2\u56DE\u6EDA\u5230 ${previous}`, 3e3);
+      new import_obsidian8.Notice(`\u4FDD\u5B58\u5C01\u9762\u5BC6\u5EA6\u5931\u8D25, \u5DF2\u56DE\u6EDA\u5230 ${previous}`, 3e3);
     }
   }
   refreshTimer;
@@ -18948,17 +19601,17 @@ var ShelfView = class extends import_obsidian7.ItemView {
       await this.deps.openReader(entry);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian7.Notice(`\u6253\u5F00\u300A${entry.book.metadata?.title ?? entry.book.locator.path}\u300B\u5931\u8D25: ${message}`);
+      new import_obsidian8.Notice(`\u6253\u5F00\u300A${entry.book.metadata?.title ?? entry.book.locator.path}\u300B\u5931\u8D25: ${message}`);
       console.error("[ez-reader] openBook failed", entry.book.locator.path, error);
     }
   }
   openItemMenu(entry, event) {
-    const menu = new import_obsidian7.Menu();
+    const menu = new import_obsidian8.Menu();
     menu.addItem((item) => item.setTitle("\u6253\u5F00\u9605\u8BFB\u5668").setIcon("book-open").onClick(() => void this.openBook(entry)));
     menu.addItem(
       (item) => item.setTitle("\u5728 Obsidian \u4E2D\u67E5\u770B").setIcon("file-text").onClick(() => {
         const file = this.deps.app.vault.getAbstractFileByPath(entry.book.locator.path);
-        if (file instanceof import_obsidian7.TFile) void this.deps.app.workspace.openLinkText(file.path, "", true);
+        if (file instanceof import_obsidian8.TFile) void this.deps.app.workspace.openLinkText(file.path, "", true);
       })
     );
     menu.addSeparator();
@@ -18989,10 +19642,10 @@ var ShelfView = class extends import_obsidian7.ItemView {
     const wasPinned = entry.book.pinnedAt !== null;
     try {
       await this.deps.library.togglePin(entry.book.id);
-      new import_obsidian7.Notice(wasPinned ? "\u5DF2\u53D6\u6D88\u7F6E\u9876" : "\u5DF2\u7F6E\u9876\u5230\u6700\u524D");
+      new import_obsidian8.Notice(wasPinned ? "\u5DF2\u53D6\u6D88\u7F6E\u9876" : "\u5DF2\u7F6E\u9876\u5230\u6700\u524D");
     } catch (error) {
       console.warn("[ez-reader] togglePin failed", error);
-      new import_obsidian7.Notice("\u7F6E\u9876\u5931\u8D25");
+      new import_obsidian8.Notice("\u7F6E\u9876\u5931\u8D25");
     }
   }
   async setStatus(entry, status) {
@@ -19003,7 +19656,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
   }
   async removeFromLibrary(entry) {
     const title = entry.book.metadata?.title ?? entry.book.locator.path;
-    const confirm = new import_obsidian7.Modal(this.deps.app);
+    const confirm = new import_obsidian8.Modal(this.deps.app);
     confirm.contentEl.createEl("h3", { text: `\u4ECE\u56FE\u4E66\u9986\u79FB\u9664\u300A${title}\u300B?` });
     confirm.contentEl.createEl("p", {
       text: "\u4E66\u5C06\u4ECE\u4E2A\u4EBA\u56FE\u4E66\u9986\u6D88\u5931\u3002\u539F\u59CB\u6587\u4EF6\u3001\u9605\u8BFB\u8FDB\u5EA6\u3001\u4E66\u7B7E\u3001\u6458\u5F55\u90FD\u4E0D\u4F1A\u5220\u9664 \u2014 \u91CD\u65B0\u52A0\u5165\u5373\u53EF\u6062\u590D\u3002"
@@ -19016,7 +19669,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
     removeBtn.onclick = () => {
       confirm.close();
       void this.deps.library.removeFromLibrary(entry.book.id).then(() => {
-        new import_obsidian7.Notice(`\u5DF2\u4ECE\u56FE\u4E66\u9986\u79FB\u9664\u300A${title}\u300B`);
+        new import_obsidian8.Notice(`\u5DF2\u4ECE\u56FE\u4E66\u9986\u79FB\u9664\u300A${title}\u300B`);
       });
     };
     confirm.open();
@@ -19060,14 +19713,14 @@ var ShelfView = class extends import_obsidian7.ItemView {
         "shelf.addAllToLibrary"
       );
       if (count === void 0 || timedOut) {
-        new import_obsidian7.Notice(timedOut ? "\u52A0\u5165\u8D85\u65F6,\u8BF7\u91CD\u8BD5" : "\u52A0\u5165\u5931\u8D25 (\u672A\u77E5)");
+        new import_obsidian8.Notice(timedOut ? "\u52A0\u5165\u8D85\u65F6,\u8BF7\u91CD\u8BD5" : "\u52A0\u5165\u5931\u8D25 (\u672A\u77E5)");
       } else {
-        new import_obsidian7.Notice(`\u5DF2\u52A0\u5165 ${count} \u672C\u4E66\u5230\u56FE\u4E66\u9986\u3002`);
+        new import_obsidian8.Notice(`\u5DF2\u52A0\u5165 ${count} \u672C\u4E66\u5230\u56FE\u4E66\u9986\u3002`);
       }
     } catch (error) {
       console.error("[ez-reader] addAllToLibrary failed", error);
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian7.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
+      new import_obsidian8.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
     } finally {
       window.clearTimeout(timeoutHandle);
       this.addingAll = false;
@@ -19165,7 +19818,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
 };
 
 // src/ui/reader/ReaderView.ts
-var import_obsidian15 = require("obsidian");
+var import_obsidian16 = require("obsidian");
 
 // src/ui/reader/chineseSelectionExpansion.ts
 var STOP_CHARS = ["\u3002", "\uFF01", "\uFF1F", "!", "?", ";", "\uFF1B", ",", "\uFF0C", "\n"];
@@ -19217,7 +19870,7 @@ var expandWithCap = (raw, context, cap, options = {}) => {
 };
 
 // src/ui/reader/AppearanceModal.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 var FONT_SIZE_MIN = 60;
 var FONT_SIZE_MAX = 200;
 var LINE_HEIGHT_MIN = 1;
@@ -19242,7 +19895,7 @@ var themeLabel = (theme) => {
       return "\u7CFB\u7EDF";
   }
 };
-var AppearanceModal = class extends import_obsidian8.Modal {
+var AppearanceModal = class extends import_obsidian9.Modal {
   resolver = null;
   initial;
   fontSizeInput;
@@ -19475,8 +20128,8 @@ var BookmarksPanel = class {
 };
 
 // src/ui/reader/ConfirmModal.ts
-var import_obsidian9 = require("obsidian");
-var ConfirmModal = class extends import_obsidian9.Modal {
+var import_obsidian10 = require("obsidian");
+var ConfirmModal = class extends import_obsidian10.Modal {
   constructor(app, title, message, confirmLabel = "\u786E\u5B9A", cancelLabel = "\u53D6\u6D88") {
     super(app);
     this.title = title;
@@ -19729,7 +20382,7 @@ var offsetRect = (rect, dx, dy) => {
 };
 
 // src/ui/reader/ReaderToolbar.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 var ReaderToolbar = class {
   root;
   handlers;
@@ -19763,7 +20416,7 @@ var ReaderToolbar = class {
     this.root.addClass("ez-reader__reader-toolbar");
     const tocLeft = this.root.createEl("button", { attr: { type: "button", title: "\u663E\u793A\u76EE\u5F55 (T)", "aria-label": "\u76EE\u5F55" } });
     tocLeft.addClass("ez-reader__reader-toolbar__toc-left");
-    (0, import_obsidian10.setIcon)(tocLeft, "list");
+    (0, import_obsidian11.setIcon)(tocLeft, "list");
     tocLeft.addEventListener("click", () => handlers.onToggleToc());
     this.statusPill = this.root.createEl("button", {
       text: "\u5728\u8BFB",
@@ -19830,7 +20483,7 @@ var ReaderToolbar = class {
     addBookmark.addEventListener("click", () => handlers.onAddBookmark());
     this.searchButton = actionsGroup.createEl("button", { attr: { type: "button", title: "\u641C\u7D22 (/)", "aria-label": "\u641C\u7D22", "data-shortcut": "search" } });
     this.searchButton.addClass("ez-reader__reader-toolbar__action", "ez-reader__reader-toolbar__search-btn");
-    (0, import_obsidian10.setIcon)(this.searchButton, "search");
+    (0, import_obsidian11.setIcon)(this.searchButton, "search");
     this.searchBadge = this.searchButton.createEl("span", { cls: "ez-reader__reader-toolbar__badge ez-reader__reader-toolbar__search-badge" });
     this.searchBadge.addClass("is-hidden");
     this.searchBadge.setText("");
@@ -19863,7 +20516,7 @@ var ReaderToolbar = class {
     this.bookmarkToggle.addEventListener("click", () => handlers.onToggleBookmarks());
     const close = this.root.createEl("button", { attr: { type: "button", title: "\u5173\u95ED\u9605\u8BFB\u5668", "aria-label": "\u5173\u95ED" } });
     close.addClass("ez-reader__reader-toolbar__close");
-    (0, import_obsidian10.setIcon)(close, "x");
+    (0, import_obsidian11.setIcon)(close, "x");
     close.addEventListener("click", () => handlers.onClose());
     this.update(initial);
   }
@@ -21127,8 +21780,8 @@ var TocPanel = class {
 };
 
 // src/ui/reader/ThoughtModal.ts
-var import_obsidian11 = require("obsidian");
-var ThoughtModal = class extends import_obsidian11.Modal {
+var import_obsidian12 = require("obsidian");
+var ThoughtModal = class extends import_obsidian12.Modal {
   input;
   resolver = null;
   constructor(app, input) {
@@ -21513,7 +22166,7 @@ var composeQuickBookmarkLabel = (chapter, fraction) => {
   }
   return pct;
 };
-var ReaderView = class extends import_obsidian15.ItemView {
+var ReaderView = class extends import_obsidian16.ItemView {
   deps;
   entry;
   session;
@@ -22060,11 +22713,11 @@ var ReaderView = class extends import_obsidian15.ItemView {
   async copyTextToClipboard(text) {
     try {
       await navigator.clipboard.writeText(text);
-      new import_obsidian15.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
+      new import_obsidian16.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
     } catch (error) {
       console.warn("[ez-reader] copy failed", error);
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian15.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
+      new import_obsidian16.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
     }
   }
   /** Show keyboard shortcut help overlay. */
@@ -22555,7 +23208,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       const now = Date.now();
       if (now - this.lastProgressFailureNoticeAt > 5e3) {
         this.lastProgressFailureNoticeAt = now;
-        new import_obsidian15.Notice("\u4FDD\u5B58\u9605\u8BFB\u8FDB\u5EA6\u5931\u8D25,\u7A0D\u540E\u91CD\u8BD5");
+        new import_obsidian16.Notice("\u4FDD\u5B58\u9605\u8BFB\u8FDB\u5EA6\u5931\u8D25,\u7A0D\u540E\u91CD\u8BD5");
       }
     }
   }
@@ -22623,7 +23276,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
     if (!this.entry) return;
     const locator = await this.session?.exportLocator();
     if (!locator) {
-      new import_obsidian15.Notice("\u65E0\u6CD5\u83B7\u53D6\u5F53\u524D\u4F4D\u7F6E \u2014 \u4E66\u7B7E\u672A\u4FDD\u5B58");
+      new import_obsidian16.Notice("\u65E0\u6CD5\u83B7\u53D6\u5F53\u524D\u4F4D\u7F6E \u2014 \u4E66\u7B7E\u672A\u4FDD\u5B58");
       return;
     }
     try {
@@ -22636,11 +23289,11 @@ var ReaderView = class extends import_obsidian15.ItemView {
       });
     } catch (error) {
       console.warn("[ez-reader] addBookmark failed", error);
-      new import_obsidian15.Notice("\u6DFB\u52A0\u4E66\u7B7E\u5931\u8D25");
+      new import_obsidian16.Notice("\u6DFB\u52A0\u4E66\u7B7E\u5931\u8D25");
       return;
     }
     await this.refreshPanels();
-    new import_obsidian15.Notice(quick ? `\u{1F4D1} \u5DF2\u52A0\u4E66\u7B7E (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u4E66\u7B7E\u5DF2\u6DFB\u52A0", 1800);
+    new import_obsidian16.Notice(quick ? `\u{1F4D1} \u5DF2\u52A0\u4E66\u7B7E (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u4E66\u7B7E\u5DF2\u6DFB\u52A0", 1800);
   }
   async toggleBookmarks() {
     if (!this.bookmarksPanel) return;
@@ -22720,7 +23373,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       this.toolbar?.update(this.toolbarState());
     } catch (error) {
       console.warn("[ez-reader] cycleStatus failed", error);
-      new import_obsidian15.Notice("\u66F4\u65B0\u9605\u8BFB\u72B6\u6001\u5931\u8D25");
+      new import_obsidian16.Notice("\u66F4\u65B0\u9605\u8BFB\u72B6\u6001\u5931\u8D25");
     }
   }
   async toggleFavorite() {
@@ -22731,7 +23384,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       this.toolbar?.update(this.toolbarState());
     } catch (error) {
       console.warn("[ez-reader] toggleFavorite failed", error);
-      new import_obsidian15.Notice("\u66F4\u65B0\u6536\u85CF\u72B6\u6001\u5931\u8D25");
+      new import_obsidian16.Notice("\u66F4\u65B0\u6536\u85CF\u72B6\u6001\u5931\u8D25");
     }
   }
   async refreshPanels() {
@@ -22761,11 +23414,11 @@ var ReaderView = class extends import_obsidian15.ItemView {
       await this.deps.reading.removeBookmark(this.entry.book.id, bookmark.id);
     } catch (error) {
       console.warn("[ez-reader] removeBookmark failed", error);
-      new import_obsidian15.Notice("\u5220\u9664\u4E66\u7B7E\u5931\u8D25");
+      new import_obsidian16.Notice("\u5220\u9664\u4E66\u7B7E\u5931\u8D25");
       return;
     }
     await this.refreshPanels();
-    new import_obsidian15.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664", 1500);
+    new import_obsidian16.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664", 1500);
   }
   async jumpToExcerpt(excerpt) {
     if (!this.session) return;
@@ -22785,7 +23438,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       await this.deps.reading.removeExcerpt(this.entry.book.id, excerpt.id);
     } catch (error) {
       console.warn("[ez-reader] removeExcerpt failed", error);
-      new import_obsidian15.Notice("\u5220\u9664\u6458\u5F55\u5931\u8D25");
+      new import_obsidian16.Notice("\u5220\u9664\u6458\u5F55\u5931\u8D25");
       return;
     }
     if (this.session?.removeHighlight) {
@@ -22795,7 +23448,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       }
     }
     await this.refreshPanels();
-    new import_obsidian15.Notice("\u6458\u5F55\u5DF2\u5220\u9664", 1500);
+    new import_obsidian16.Notice("\u6458\u5F55\u5DF2\u5220\u9664", 1500);
   }
   async editExcerpt(excerpt) {
     const modal = new ThoughtModal(this.deps.app, {
@@ -22811,11 +23464,11 @@ var ReaderView = class extends import_obsidian15.ItemView {
       });
     } catch (error) {
       console.warn("[ez-reader] editExcerpt failed", error);
-      new import_obsidian15.Notice("\u7F16\u8F91\u6458\u5F55\u5931\u8D25");
+      new import_obsidian16.Notice("\u7F16\u8F91\u6458\u5F55\u5931\u8D25");
       return;
     }
     await this.refreshPanels();
-    new import_obsidian15.Notice("\u6458\u5F55\u5DF2\u66F4\u65B0", 1500);
+    new import_obsidian16.Notice("\u6458\u5F55\u5DF2\u66F4\u65B0", 1500);
   }
   /**
    * P2: inline note patch — 用户在 SidebarNotesPanel 点 note 直接编辑,
@@ -22845,7 +23498,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
    */
   async quickHighlight() {
     if (!this.entry || !this.pendingSelection) {
-      new import_obsidian15.Notice("\u5148\u9009\u4E00\u6BB5\u6587\u5B57\u518D\u6309 H", 2e3);
+      new import_obsidian16.Notice("\u5148\u9009\u4E00\u6BB5\u6587\u5B57\u518D\u6309 H", 2e3);
       return;
     }
     const note = "";
@@ -22857,7 +23510,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
     const excerptId = generateExcerptId("ex");
     const locator = this.pendingSelection?.locator ?? await this.session?.exportLocator() ?? void 0;
     if (!locator) {
-      new import_obsidian15.Notice("\u65E0\u6CD5\u83B7\u53D6\u9009\u533A\u4F4D\u7F6E \u2014 \u6458\u5F55\u672A\u4FDD\u5B58");
+      new import_obsidian16.Notice("\u65E0\u6CD5\u83B7\u53D6\u9009\u533A\u4F4D\u7F6E \u2014 \u6458\u5F55\u672A\u4FDD\u5B58");
       return;
     }
     const pos = this.isPdf && this.session?.currentPage ? {
@@ -22878,7 +23531,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       await this.deps.reading.addExcerpt(excerpt);
     } catch (error) {
       console.warn("[ez-reader] addExcerpt failed", error);
-      new import_obsidian15.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
+      new import_obsidian16.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
       return;
     }
     if (this.session?.highlight) {
@@ -22913,12 +23566,12 @@ var ReaderView = class extends import_obsidian15.ItemView {
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-        new import_obsidian15.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
+        new import_obsidian16.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
       }
     }
     await this.refreshPanels();
     this.notesPanel?.flashLast(excerptId);
-    new import_obsidian15.Notice(quick ? `\u{1F58D} \u5DF2\u9AD8\u4EAE (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u6458\u5F55\u5DF2\u4FDD\u5B58", 1800);
+    new import_obsidian16.Notice(quick ? `\u{1F58D} \u5DF2\u9AD8\u4EAE (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u6458\u5F55\u5DF2\u4FDD\u5B58", 1800);
   }
   async saveThoughtFromSelection() {
     if (!this.entry || !this.pendingSelection) return;
@@ -22957,7 +23610,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       await this.deps.reading.addExcerpt(excerpt);
     } catch (error) {
       console.warn("[ez-reader] saveThought addExcerpt failed", error);
-      new import_obsidian15.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
+      new import_obsidian16.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
       return;
     }
     if (this.deps.noteWriter) {
@@ -22979,12 +23632,12 @@ var ReaderView = class extends import_obsidian15.ItemView {
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-        new import_obsidian15.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
+        new import_obsidian16.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
       }
     }
     await this.refreshPanels();
     this.notesPanel?.flashLast(excerptId);
-    new import_obsidian15.Notice("\u60F3\u6CD5\u5DF2\u4FDD\u5B58", 1500);
+    new import_obsidian16.Notice("\u60F3\u6CD5\u5DF2\u4FDD\u5B58", 1500);
   }
   copySelectionToClipboard() {
     const selection = this.pendingSelection?.text;
@@ -23015,7 +23668,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
   async runFindInBook(query, fromStart) {
     if (!this.session || typeof this.session.findInBook !== "function") {
       this.closeSearchBar();
-      new import_obsidian15.Notice("\u5F53\u524D\u683C\u5F0F\u6682\u4E0D\u652F\u6301\u641C\u7D22");
+      new import_obsidian16.Notice("\u5F53\u524D\u683C\u5F0F\u6682\u4E0D\u652F\u6301\u641C\u7D22");
       return;
     }
     const trimmed = query.trim();
@@ -23029,15 +23682,15 @@ var ReaderView = class extends import_obsidian15.ItemView {
       this.searchMatchCount = count;
       this.toolbar?.update(this.toolbarState());
       if (count === 0) {
-        new import_obsidian15.Notice(`\u672A\u627E\u5230 "${trimmed}"`);
+        new import_obsidian16.Notice(`\u672A\u627E\u5230 "${trimmed}"`);
       } else if (fromStart) {
-        new import_obsidian15.Notice(`\u627E\u5230 ${count} \u5904\u5339\u914D (\u4ECE\u9996\u5904\u5F00\u59CB)`);
+        new import_obsidian16.Notice(`\u627E\u5230 ${count} \u5904\u5339\u914D (\u4ECE\u9996\u5904\u5F00\u59CB)`);
       } else {
-        new import_obsidian15.Notice(`\u5339\u914D ${this.findCursorDisplay(count)} / ${count}`);
+        new import_obsidian16.Notice(`\u5339\u914D ${this.findCursorDisplay(count)} / ${count}`);
       }
     } catch (error) {
       console.warn("[ez-reader] findInBook failed", error);
-      new import_obsidian15.Notice("\u641C\u7D22\u5931\u8D25");
+      new import_obsidian16.Notice("\u641C\u7D22\u5931\u8D25");
       this.closeSearchBar();
     }
   }
@@ -23061,7 +23714,7 @@ ${translated}`;
 };
 
 // src/ui/settings/SettingsTab.ts
-var import_obsidian16 = require("obsidian");
+var import_obsidian17 = require("obsidian");
 
 // src/core/types/Locale.ts
 var UI_LOCALES = [
@@ -23121,7 +23774,7 @@ var debounceAsync = (fn, ms = 300) => {
   };
   return debounced;
 };
-var SettingsTab = class extends import_obsidian16.PluginSettingTab {
+var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   constructor(app, plugin, annotations, providers = []) {
     super(app, plugin);
     this.annotations = annotations;
@@ -23176,7 +23829,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
   }
   // ---- 默认阅读外观 ----
   renderAppearanceSection(containerEl) {
-    new import_obsidian16.Setting(containerEl).setName("\u9ED8\u8BA4\u9605\u8BFB\u5916\u89C2").setHeading();
+    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u9605\u8BFB\u5916\u89C2").setHeading();
     const saveFontSize = this.debounceSave(async (value) => {
       await this.annotations.patchSettings((s3) => ({
         ...s3,
@@ -23195,16 +23848,16 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
         defaultAppearance: { ...s3.defaultAppearance, margin: value }
       }));
     });
-    new import_obsidian16.Setting(containerEl).setName("\u5B57\u53F7").setDesc("\u9ED8\u8BA4 100%; \u8303\u56F4 60%-200%").addSlider(
+    new import_obsidian17.Setting(containerEl).setName("\u5B57\u53F7").setDesc("\u9ED8\u8BA4 100%; \u8303\u56F4 60%-200%").addSlider(
       (slider) => slider.setLimits(60, 200, 5).setValue(DEFAULT_READER_APPEARANCE.fontSize).onChange((value) => saveFontSize(value))
     );
-    new import_obsidian16.Setting(containerEl).setName("\u884C\u8DDD").setDesc("\u9ED8\u8BA4 1.6; \u8303\u56F4 1.0-2.4").addSlider(
+    new import_obsidian17.Setting(containerEl).setName("\u884C\u8DDD").setDesc("\u9ED8\u8BA4 1.6; \u8303\u56F4 1.0-2.4").addSlider(
       (slider) => slider.setLimits(1, 2.4, 0.1).setValue(DEFAULT_READER_APPEARANCE.lineHeight).onChange((value) => saveLineHeight(value))
     );
-    new import_obsidian16.Setting(containerEl).setName("\u9875\u8FB9\u8DDD").setDesc("\u9ED8\u8BA4 32px; \u8303\u56F4 0-80px").addSlider(
+    new import_obsidian17.Setting(containerEl).setName("\u9875\u8FB9\u8DDD").setDesc("\u9ED8\u8BA4 32px; \u8303\u56F4 0-80px").addSlider(
       (slider) => slider.setLimits(0, 80, 4).setValue(DEFAULT_READER_APPEARANCE.margin).onChange((value) => saveMargin(value))
     );
-    new import_obsidian16.Setting(containerEl).setName("\u9ED8\u8BA4\u4E3B\u9898").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u4F7F\u7528\u7684\u4E3B\u9898").addDropdown((dropdown) => {
+    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u4E3B\u9898").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u4F7F\u7528\u7684\u4E3B\u9898").addDropdown((dropdown) => {
       for (const theme of THEMES2) {
         dropdown.addOption(theme, themeLabel2(theme));
       }
@@ -23219,7 +23872,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
         }));
       });
     });
-    new import_obsidian16.Setting(containerEl).setName("\u9ED8\u8BA4\u6392\u7248").setDesc("paginated = \u5355\u9875\u7FFB\u9875; scrolled = \u6EDA\u5C4F").addDropdown((dropdown) => {
+    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u6392\u7248").setDesc("paginated = \u5355\u9875\u7FFB\u9875; scrolled = \u6EDA\u5C4F").addDropdown((dropdown) => {
       dropdown.addOption("paginated", "\u5355\u9875\u7FFB\u9875");
       dropdown.addOption("scrolled", "\u8FDE\u7EED\u6EDA\u5C4F");
       void this.loadSettings().then((s3) => {
@@ -23236,8 +23889,8 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
   }
   // ---- 阅读体验 ----
   renderReadingSection(containerEl) {
-    new import_obsidian16.Setting(containerEl).setName("\u9605\u8BFB\u4F53\u9A8C").setHeading();
-    new import_obsidian16.Setting(containerEl).setName("\u6253\u5F00\u9605\u8BFB\u5668\u65B9\u5F0F").setDesc("\u5728\u5F53\u524D\u6807\u7B7E\u9875\u6253\u5F00 / \u5F39\u7A97\u6253\u5F00").addDropdown((dropdown) => {
+    new import_obsidian17.Setting(containerEl).setName("\u9605\u8BFB\u4F53\u9A8C").setHeading();
+    new import_obsidian17.Setting(containerEl).setName("\u6253\u5F00\u9605\u8BFB\u5668\u65B9\u5F0F").setDesc("\u5728\u5F53\u524D\u6807\u7B7E\u9875\u6253\u5F00 / \u5F39\u7A97\u6253\u5F00").addDropdown((dropdown) => {
       dropdown.addOption("tab", "\u5728\u6807\u7B7E\u9875\u4E2D\u6253\u5F00");
       dropdown.addOption("window", "\u5728\u65B0\u7A97\u53E3\u4E2D\u6253\u5F00");
       void this.loadSettings().then((s3) => {
@@ -23248,7 +23901,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, readerOpenMode: value }));
       });
     });
-    new import_obsidian16.Setting(containerEl).setName("\u8BB0\u4F4F\u9605\u8BFB\u8FDB\u5EA6").setDesc("\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8DF3\u8F6C\u5230\u4E0A\u6B21\u9605\u8BFB\u4F4D\u7F6E").addToggle((toggle) => {
+    new import_obsidian17.Setting(containerEl).setName("\u8BB0\u4F4F\u9605\u8BFB\u8FDB\u5EA6").setDesc("\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8DF3\u8F6C\u5230\u4E0A\u6B21\u9605\u8BFB\u4F4D\u7F6E").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.rememberProgress !== false);
       });
@@ -23256,7 +23909,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, rememberProgress: value }));
       });
     });
-    new import_obsidian16.Setting(containerEl).setName("\u9ED8\u8BA4\u53CC\u9875\u663E\u793A").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u9ED8\u8BA4\u5F00\u542F\u53CC\u9875(\u4EC5\u684C\u9762, foliate \u9002\u7528)").addToggle((toggle) => {
+    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u53CC\u9875\u663E\u793A").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u9ED8\u8BA4\u5F00\u542F\u53CC\u9875(\u4EC5\u684C\u9762, foliate \u9002\u7528)").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.twoPagesByDefault ?? false);
       });
@@ -23264,7 +23917,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, twoPagesByDefault: value }));
       });
     });
-    new import_obsidian16.Setting(containerEl).setName("Pad \u9ED8\u8BA4\u6C89\u6D78\u6A21\u5F0F").setDesc("\u5728 Pad / \u7A84\u5C4F\u4E0A\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8FDB\u5165\u6C89\u6D78\u6A21\u5F0F(\u9690\u85CF\u5DE5\u5177\u680F)").addToggle((toggle) => {
+    new import_obsidian17.Setting(containerEl).setName("Pad \u9ED8\u8BA4\u6C89\u6D78\u6A21\u5F0F").setDesc("\u5728 Pad / \u7A84\u5C4F\u4E0A\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8FDB\u5165\u6C89\u6D78\u6A21\u5F0F(\u9690\u85CF\u5DE5\u5177\u680F)").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.immersiveOnTablet ?? false);
       });
@@ -23272,7 +23925,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, immersiveOnTablet: value }));
       });
     });
-    const shortcutSummary = new import_obsidian16.Setting(containerEl).setName("\u952E\u76D8\u5FEB\u6377\u952E").setDesc("\u9605\u8BFB\u5668\u952E\u76D8\u5FEB\u6377\u952E(\u5F53\u524D\u53EA\u8BFB;\u81EA\u5B9A\u4E49\u7F16\u8F91\u5668\u5728\u8DEF\u7EBF\u56FE\u91CC)");
+    const shortcutSummary = new import_obsidian17.Setting(containerEl).setName("\u952E\u76D8\u5FEB\u6377\u952E").setDesc("\u9605\u8BFB\u5668\u952E\u76D8\u5FEB\u6377\u952E(\u5F53\u524D\u53EA\u8BFB;\u81EA\u5B9A\u4E49\u7F16\u8F91\u5668\u5728\u8DEF\u7EBF\u56FE\u91CC)");
     void this.loadSettings().then((s3) => {
       const shortcuts = s3.keyboardShortcuts;
       shortcutSummary.controlEl.createDiv({
@@ -23283,7 +23936,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
   }
   // ---- 笔记与摘录 ----
   renderNotesSection(containerEl) {
-    new import_obsidian16.Setting(containerEl).setName("\u7B14\u8BB0\u4E0E\u6458\u5F55").setHeading();
+    new import_obsidian17.Setting(containerEl).setName("\u7B14\u8BB0\u4E0E\u6458\u5F55").setHeading();
     const saveNotesDir = this.debounceSave(async (value) => {
       await this.annotations.patchSettings((s3) => ({ ...s3, notesDirectory: value.trim() }));
     });
@@ -23293,19 +23946,19 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
     const saveNoteTemplate = this.debounceSave(async (value) => {
       await this.annotations.patchSettings((s3) => ({ ...s3, defaultNoteTemplate: value }));
     });
-    new import_obsidian16.Setting(containerEl).setName("\u6458\u5F55\u7B14\u8BB0\u76EE\u5F55").setDesc("\u53CC\u94FE\u7B14\u8BB0\u6587\u4EF6\u4FDD\u5B58\u4F4D\u7F6E,\u7559\u7A7A\u5219\u4E0D\u81EA\u52A8\u4FDD\u5B58\u7B14\u8BB0").addText((text) => {
+    new import_obsidian17.Setting(containerEl).setName("\u6458\u5F55\u7B14\u8BB0\u76EE\u5F55").setDesc("\u53CC\u94FE\u7B14\u8BB0\u6587\u4EF6\u4FDD\u5B58\u4F4D\u7F6E,\u7559\u7A7A\u5219\u4E0D\u81EA\u52A8\u4FDD\u5B58\u7B14\u8BB0\u3002\u4FDD\u5B58\u7B2C\u4E00\u6761\u6458\u5F55\u65F6\u4F1A\u81EA\u52A8\u521B\u5EFA\u76EE\u5F55,\u65E0\u9700\u624B\u52A8 mkdir").addText((text) => {
       void this.loadSettings().then((s3) => {
         text.setValue(s3.notesDirectory);
       });
       text.onChange((value) => saveNotesDir(value));
     });
-    new import_obsidian16.Setting(containerEl).setName("\u4E3B\u9898\u7814\u7A76\u76EE\u5F55").setDesc("\u4E3B\u9898\u7814\u7A76\u7B14\u8BB0\u4FDD\u5B58\u4F4D\u7F6E").addText((text) => {
+    new import_obsidian17.Setting(containerEl).setName("\u4E3B\u9898\u7814\u7A76\u76EE\u5F55").setDesc("\u4E3B\u9898\u7814\u7A76\u7B14\u8BB0\u4FDD\u5B58\u4F4D\u7F6E,\u9ED8\u8BA4\u4E0E\u6458\u5F55\u7B14\u8BB0\u5171\u4EAB ezreader-notes \u6839\u76EE\u5F55\u3002\u76EE\u5F55\u4F1A\u5728\u9996\u6B21\u5199\u5165\u65F6\u81EA\u52A8\u521B\u5EFA").addText((text) => {
       void this.loadSettings().then((s3) => {
         text.setValue(s3.researchDirectory);
       });
       text.onChange((value) => saveResearchDir(value));
     });
-    new import_obsidian16.Setting(containerEl).setName("\u9ED8\u8BA4\u7B14\u8BB0\u6A21\u677F").setDesc("\u65B0\u5EFA\u7B14\u8BB0\u65F6\u4F7F\u7528\u7684\u6807\u9898\u6A21\u677F,\u652F\u6301 {{title}} {{author}} \u5360\u4F4D\u7B26").addText((text) => {
+    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u7B14\u8BB0\u6A21\u677F").setDesc("\u65B0\u5EFA\u7B14\u8BB0\u65F6\u4F7F\u7528\u7684\u6807\u9898\u6A21\u677F,\u652F\u6301 {{title}} {{author}} \u5360\u4F4D\u7B26").addText((text) => {
       void this.loadSettings().then((s3) => {
         text.setValue(s3.defaultNoteTemplate);
       });
@@ -23314,12 +23967,15 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
   }
   // ---- 翻译 ----
   renderTranslationSection(containerEl) {
-    new import_obsidian16.Setting(containerEl).setName("\u7FFB\u8BD1").setHeading();
-    const providerSetting = new import_obsidian16.Setting(containerEl).setName("\u7FFB\u8BD1\u670D\u52A1").setDesc("\u9009\u62E9\u5728\u7EBF\u7FFB\u8BD1 API;\u7559\u7A7A = \u4E0D\u8054\u7F51\u3002").addDropdown((dropdown) => {
+    new import_obsidian17.Setting(containerEl).setName("\u7FFB\u8BD1").setHeading();
+    const providerSetting = new import_obsidian17.Setting(containerEl).setName("\u7FFB\u8BD1\u670D\u52A1").setDesc("\u9009\u62E9\u5728\u7EBF\u7FFB\u8BD1 API;\u7559\u7A7A = \u4E0D\u8054\u7F51\u3002").addDropdown((dropdown) => {
       dropdown.addOption("none", "\u5173\u95ED");
       dropdown.addOption("youdao", "\u6709\u9053\u667A\u4E91 \xB7 \u6587\u672C\u7FFB\u8BD1");
       dropdown.addOption("deepl", "DeepL");
       dropdown.addOption("google-translation-v3", "Google Translate (Cloud v3)");
+      dropdown.addOption("mymemory", "MyMemory (\u514D\u8D39, \u65E0\u9700\u6CE8\u518C)");
+      dropdown.addOption("openai-compatible", "\u81EA\u5B9A\u4E49 LLM (OpenAI \u517C\u5BB9)");
+      dropdown.addOption("anthropic-compatible", "\u81EA\u5B9A\u4E49 LLM (Anthropic \u517C\u5BB9)");
       void this.loadSettings().then((s3) => {
         dropdown.setValue(s3.translation?.providerId ?? "none");
       });
@@ -23328,14 +23984,16 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
           if (value === "none") {
             return { ...s3, translation: null };
           }
+          const prevProvider = s3.translation?.providerId;
           const next = {
             providerId: value,
-            apiKey: s3.translation?.apiKey ?? "",
+            apiKey: prevProvider === value ? s3.translation?.apiKey ?? "" : "",
             sourceLocale: s3.translation?.sourceLocale ?? "auto",
             targetLocale: s3.translation?.targetLocale ?? "zh-CN"
           };
           return { ...s3, translation: next };
         });
+        await this.renderTranslationApiKeyUi(containerEl);
       });
     });
     const hint = providerSetting.settingEl.createDiv({ cls: "ez-reader__settings-hint is-hidden" });
@@ -23363,31 +24021,8 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
       const value = event.target.value;
       refreshHint(value);
     });
-    new import_obsidian16.Setting(containerEl).setName("\u7FFB\u8BD1 API key").setDesc("\u7FFB\u8BD1\u662F\u672C\u63D2\u4EF6\u552F\u4E00\u4F1A\u8BBF\u95EE\u7F51\u7EDC\u7684\u7279\u6027\u3002\u7559\u7A7A = \u4E0D\u8054\u7F51\u3002").addText((text) => {
-      text.inputEl.type = "password";
-      const saveKey = this.debounceSave(async (value) => {
-        await this.annotations.patchSettings((s3) => {
-          if (!s3.translation) {
-            if (!value) return s3;
-            return {
-              ...s3,
-              translation: {
-                providerId: "youdao",
-                apiKey: value,
-                sourceLocale: "auto",
-                targetLocale: "zh-CN"
-              }
-            };
-          }
-          return { ...s3, translation: { ...s3.translation, apiKey: value } };
-        });
-      });
-      void this.loadSettings().then((s3) => {
-        text.setValue(s3.translation?.apiKey ?? "");
-      });
-      text.onChange((value) => saveKey(value));
-    });
-    new import_obsidian16.Setting(containerEl).setName("\u76EE\u6807\u8BED\u8A00").setDesc("\u9ED8\u8BA4\u7FFB\u8BD1\u5230\u7684\u8BED\u8A00(\u4F8B\u5982 zh-CN / en-US)").addText((text) => {
+    void this.renderTranslationApiKeyUi(containerEl);
+    new import_obsidian17.Setting(containerEl).setName("\u76EE\u6807\u8BED\u8A00").setDesc("\u9ED8\u8BA4\u7FFB\u8BD1\u5230\u7684\u8BED\u8A00(\u4F8B\u5982 zh-CN / en-US)").addText((text) => {
       const saveTargetLocale = this.debounceSave(async (value) => {
         await this.annotations.patchSettings((s3) => {
           if (!s3.translation) return s3;
@@ -23400,10 +24035,235 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
       text.onChange((value) => saveTargetLocale(value));
     });
   }
+  /**
+   * 渲染"翻译 API key"输入块 — 根据 provider 动态决定是两字段(有道)还是
+   * 单字段(DeepL/Google). API key 在底层仍以 JSON 字符串存 (provider
+   * 接口契约不变), UI 只是把 JSON 的两个字段拆出来让用户更好填.
+   *
+   * @param containerEl 设置页根容器,API key 输入区插在「翻译服务」+「目标语言」之间
+   */
+  async renderTranslationApiKeyUi(containerEl) {
+    containerEl.querySelectorAll(".ez-reader__translation-apikey").forEach((node) => node.remove());
+    const settings = await this.loadSettings();
+    const providerId = settings.translation?.providerId ?? "none";
+    if (providerId === "none") {
+      return;
+    }
+    const anchor = containerEl.querySelector(".ez-reader__settings-hint");
+    const wrap2 = document.createElement("div");
+    wrap2.addClass("ez-reader__translation-apikey");
+    if (anchor && anchor.parentElement) {
+      anchor.parentElement.insertBefore(wrap2, anchor.nextSibling);
+    } else {
+      containerEl.appendChild(wrap2);
+    }
+    if (providerId === "youdao") {
+      this.renderYoudaoKeyFields(wrap2, settings);
+    } else if (providerId === "mymemory") {
+      this.renderNoKeyHint(wrap2, "MyMemory \u662F\u516C\u5171\u514D\u8D39\u7FFB\u8BD1\u670D\u52A1,\u65E0\u9700\u6CE8\u518C\u4E5F\u65E0\u9700 API key\u3002\u6BCF\u65E5\u6BCF\u4E2A IP 1 \u4E07\u5B57\u7B26\u989D\u5EA6,\u9002\u5408\u5076\u5C14\u67E5\u8BCD\u3002");
+    } else if (providerId === "openai-compatible") {
+      this.renderLLMConfigFields(wrap2, settings, {
+        baseUrlHint: "https://api.openai.com/v1",
+        title: "LLM \xB7 API \u57FA\u7840\u5730\u5740",
+        desc: "OpenAI \u517C\u5BB9\u683C\u5F0F\u7684 /v1 \u7AEF\u70B9\u3002\u4F8B\u5982 https://api.openai.com/v1, https://api.deepseek.com/v1",
+        examples: [
+          "DeepSeek: https://api.deepseek.com/v1 + model=deepseek-chat",
+          "\u667A\u8C31 GLM: https://open.bigmodel.cn/api/paas/v4 + model=glm-4-flash (\u514D\u8D39)",
+          "\u901A\u4E49\u5343\u95EE: https://dashscope.aliyuncs.com/compatible-mode/v1 + model=qwen-turbo",
+          "OpenAI: https://api.openai.com/v1 + model=gpt-4o-mini"
+        ]
+      });
+    } else if (providerId === "anthropic-compatible") {
+      this.renderLLMConfigFields(wrap2, settings, {
+        baseUrlHint: "https://api.minimax.cn/anthropic",
+        title: "LLM \xB7 API \u57FA\u7840\u5730\u5740",
+        desc: "Anthropic Messages API \u517C\u5BB9\u7AEF\u70B9 (\u4F1A\u81EA\u52A8\u8FFD\u52A0 /v1/messages)\u3002\u4F8B\u5982 https://api.minimax.cn/anthropic",
+        examples: [
+          "MiniMax: https://api.minimax.cn/anthropic + model=MiniMax-Text",
+          "Anthropic: https://api.anthropic.com + model=claude-3-5-sonnet-20241022"
+        ]
+      });
+    } else {
+      this.renderSingleKeyField(wrap2, settings);
+    }
+  }
+  /**
+   * 给"无需 API key"的 provider (e.g. MyMemory) 显示一段说明 — 不渲染输入
+   * 框, 让用户知道为什么没看到 key 字段不是因为 bug.
+   */
+  renderNoKeyHint(wrap2, text) {
+    const note = wrap2.createDiv({ cls: "ez-reader__translation-apikey__no-key" });
+    note.setText(text);
+  }
+  /**
+   * 有道: 两个 password 字段分别填 appKey 和 appSecret, 在用户输入时合并成
+   * JSON `{"appKey":"...","appSecret":"..."}` 存到 settings.translation.apiKey。
+   * 这样底层 provider 接口(`apiKey: string`)不需要改, 老数据(已经是 JSON
+   * 格式)也能直接读到两个字段里.
+   */
+  renderYoudaoKeyFields(wrap2, settings) {
+    let stored = { appKey: "", appSecret: "" };
+    const raw = settings.translation?.apiKey ?? "";
+    if (raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw);
+        stored = {
+          appKey: typeof parsed.appKey === "string" ? parsed.appKey : "",
+          appSecret: typeof parsed.appSecret === "string" ? parsed.appSecret : ""
+        };
+      } catch {
+      }
+    }
+    const persist = this.debounceSave(async (next) => {
+      const json = JSON.stringify(next);
+      await this.annotations.patchSettings((s3) => {
+        if (!s3.translation) return s3;
+        return { ...s3, translation: { ...s3.translation, apiKey: json } };
+      });
+    });
+    const addPasswordField = (label, desc, key) => {
+      new import_obsidian17.Setting(wrap2).setName(label).setDesc(desc).addText((text) => {
+        text.inputEl.type = "password";
+        text.inputEl.autocomplete = "off";
+        text.inputEl.spellcheck = false;
+        text.setPlaceholder(key === "appKey" ? "\u5E94\u7528 ID, 16 \u4F4D\u5B57\u7B26\u4E32" : "\u5E94\u7528\u5BC6\u94A5, \u53EA\u5728\u521B\u5EFA\u65F6\u663E\u793A\u4E00\u6B21");
+        text.setValue(stored[key]);
+        const update = (value) => {
+          const next = { appKey: stored.appKey, appSecret: stored.appSecret };
+          next[key] = value.trim();
+          stored = next;
+          void persist(next);
+        };
+        text.onChange((value) => update(value));
+      }).addExtraButton((button) => {
+        button.setIcon("eye");
+        button.setTooltip("\u663E\u793A / \u9690\u85CF");
+        button.onClick(() => {
+          const inputs = wrap2.querySelectorAll(".ez-reader__translation-apikey input");
+          const idx = key === "appKey" ? 0 : 1;
+          const target = inputs[idx];
+          if (!target) return;
+          const isHidden = target.type === "password";
+          target.type = isHidden ? "text" : "password";
+          button.setIcon(isHidden ? "eye-off" : "eye");
+        });
+      });
+    };
+    addPasswordField(
+      "\u6709\u9053 \xB7 \u5E94\u7528 ID (appKey)",
+      "\u5728\u6709\u9053\u667A\u4E91\u63A7\u5236\u53F0 \u2192 \u6211\u7684\u5E94\u7528 \u2192 \u5E94\u7528\u8BE6\u60C5 \u67E5\u770B",
+      "appKey"
+    );
+    addPasswordField(
+      "\u6709\u9053 \xB7 \u5E94\u7528\u5BC6\u94A5 (appSecret)",
+      "\u53EA\u5728\u521B\u5EFA\u5E94\u7528\u65F6\u663E\u793A\u4E00\u6B21,\u4E22\u5931\u8BF7\u91CD\u7F6E\u5BC6\u94A5",
+      "appSecret"
+    );
+  }
+  /**
+   * DeepL / Google: 单字段输入(DeepL 是裸 key, Google 是 service account JSON).
+   * 用户切换到这两个 provider 时刚才选这个编辑旧的 JSON apiKey 字段会被 provider 切换清空.
+   */
+  /**
+   * 自定义 LLM provider 通用三字段渲染 — OpenAI 兼容 / Anthropic 兼容 共用
+   * 这个 UI. 内部用 JSON `{"baseUrl":"...","apiKey":"...","model":"..."}`
+   * 存到 settings.translation.apiKey, provider 接口(apiKey: string)不变.
+   *
+   * @param opts.baseUrlHint  baseUrl 字段的 placeholder, 不同 provider 不同
+   * @param opts.title        第一个字段的标题(目前都叫 "LLM · API 基础地址")
+   * @param opts.desc         第一个字段的描述(讲 endpoint 路径约定)
+   * @param opts.examples     末尾示例数组, 一行一个
+   */
+  renderLLMConfigFields(wrap2, settings, opts) {
+    let stored = { baseUrl: "", apiKey: "", model: "" };
+    const raw = settings.translation?.apiKey ?? "";
+    if (raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw);
+        stored = {
+          baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
+          apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
+          model: typeof parsed.model === "string" ? parsed.model : ""
+        };
+      } catch {
+      }
+    }
+    const persist = this.debounceSave(async (next) => {
+      const json = JSON.stringify(next);
+      await this.annotations.patchSettings((s3) => {
+        if (!s3.translation) return s3;
+        return { ...s3, translation: { ...s3.translation, apiKey: json } };
+      });
+    });
+    const update = (patch) => {
+      const next = { ...stored, ...patch };
+      stored = next;
+      void persist(next);
+    };
+    new import_obsidian17.Setting(wrap2).setName(opts.title).setDesc(opts.desc).addText((text) => {
+      text.inputEl.type = "text";
+      text.inputEl.autocomplete = "off";
+      text.inputEl.placeholder = opts.baseUrlHint;
+      text.setValue(stored.baseUrl);
+      text.onChange((value) => update({ baseUrl: value.trim() }));
+    });
+    new import_obsidian17.Setting(wrap2).setName("LLM \xB7 API Key").setDesc("\u5BF9\u5E94 API \u57FA\u7840\u5730\u5740\u7684\u5BC6\u94A5").addText((text) => {
+      text.inputEl.type = "password";
+      text.inputEl.autocomplete = "off";
+      text.inputEl.spellcheck = false;
+      text.setPlaceholder("sk-...");
+      text.setValue(stored.apiKey);
+      text.onChange((value) => update({ apiKey: value.trim() }));
+    }).addExtraButton((button) => {
+      button.setIcon("eye");
+      button.setTooltip("\u663E\u793A / \u9690\u85CF");
+      button.onClick(() => {
+        const input = wrap2.querySelector(".ez-reader__translation-apikey input[type='password']");
+        if (!input) return;
+        const isHidden = input.type === "password";
+        input.type = isHidden ? "text" : "password";
+        button.setIcon(isHidden ? "eye-off" : "eye");
+      });
+    });
+    new import_obsidian17.Setting(wrap2).setName("LLM \xB7 \u6A21\u578B\u540D").setDesc("\u5177\u4F53\u6A21\u578B\u6807\u8BC6, \u89C1\u4E0B\u65B9\u793A\u4F8B\u6216\u4F9B\u5E94\u5546\u63A7\u5236\u53F0").addText((text) => {
+      text.inputEl.type = "text";
+      text.inputEl.autocomplete = "off";
+      text.inputEl.placeholder = "model-id";
+      text.setValue(stored.model);
+      text.onChange((value) => update({ model: value.trim() }));
+    });
+    const examples = wrap2.createDiv({ cls: "ez-reader__translation-apikey__examples" });
+    examples.setText("\u5E38\u7528\u793A\u4F8B:\n" + opts.examples.map((line) => `  ${line}`).join("\n"));
+  }
+  renderSingleKeyField(wrap2, settings) {
+    const desc = settings.translation?.providerId === "google-translation-v3" ? "Google: \u7C98\u8D34 service account JSON \u7684\u5B8C\u6574\u5185\u5BB9({...}),\u4E0D\u662F API key\u3002" : "DeepL: \u5728 DeepL Pro \u63A7\u5236\u53F0 \u2192 Account \u2192 Authentication key \u590D\u5236\u3002";
+    new import_obsidian17.Setting(wrap2).setName("\u7FFB\u8BD1 API key").setDesc(desc).addText((text) => {
+      text.inputEl.type = "password";
+      const saveKey = this.debounceSave(async (value) => {
+        await this.annotations.patchSettings((s3) => {
+          if (!s3.translation) {
+            if (!value) return s3;
+            return {
+              ...s3,
+              translation: {
+                providerId: settings.translation?.providerId ?? "deepl",
+                apiKey: value,
+                sourceLocale: "auto",
+                targetLocale: "zh-CN"
+              }
+            };
+          }
+          return { ...s3, translation: { ...s3.translation, apiKey: value } };
+        });
+      });
+      text.setValue(settings.translation?.apiKey ?? "");
+      text.onChange((value) => saveKey(value));
+    });
+  }
   // ---- 界面 ----
   renderUISection(containerEl) {
-    new import_obsidian16.Setting(containerEl).setName("\u754C\u9762").setHeading();
-    new import_obsidian16.Setting(containerEl).setName("\u754C\u9762\u8BED\u8A00").setDesc("\u9009\u62E9\u63D2\u4EF6\u754C\u9762\u8BED\u8A00;\u5207\u6362\u540E\u4F1A\u91CD\u65B0\u6253\u5F00\u5DF2\u7ECF\u6253\u5F00\u7684\u9875\u9762\u3002").addDropdown((dropdown) => {
+    new import_obsidian17.Setting(containerEl).setName("\u754C\u9762").setHeading();
+    new import_obsidian17.Setting(containerEl).setName("\u754C\u9762\u8BED\u8A00").setDesc("\u9009\u62E9\u63D2\u4EF6\u754C\u9762\u8BED\u8A00;\u5207\u6362\u540E\u4F1A\u91CD\u65B0\u6253\u5F00\u5DF2\u7ECF\u6253\u5F00\u7684\u9875\u9762\u3002").addDropdown((dropdown) => {
       for (const { code, label } of UI_LOCALES) {
         dropdown.addOption(code, label);
       }
@@ -23413,10 +24273,10 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
       dropdown.onChange(async (value) => {
         if (!isUiLocale(value)) return;
         await this.annotations.patchSettings((s3) => ({ ...s3, uiLocale: value }));
-        new import_obsidian16.Notice("\u754C\u9762\u8BED\u8A00\u5C06\u5728\u91CD\u542F\u540E\u751F\u6548");
+        new import_obsidian17.Notice("\u754C\u9762\u8BED\u8A00\u5C06\u5728\u91CD\u542F\u540E\u751F\u6548");
       });
     });
-    new import_obsidian16.Setting(containerEl).setName("\u6240\u6709\u8005\u540D\u79F0").setDesc("\u7528\u4E8E\u7B14\u8BB0\u7F72\u540D(\u53EF\u9009)").addText((text) => {
+    new import_obsidian17.Setting(containerEl).setName("\u6240\u6709\u8005\u540D\u79F0").setDesc("\u7528\u4E8E\u7B14\u8BB0\u7F72\u540D(\u53EF\u9009)").addText((text) => {
       const saveOwner = this.debounceSave(async (value) => {
         await this.annotations.patchSettings((s3) => ({ ...s3, libraryOwnerName: value }));
       });
@@ -23425,7 +24285,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
       });
       text.onChange((value) => saveOwner(value));
     });
-    new import_obsidian16.Setting(containerEl).setName("\u4E66\u67B6\u5C01\u9762\u5BC6\u5EA6").setDesc("\u5F71\u54CD\u7F51\u683C\u5217\u6570\u548C\u5217\u8868\u5C01\u9762\u5C3A\u5BF8\u3002\u7D27\u51D1=\u6BCF\u884C\u591A\u672C,\u8D85\u5927=\u6BCF\u884C\u4E00\u672C\u5927\u5C01\u9762\u3002").addDropdown((dropdown) => {
+    new import_obsidian17.Setting(containerEl).setName("\u4E66\u67B6\u5C01\u9762\u5BC6\u5EA6").setDesc("\u5F71\u54CD\u7F51\u683C\u5217\u6570\u548C\u5217\u8868\u5C01\u9762\u5C3A\u5BF8\u3002\u7D27\u51D1=\u6BCF\u884C\u591A\u672C,\u8D85\u5927=\u6BCF\u884C\u4E00\u672C\u5927\u5C01\u9762\u3002").addDropdown((dropdown) => {
       for (const density of SHELF_DENSITIES) {
         dropdown.addOption(density, SHELF_DENSITY_LABELS[density]);
       }
@@ -23441,7 +24301,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
   }
   // ---- 关于 ----
   renderAboutSection(containerEl) {
-    new import_obsidian16.Setting(containerEl).setName("\u5173\u4E8E").setHeading();
+    new import_obsidian17.Setting(containerEl).setName("\u5173\u4E8E").setHeading();
     const about = containerEl.createDiv({ cls: "ez-reader__settings-about" });
     about.createEl("p", {
       text: "EzReader \u2014 \u5728 Obsidian \u4E2D\u9605\u8BFB\u672C\u5730\u7535\u5B50\u4E66,\u81EA\u52A8\u751F\u6210\u53CC\u94FE\u7B14\u8BB0\u4E0E\u6458\u5F55\u3002"
@@ -23492,10 +24352,10 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
         }
         await this.annotations.save(parsed);
         const counts = parsed;
-        new import_obsidian16.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${counts.excerpts.length} \u6458\u5F55, ${counts.bookmarks.length} \u4E66\u7B7E, ${counts.library.length} \u4E66)`);
+        new import_obsidian17.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${counts.excerpts.length} \u6458\u5F55, ${counts.bookmarks.length} \u4E66\u7B7E, ${counts.library.length} \u4E66)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        new import_obsidian16.Notice(`\u5BFC\u5165\u5931\u8D25: ${message}`);
+        new import_obsidian17.Notice(`\u5BFC\u5165\u5931\u8D25: ${message}`);
         console.error("[ez-reader] importData failed", error);
       }
     };
@@ -23504,7 +24364,7 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
 };
 
 // src/Plugin.ts
-var EzReaderPlugin = class extends import_obsidian18.Plugin {
+var EzReaderPlugin = class extends import_obsidian19.Plugin {
   bookSource;
   annotationStore;
   library;
@@ -23567,7 +24427,16 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
     this.translation = new TranslationCoordinator(this.annotationStore, [
       new YoudaoTranslationProvider(),
       new DeeplTranslationProvider(),
-      new GoogleTranslationProvider()
+      new GoogleTranslationProvider(),
+      // P2: 免费无 key provider — 给不想注册信用卡/有道那种付费账户的用户。
+      // 每天每个 IP 1 万字符,质量略低于 DeepL/Google 但够用。
+      new MyMemoryTranslationProvider(),
+      // P2: 用户自定义 LLM (OpenAI 兼容) — DeepSeek / 智谱 / 通义 / OpenAI
+      // 都走同一接口, 在 settings 里填 baseUrl + apiKey + model 即可.
+      new OpenAICompatibleTranslationProvider(),
+      // P2: 用户自定义 LLM (Anthropic Messages API 兼容) — MiniMax 等。
+      // 注意是 /v1/messages 不是 /chat/completions, 鉴权走 x-api-key 头.
+      new AnthropicCompatibleTranslationProvider()
     ]);
     this.annotationStore.onSettingsChanged(() => this.translation.invalidate());
     this.covers = new CoverCache(
@@ -23586,7 +24455,14 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
     this.app.workspace.onLayoutReady(async () => {
       await this.library.initialize();
       await this.covers.hydrateCovers();
+      await this.attachOverlaysToOpenLibraryPdfs();
     });
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (!leaf || leaf.view.getViewType() !== "pdf") return;
+        void this.attachOverlayToPdfLeafIfLibraryBook(leaf);
+      })
+    );
     this.addSettingTab(new SettingsTab(this.app, this, this.annotationStore, this.translation.listProviders()));
     this.registerView(
       SHELF_VIEW_TYPE,
@@ -23691,7 +24567,7 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
     if (!bookId) return;
     const entry = this.library.get(bookId);
     if (!entry) {
-      new import_obsidian18.Notice(`\u627E\u4E0D\u5230\u4E66: ${bookId}`);
+      new import_obsidian19.Notice(`\u627E\u4E0D\u5230\u4E66: ${bookId}`);
       return;
     }
     const isPdf = entry.book.locator.format === "pdf";
@@ -23730,7 +24606,7 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian18.Notice(`\u65E0\u6CD5\u6253\u5F00\u7B14\u8BB0\u94FE\u63A5: ${message}`);
+      new import_obsidian19.Notice(`\u65E0\u6CD5\u6253\u5F00\u7B14\u8BB0\u94FE\u63A5: ${message}`);
       console.error("[ez-reader] handleProtocol failed", { bookId, excerptId, error });
     }
   }
@@ -23820,7 +24696,7 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
   makeBookBytesLoader() {
     return async (path) => {
       const file = this.app.vault.getAbstractFileByPath(path);
-      if (!(file instanceof import_obsidian18.TFile)) {
+      if (!(file instanceof import_obsidian19.TFile)) {
         throw new Error(`Book file not found: ${path}`);
       }
       return this.app.vault.readBinary(file);
@@ -23862,8 +24738,8 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
    */
   async openInBuiltInViewer(entry) {
     const file = this.app.vault.getAbstractFileByPath(entry.book.locator.path);
-    if (!(file instanceof import_obsidian18.TFile)) {
-      new import_obsidian18.Notice(`\u627E\u4E0D\u5230\u6587\u4EF6: ${entry.book.locator.path}`);
+    if (!(file instanceof import_obsidian19.TFile)) {
+      new import_obsidian19.Notice(`\u627E\u4E0D\u5230\u6587\u4EF6: ${entry.book.locator.path}`);
       return;
     }
     await this.app.workspace.openLinkText(file.path, "", true);
@@ -23874,12 +24750,35 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
       return view.file?.path === file.path;
     }) ?? this.app.workspace.getMostRecentLeaf();
     if (!target) return;
+    await this.attachOverlayToPdfLeafIfLibraryBook(target);
+  }
+  /**
+   * 给已存在的 PDF leaf 挂 overlay, 当且仅当:
+   *   1. 该 leaf 还没挂过 (WeakMap ATTACHED 查不到)
+   *   2. 该 leaf 里的 PDF 文件路径在书架里 (LibraryService.list() 能找到)
+   *
+   * 第二条故意收窄 — 我们不想让插件给 vault 里每一个随机 PDF 都塞选词菜单 /
+   * 翻译弹窗 / 笔记侧栏按钮, 用户的心智模型是「EzReader 只管书架里的书」。
+   * 想读 vault 里的其他 PDF, 先加到书架再开。
+   *
+   * 三处 caller 共用:
+   *   1. `openInBuiltInViewer` — 从书架打开
+   *   2. `attachOverlaysToOpenLibraryPdfs` — onLayoutReady 时扫一遍已打开 leaf
+   *   3. `active-leaf-change` listener — 用户从书架外点开 PDF 时兜底
+   */
+  async attachOverlayToPdfLeafIfLibraryBook(leaf) {
+    const { findPdfOverlayForLeaf: findPdfOverlayForLeaf2, PdfOverlay: PdfOverlay2 } = await Promise.resolve().then(() => (init_pdfOverlay(), pdfOverlay_exports));
+    if (findPdfOverlayForLeaf2(leaf)) return;
+    const view = leaf.view;
+    const filePath = view.file?.path;
+    if (!filePath) return;
+    const entry = this.library.list().find((e3) => e3.book.locator.path === filePath);
+    if (!entry) return;
     try {
-      const { PdfOverlay: PdfOverlay2 } = await Promise.resolve().then(() => (init_pdfOverlay(), pdfOverlay_exports));
       const overlay = new PdfOverlay2({
         app: this.app,
-        pdfLeaf: target,
-        bookPath: entry.book.locator.path,
+        pdfLeaf: leaf,
+        bookPath: filePath,
         reading: this.reading,
         translation: this.translation,
         library: this.library,
@@ -23889,6 +24788,17 @@ var EzReaderPlugin = class extends import_obsidian18.Plugin {
       overlay.mount();
     } catch (error) {
       console.warn("[ez-reader] failed to attach PdfOverlay", error);
+    }
+  }
+  /**
+   * 扫描当前 workspace 里所有 PDF leaf, 给书架里的 PDF 补挂 overlay.
+   * 主要场景: Obsidian 重启后自动恢复上次打开的 PDF leaf, 但 overlay 没存
+   * 盘, 只能重建.
+   */
+  async attachOverlaysToOpenLibraryPdfs() {
+    const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
+    for (const leaf of pdfLeaves) {
+      await this.attachOverlayToPdfLeafIfLibraryBook(leaf);
     }
   }
   /** Removed openPicker — 跟"打开个人图书馆"功能重叠, ribbon 上不需要第二个入口. */
