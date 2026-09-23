@@ -34,8 +34,8 @@ const next_settings = (raw: unknown): Record<string, unknown> => {
       twoPages: false,
       immersive: false
     },
-    notesDirectory: "zz_阅读与研究/阅读笔记",
-    researchDirectory: "zz_阅读与研究/主题研究",
+    notesDirectory: "ezreader-notes/阅读笔记",
+    researchDirectory: "ezreader-notes/主题研究",
     libraryOwnerName: "",
     defaultNoteTemplate: "# {{title}}\n",
     readerOpenMode: "tab",

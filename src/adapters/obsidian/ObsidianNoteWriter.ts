@@ -44,7 +44,7 @@ export class ObsidianNoteWriter implements NoteWriter {
     if (cached) return cached;
 
     const settings = await this.annotations.listSettings();
-    const baseDir = sanitizeDir(settings.notesDirectory || "zz_阅读与研究/阅读笔记");
+    const baseDir = sanitizeDir(settings.notesDirectory || "ezreader-notes/阅读笔记");
     await this.ensureDirectory(baseDir);
 
     const safeTitle = sanitizeFileBase(input.bookTitle || input.bookPath.split("/").pop() || input.bookId);

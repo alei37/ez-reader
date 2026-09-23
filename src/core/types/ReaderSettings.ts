@@ -153,8 +153,11 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = Object.freeze({
   uiLocale: "zh-CN",
   translation: null,
   defaultAppearance: DEFAULT_READER_APPEARANCE,
-  notesDirectory: "zz_阅读与研究/阅读笔记",
-  researchDirectory: "zz_阅读与研究/主题研究",
+  // 默认放在 vault 顶层一个统一目录 `ezreader-notes/` 下,两
+  // 个子目录分别存摘录笔记和主题研究。ObsidianNoteWriter
+  // 在第一次写笔记时会递归创建路径, 用户无需手动 mkdir.
+  notesDirectory: "ezreader-notes/阅读笔记",
+  researchDirectory: "ezreader-notes/主题研究",
   libraryOwnerName: "",
   defaultNoteTemplate: "# {{title}}\n",
   readerOpenMode: "tab",
