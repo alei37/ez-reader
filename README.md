@@ -11,7 +11,7 @@ EzReader is an Obsidian community plugin that turns your Vault into a personal l
 - **WeRead / Apple Books feel** — theme, font, and line-height controls, page-turn animation, touch swipe, keyboard navigation, floating selection menu.
 - **Quick actions** — `H` to highlight + save excerpt, `B` to add a bookmark, `S` for the notes sidebar, `T` for the TOC, `← / →` for page navigation, `Esc` to close panels.
 - **Markdown-native annotations** — bookmarks, excerpts, and thoughts are stored as `.md` files inside your Vault. They double-link with your other notes naturally.
-- **Translation drawer** — Youdao / DeepL / Google. Long translations live in a 50vh scrollable drawer with a copy button.
+- **Translation drawer** — Youdao / DeepL / Google Cloud / **MyMemory** (free, no signup) / **OpenAI 兼容** (DeepSeek / 智谱 / 通义 / OpenAI) / **Anthropic 兼容** (MiniMax). EPUB/TXT/MOBI translations live in a 50vh scrollable drawer; PDF translations live in a **floating popover anchored to the selection**, with copy / 换语言重译 buttons and a draggable header.
 - **Keyboard shortcut help** — press `?` inside the reader to see every shortcut grouped by category, including the `prev / next / sidebar / toc / translate / highlight` bindings you have customized.
 - **Mobile-friendly** — `isDesktopOnly: false`. Tested on Android via Syncthing; works on iOS via Obsidian Sync.
 
@@ -73,7 +73,7 @@ EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图�
                           │  选 想法 / 摘录
                           ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│ zz_阅读与研究/阅读笔记/小王子-abcd1234.md                            │
+│ ezreader-notes/阅读笔记/小王子-abcd1234.md                          │
 │ ---                                                                  │
 │ title: "小王子"                                                       │
 │ ez-reader: /books/le-petit-prince.epub                                │
@@ -131,10 +131,12 @@ EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图�
 
 - **渲染**:PDF 文件交给 Obsidian 自带 `pdf` view 处理 (标准 Markdown 链接 `[[path.pdf]]` 走这条路);可与 [obsidian-pdf-plus](https://github.com/RyotaUshio/obsidian-pdf-plus) 等增强插件并存。
 - **EzReader 浮层 (PdfOverlay)**:透明挂在 PDFView 上,提供
-  - 选词菜单:翻译 / 摘录 / 复制
+  - 选词菜单:翻译 / 摘录 / 复制 / 想法
+  - **翻译浮动小弹窗**(替代之前 10 秒自动消失的 `Notice` toast):锚定到选词 rect 附近,带原文 / 译文 / provider 元信息,内嵌 [复制] / [换语言重译] / × 按钮,header 可拖拽移动位置;点空白处或 Esc 关闭
   - 浮动 `📝` 按钮 → 笔记侧栏 (书签 / 摘录列表,可跳转原文位置)
   - 高亮回显:重新打开 PDF 时按页 + 文本匹配自动画黄色高亮 div (text-anchor 算法,多行 / 多 word 全画)
 - **跨页选区**:本版本仍按页分别保存;跨页选区按可见页分别高亮。
+- **PDF leaf 自动接管**:Obsidian 重启时自动恢复上次打开的 PDF leaf,`PdfOverlay` 会在 `onLayoutReady` 时扫描所有已打开的 PDF 给书架里的 PDF 补挂 overlay;从书架外(反向链接 / 全局搜索 / 文件浏览器)点开的 PDF 也会被 `active-leaf-change` listener 兜底挂上。
 
 #### TXT / MOBI / AZW3 (PagedTextSession)
 
@@ -197,12 +199,15 @@ EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图�
 
 ### 4. 翻译一个生词
 
-**做**: 划词 → 选 [翻译] → 抽屉滑出译文。
+**做**: 划词 → 选 [翻译] → 弹出译文。
 
-1. 先在 Settings → EzReader → 翻译 选 provider 并填 API key(详见 [## 翻译](#翻译))。没填时按钮直接抛错,这是设计。
+1. 先在 Settings → EzReader → 翻译 选 provider 并填配置(详见 [## 翻译](#翻译))。没填时按钮直接抛错,这是设计。
 2. 选中一个词或短语 → 180ms 后选 [翻译]。
-3. 屏幕右侧(或下方,看 viewport)滑出一个抽屉,里面是译文。`max-height: 50vh`,长译文不会撑出屏幕。
-4. 点抽屉里的 [复制] 把译文拷到剪贴板(按钮短暂变 ✓ 已复制,1.5s 后还原)。
+3. **EPUB / TXT / MOBI**:屏幕右侧滑出一个抽屉,里面是译文。`max-height: 50vh`,长译文不会撑出屏幕。
+4. **PDF**:选词附近浮出一个小弹窗(不挤压 PDF 页面),原文在上(斜体灰)+ 译文在下(主)+ provider 元信息(`检测到 en · youdao · → zh-CN`)。
+5. 点 [复制] 把译文拷到剪贴板(按钮短暂变 ✓ 已复制,1.5s 后还原)。
+6. **PDF 弹窗可以拖拽** — 按 header(避开 × 按钮)拖到任意位置,边界自动 clamp 到视口内不拖丢;点空白处或 × 或按 Esc 关闭。
+7. **PDF 弹窗 [换语言重译]** 按钮按一次循环目标语言(`zh-CN → en → ja → ko → fr → de → zh-CN`)。换完自动重翻译。
 
 **注意**: 翻译是**唯一**会出 vault 的网络功能,只在用户主动按按钮时发生;只发选中的片段,不发文件 / 上下文 / user id。详见 [PRIVACY.md](PRIVACY.md)。
 
@@ -242,11 +247,30 @@ EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图�
 **做**: Settings → EzReader → 翻译 → 选 provider → 填 API key。
 
 1. Settings → Community plugins → EzReader 右侧齿轮 → 翻译 section。
-2. 翻译服务下拉选 `有道智云` / `DeepL` / `Google Translate (Cloud v3)` 之一;选 `关闭` 表示不启用翻译。
-3. 填 API key(各 provider 自己的申请流程,链接在 settings 页内);key 存在本地 `data.json`,只发给对应 provider 的鉴权端点。
-4. 目标语言默认 `zh-CN`,可改。
+2. 翻译服务下拉选其中一个 provider;选 `关闭` 表示不启用翻译。
+3. 根据 provider 类型填字段(字段布局按 provider 自动切换):
+   - **有道智云** — 两个 password 字段分别填「应用 ID (appKey)」和「应用密钥 (appSecret)」(底层 JSON 合并,不要手工拼 JSON)
+   - **DeepL** — 一个 password 字段,粘贴 Pro/Free Authentication Key(以 `:fx` 结尾是 Free 版)
+   - **Google Cloud Translation v3** — 一个 password 字段,粘贴 service account JSON 完整内容
+   - **MyMemory (免费, 无需注册)** — 不需要任何 key,选了就直接能用,每天每个 IP 1 万字符
+   - **自定义 LLM (OpenAI 兼容)** — 三个字段: API 基础地址 / API Key / 模型名(底部示例列出 DeepSeek / 智谱 GLM / 通义千问 / OpenAI 的具体配置)
+   - **自定义 LLM (Anthropic 兼容)** — 三个字段同上,适合 MiniMax(`https://api.minimax.cn/anthropic`)等 Anthropic Messages API 兼容服务
+4. 切 provider 会自动清掉旧 key(各 provider 格式不通用),不会留下脏数据。
+5. 目标语言默认 `zh-CN`,可改。
 
 **结果**: 选词菜单的 [翻译] 按钮立即可用。改 provider / key 会在 30s 内生效(translate 有 cache,settings 改动立即 bust)。
+
+**免费选项对照:**
+
+| Provider | 免费额度 | 需要 key |
+|---|---|---|
+| 有道智云 | 100 字符/月 (≈ 0) | ✅ appKey + appSecret |
+| DeepL Free | 50 万字符/月 | ✅ (`:fx` 结尾) |
+| Google Cloud Translation v3 | 50 万字符/月 | ✅ service account JSON + 绑卡 |
+| **MyMemory** | 1 万字符/IP/日 | ❌ 无需任何 key |
+| 自定义 LLM | 看你账户余额 | ✅ |
+
+> 真"零注册、零绑卡"路径:MyMemory(质量略差) 或 自定义 LLM(用自己的 key)。
 
 ## 键盘快捷键
 
@@ -275,16 +299,24 @@ EzReader 是一款 Obsidian 社区市场插件,把 Vault 本身变成个人图�
 
 唯一会发网络请求的功能,且只在用户明确点击 "翻译" 时触发。详细边界见 [PRIVACY.md](PRIVACY.md)。
 
-- **默认关闭** — 没填 API key 时 `translate` 直接抛错。
+- **默认关闭** — 没填配置时 `translate` 直接抛错(MyMemory 除外,它是公共 API 不需要 key)。
 - **只发选中的片段** — 不发文件、不发上下文、不发 user identifier。
-- **Key 存在本地** `<Vault>/.obsidian/plugins/ez-reader/data.json`,只发给对应 provider 的鉴权端点。
-- **多个 provider 可配置**:
-  - **有道翻译** (有道智云)
-  - **DeepL**
-  - **Google Cloud Translation v3**
+- **配置存在本地** `<Vault>/.obsidian/plugins/ez-reader/data.json`,只发给对应 provider 的鉴权端点。
+- **网络层用 Obsidian 的 `requestUrl`** — 绕过渲染端 CSP,`fetch()` 在 Obsidian 插件里会被拦截。
+- **六个 provider 可配置**:
+
+| Provider | 类型 | 需要 key | 免费额度 | 备注 |
+|---|---|---|---|---|
+| **有道智云** | 商用 API | appKey + appSecret | 100 字符/月 | 国内访问稳 |
+| **DeepL** | 商用 API | API Key (`:fx` 结尾是 Free 版) | 50 万字符/月 (Free) | 质量高 |
+| **Google Cloud Translation v3** | 商用 API | Service Account JSON | 50 万字符/月 | 需绑卡 |
+| **MyMemory** | 公共免费 API | ❌ 无需 | 1 万字符/IP/日 | 真零注册,质量略低 |
+| **自定义 LLM (OpenAI 兼容)** | 你的 key | baseUrl + API Key + model | 看你账户 | DeepSeek / 智谱 / 通义 / OpenAI |
+| **自定义 LLM (Anthropic 兼容)** | 你的 key | baseUrl + API Key + model | 看你账户 | MiniMax 等 Anthropic 兼容端点 |
+
 - **目标语言** 从 settings 读取,默认 `zh-CN`。
 
-填 key 切换 provider / 改目标语言 → 下一次翻译立即生效 (settings 改动会立刻 bust translation cache)。
+切 provider 会清空旧 key(各 provider 配置格式不通用,留着只会误导)。改完配置 → 下一次翻译立即生效 (settings 改动会立刻 bust translation cache)。
 
 ## 平台支持
 
@@ -315,7 +347,7 @@ adapters/     (Obsidian / foliate / mobi-parser 具体实现)
    ├─ obsidian/    ObsidianBookSource, ObsidianAnnotationStore, CoverCache, ObsidianNoteWriter
    ├─ foliate/     FoliateBookReader (EPUB)
    ├─ text/        TxtBookReader (TXT) + MobiBookReader (MOBI/AZW3) + PagedTextSession (共享 session)
-   └─ translation/ YoudaoTranslationProvider, DeeplTranslationProvider, GoogleTranslationProvider, BaseTranslationProvider
+   └─ translation/ YoudaoTranslationProvider, DeeplTranslationProvider, GoogleTranslationProvider, MyMemoryTranslationProvider, OpenAICompatibleTranslationProvider, AnthropicCompatibleTranslationProvider, BaseTranslationProvider
 
 ui/           (DOM 渲染,用户交互)
    ├─ shelf/       ShelfView, ShelfToolbar, ShelfFilters, AddToLibraryModal, OnboardingModal
@@ -340,6 +372,7 @@ Plugin.ts     (装配所有依赖)
 - 状态、书签、摘录、收藏、置顶、进度、设置、首次加入时间、首次打开封面缓存索引,都存在 `<Vault>/.obsidian/plugins/ez-reader/data.json`。
 - 封面图片缓存到 `<Vault>/.obsidian/plugins/ez-reader/data/covers/`,删除不影响阅读数据 (下次打开书时重新抽取)。
 - Per-book markdown 笔记写到用户配置的 `notesDirectory`,带 Obsidian 块 ID 可双向链接。
+- 默认两个目录都在 vault 根的 `ezreader-notes/` 下(`ezreader-notes/阅读笔记` 存摘录,`ezreader-notes/主题研究` 存主题),用户首次保存摘录时由 `ObsidianNoteWriter.ensureDirectory` 递归创建,无需手工 mkdir。
 - 翻译是唯一会出 vault 的网络动作,只在用户主动触发时发生。
 
 ## 已知边界
