@@ -171,7 +171,7 @@ export class ReaderToolbar {
     });
     this.fractionInput.addEventListener("pointerdown", () => {
       this.isDragging = true;
-      globalThis.setTimeout(() => {
+      window.setTimeout(() => {
         // 兜底: pointerup 没收到 (例如在 input 边缘拖出) 时强制重置,
         // 否则 relocate 回写会一直被这个 flag 挡住.
         this.isDragging = false;

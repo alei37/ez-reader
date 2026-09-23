@@ -68,7 +68,7 @@ export class BookmarkModal extends Modal {
       preview.createEl("blockquote", { text: this.context.preview });
     }
 
-    const inputLabel = contentEl.createEl("p", { text: "书签名称 (可改):", cls: "ez-reader__bookmark-modal__label" });
+    contentEl.createEl("p", { text: "书签名称 (可改):", cls: "ez-reader__bookmark-modal__label" });
     const input = contentEl.createEl("input", { attr: { type: "text" } });
     input.value = this.fallbackLabel;
     input.addClass("ez-reader__bookmark-input");

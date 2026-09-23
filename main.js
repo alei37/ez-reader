@@ -12192,7 +12192,7 @@ var init_ShortcutHelpModal = __esm({
         const { contentEl } = this;
         contentEl.empty();
         contentEl.createEl("h2", { text: "EzReader \u5FEB\u6377\u952E" });
-        const intro = contentEl.createEl("p", {
+        contentEl.createEl("p", {
           text: "\u5728\u9605\u8BFB\u5668\u5185\u76F4\u63A5\u6309\u4EE5\u4E0B\u952E(\u65E0\u9700 Ctrl/Cmd)\u3002\u6309 Esc \u5173\u95ED\u6B64\u9762\u677F\u3002",
           cls: "ez-reader__shortcut-help__intro"
         });
@@ -12322,7 +12322,7 @@ var init_BookmarkModal = __esm({
           const preview = contextBox.createDiv({ cls: "ez-reader__bookmark-modal__preview" });
           preview.createEl("blockquote", { text: this.context.preview });
         }
-        const inputLabel = contentEl.createEl("p", { text: "\u4E66\u7B7E\u540D\u79F0 (\u53EF\u6539):", cls: "ez-reader__bookmark-modal__label" });
+        contentEl.createEl("p", { text: "\u4E66\u7B7E\u540D\u79F0 (\u53EF\u6539):", cls: "ez-reader__bookmark-modal__label" });
         const input = contentEl.createEl("input", { attr: { type: "text" } });
         input.value = this.fallbackLabel;
         input.addClass("ez-reader__bookmark-input");
@@ -12547,7 +12547,7 @@ var init_pdfOverlay = __esm({
     init_selectionMenuPosition();
     PDF_VIEW_TYPE = "pdf";
     generateExcerptId2 = (prefix) => {
-      const uuid = globalThis.crypto?.randomUUID?.();
+      const uuid = window.crypto?.randomUUID?.();
       if (typeof uuid === "string" && uuid.length > 0) {
         return `${prefix}-${uuid}`;
       }
@@ -13254,7 +13254,7 @@ ${result.text}`, 1e4);
         if (!target) return;
         target.scrollIntoView({ behavior: "smooth", block: "center" });
         target.classList.add("ez-reader__pdf-overlay-row--focus");
-        globalThis.setTimeout(() => target.classList.remove("ez-reader__pdf-overlay-row--focus"), 1500);
+        window.setTimeout(() => target.classList.remove("ez-reader__pdf-overlay-row--focus"), 1500);
       }
     };
     cssEscapeAttr = (value) => value.replace(/(["\\\]])/g, "\\$1");
@@ -13649,16 +13649,16 @@ if (typeof ReadableStream !== "undefined" && typeof ReadableStream.prototype[Sym
     return iterator;
   };
 }
-if (typeof globalThis.structuredClone !== "function") {
+if (typeof window.structuredClone !== "function") {
   const jsonClone = (value) => JSON.parse(JSON.stringify(value));
-  Object.defineProperty(globalThis, "structuredClone", {
+  Object.defineProperty(window, "structuredClone", {
     value: jsonClone,
     writable: true,
     configurable: true
   });
 }
 var installSha1DigestFallback = () => {
-  const cryptoObj = globalThis.crypto;
+  const cryptoObj = window.crypto;
   if (cryptoObj && typeof cryptoObj.subtle?.digest === "function") return;
   const subtle = {
     async digest(algorithm, data) {
@@ -13681,7 +13681,7 @@ var installSha1DigestFallback = () => {
     }
   } else {
     try {
-      Object.defineProperty(globalThis, "crypto", {
+      Object.defineProperty(window, "crypto", {
         value: { subtle, getRandomValues: (a3) => a3 },
         configurable: true,
         writable: true
@@ -13694,12 +13694,12 @@ var installSha1DigestFallback = () => {
 installSha1DigestFallback();
 var collectPolyfillReport = () => {
   const checks = [
-    ["Object.groupBy", globalThis.Object?.groupBy],
-    ["Map.groupBy", globalThis.Map?.groupBy],
+    ["Object.groupBy", window.Object?.groupBy],
+    ["Map.groupBy", window.Map?.groupBy],
     ["Promise.withResolvers", Promise.withResolvers],
     ["ReadableStream[Symbol.asyncIterator]", typeof ReadableStream !== "undefined" && typeof ReadableStream.prototype[Symbol.asyncIterator] === "function"],
-    ["structuredClone", typeof globalThis.structuredClone === "function"],
-    ["crypto.subtle.digest", typeof globalThis.crypto?.subtle?.digest === "function"],
+    ["structuredClone", typeof window.structuredClone === "function"],
+    ["crypto.subtle.digest", typeof window.crypto?.subtle?.digest === "function"],
     ["ResizeObserver", typeof ResizeObserver !== "undefined"],
     ["Intl.Segmenter", typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"],
     ["customElements", typeof customElements !== "undefined"]
@@ -13792,7 +13792,7 @@ var CoverCache = class {
   raceWithTimeout(promise, ms, label) {
     return new Promise((resolve) => {
       let settled = false;
-      const timer = globalThis.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (settled) return;
         settled = true;
         console.warn(`[ez-reader] ${label} exceeded ${ms}ms \u2014 abandoning`);
@@ -13802,13 +13802,13 @@ var CoverCache = class {
         (value) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           resolve(value);
         },
         (error) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           console.warn(`[ez-reader] ${label} rejected`, error);
           resolve(void 0);
         }
@@ -15335,7 +15335,7 @@ var FoliateSession = class {
       const headObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
           for (const node of Array.from(mutation.addedNodes)) {
-            if (node instanceof HTMLLinkElement || node instanceof HTMLStyleElement) {
+            if (node instanceof HTMLElement && (node.instanceOf(HTMLLinkElement) || node.instanceOf(HTMLStyleElement))) {
               scanAll(node);
             }
           }
@@ -16121,10 +16121,8 @@ var sanitizeAttrs = (rawAttrs) => {
   const attrRegex = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*("([^"]*)"|'([^']*)'))?/g;
   let result = "";
   let cursor = 0;
-  let matched = false;
   let m3;
   while ((m3 = attrRegex.exec(rawAttrs)) !== null) {
-    matched = true;
     if (m3.index !== cursor) {
       const gap = rawAttrs.slice(cursor, m3.index);
       if (/\S/.test(gap)) return null;
@@ -17916,7 +17914,7 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
     setActionsBusy(true);
     let timedOut = false;
     const timeoutMs = 3e4;
-    const timeoutHandle = globalThis.setTimeout(() => {
+    const timeoutHandle = window.setTimeout(() => {
       timedOut = true;
       console.error(`[ez-reader] confirmSelection timed out after ${timeoutMs}ms \u2014 closing modal forcibly`);
     }, timeoutMs);
@@ -17927,9 +17925,6 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
         "confirmSelection.addToLibrary"
       );
       if (timedOut) throw new Error("addToLibrary \u8D85\u65F6");
-      const fulfilled = (settled ?? []).filter(
-        (r3) => r3.status === "fulfilled"
-      );
       const rejected = (settled ?? []).filter(
         (r3) => r3.status === "rejected"
       );
@@ -17948,7 +17943,7 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
       new import_obsidian4.Notice(`\u52A0\u5165\u5931\u8D25: ${message}`);
       return;
     } finally {
-      globalThis.clearTimeout(timeoutHandle);
+      window.clearTimeout(timeoutHandle);
       setActionsBusy(false);
       this.close();
     }
@@ -17958,7 +17953,7 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
     setActionsBusy(true);
     let timedOut = false;
     const timeoutMs = 6e4;
-    const timeoutHandle = globalThis.setTimeout(() => {
+    const timeoutHandle = window.setTimeout(() => {
       timedOut = true;
       console.error(`[ez-reader] confirmAddAll timed out after ${timeoutMs}ms \u2014 closing modal forcibly`);
     }, timeoutMs);
@@ -17975,7 +17970,7 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
       new import_obsidian4.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
       return;
     } finally {
-      globalThis.clearTimeout(timeoutHandle);
+      window.clearTimeout(timeoutHandle);
       setActionsBusy(false);
       this.close();
     }
@@ -17988,7 +17983,7 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
   raceWithTimeout(promise, ms, label) {
     return new Promise((resolve) => {
       let resolved = false;
-      const timer = globalThis.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (resolved) return;
         console.warn(`[ez-reader] ${label} exceeded ${ms}ms \u2014 leaving promise pending`);
         resolve(void 0);
@@ -17997,13 +17992,13 @@ var AddToLibraryModal = class extends import_obsidian4.Modal {
         (value) => {
           if (resolved) return;
           resolved = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           resolve(value);
         },
         (error) => {
           if (resolved) return;
           resolved = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           console.warn(`[ez-reader] ${label} rejected`, error);
           resolve(void 0);
         }
@@ -18766,8 +18761,8 @@ var ShelfView = class extends import_obsidian7.ItemView {
   }
   refreshTimer;
   scheduleRefresh() {
-    if (this.refreshTimer !== void 0) globalThis.clearTimeout(this.refreshTimer);
-    this.refreshTimer = globalThis.setTimeout(() => {
+    if (this.refreshTimer !== void 0) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = void 0;
       this.renderRefresh();
     }, 100);
@@ -18776,8 +18771,8 @@ var ShelfView = class extends import_obsidian7.ItemView {
    *  最短延迟, 慢于这个就开始觉得"卡".  短于 150ms 反而像是抖动. */
   searchTimer;
   scheduleSearchRefresh() {
-    if (this.searchTimer !== void 0) globalThis.clearTimeout(this.searchTimer);
-    this.searchTimer = globalThis.setTimeout(() => {
+    if (this.searchTimer !== void 0) window.clearTimeout(this.searchTimer);
+    this.searchTimer = window.setTimeout(() => {
       this.searchTimer = void 0;
       this.renderRefresh();
     }, 150);
@@ -18788,11 +18783,11 @@ var ShelfView = class extends import_obsidian7.ItemView {
     this.settingsUnsubscribe?.();
     this.settingsUnsubscribe = void 0;
     if (this.refreshTimer !== void 0) {
-      globalThis.clearTimeout(this.refreshTimer);
+      window.clearTimeout(this.refreshTimer);
       this.refreshTimer = void 0;
     }
     if (this.searchTimer !== void 0) {
-      globalThis.clearTimeout(this.searchTimer);
+      window.clearTimeout(this.searchTimer);
       this.searchTimer = void 0;
     }
     this.clearPendingG();
@@ -18849,7 +18844,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
       if (key === "g") {
         event.preventDefault();
         this.clearPendingG();
-        this.pendingG = globalThis.setTimeout(() => {
+        this.pendingG = window.setTimeout(() => {
           this.pendingG = void 0;
           if (this.pendingGOnce) {
             document.removeEventListener("keydown", this.pendingGOnce, true);
@@ -18873,7 +18868,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
   /** Remove any in-flight `g g` timer and the matching capture-phase listener. */
   clearPendingG() {
     if (this.pendingG !== void 0) {
-      globalThis.clearTimeout(this.pendingG);
+      window.clearTimeout(this.pendingG);
       this.pendingG = void 0;
     }
     if (this.pendingGOnce) {
@@ -18963,7 +18958,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
     menu.addItem(
       (item) => item.setTitle("\u5728 Obsidian \u4E2D\u67E5\u770B").setIcon("file-text").onClick(() => {
         const file = this.deps.app.vault.getAbstractFileByPath(entry.book.locator.path);
-        if (file instanceof import_obsidian7.TFile) this.deps.app.workspace.openLinkText(file.path, "", true);
+        if (file instanceof import_obsidian7.TFile) void this.deps.app.workspace.openLinkText(file.path, "", true);
       })
     );
     menu.addSeparator();
@@ -19054,7 +19049,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
     this.toolbar.setAddAllBusy(true);
     let timedOut = false;
     const timeoutMs = 9e4;
-    const timeoutHandle = globalThis.setTimeout(() => {
+    const timeoutHandle = window.setTimeout(() => {
       timedOut = true;
       console.error(`[ez-reader] shelf addAllToLibrary timed out after ${timeoutMs}ms`);
     }, timeoutMs);
@@ -19074,10 +19069,10 @@ var ShelfView = class extends import_obsidian7.ItemView {
       const message = error instanceof Error ? error.message : String(error);
       new import_obsidian7.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
     } finally {
-      globalThis.clearTimeout(timeoutHandle);
+      window.clearTimeout(timeoutHandle);
       this.addingAll = false;
       if (timedOut) {
-        globalThis.setTimeout(() => this.toolbar.setAddAllBusy(false), 3e3);
+        window.setTimeout(() => this.toolbar.setAddAllBusy(false), 3e3);
       } else {
         this.toolbar.setAddAllBusy(false);
       }
@@ -19088,7 +19083,7 @@ var ShelfView = class extends import_obsidian7.ItemView {
   withTimeout(promise, ms, label) {
     return new Promise((resolve) => {
       let settled = false;
-      const timer = globalThis.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (settled) return;
         settled = true;
         console.warn(`[ez-reader] ${label} exceeded ${ms}ms \u2014 leaving promise pending`);
@@ -19098,13 +19093,13 @@ var ShelfView = class extends import_obsidian7.ItemView {
         (value) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           resolve(value);
         },
         (error) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           console.warn(`[ez-reader] ${label} rejected`, error);
           resolve(void 0);
         }
@@ -19447,7 +19442,6 @@ var BookmarksPanel = class {
     for (const bookmark of ordered) {
       const row = this.root.createDiv({ cls: "ez-reader__bookmark-row" });
       const contextLine = row.createDiv({ cls: "ez-reader__bookmark-row__context" });
-      const metaParts = [];
       if (bookmark.locator.chapter) {
         contextLine.createSpan({
           text: bookmark.locator.chapter,
@@ -19809,7 +19803,7 @@ var ReaderToolbar = class {
     });
     this.fractionInput.addEventListener("pointerdown", () => {
       this.isDragging = true;
-      globalThis.setTimeout(() => {
+      window.setTimeout(() => {
         this.isDragging = false;
       }, 5e3);
     });
@@ -20058,9 +20052,9 @@ var SearchBar = class {
     this.root.removeClass("is-hidden");
     this.input.value = this.currentQuery;
     if (this.focusTimer !== void 0) {
-      globalThis.clearTimeout(this.focusTimer);
+      window.clearTimeout(this.focusTimer);
     }
-    this.focusTimer = globalThis.setTimeout(() => {
+    this.focusTimer = window.setTimeout(() => {
       this.focusTimer = void 0;
       try {
         this.input.focus();
@@ -20084,7 +20078,7 @@ var SearchBar = class {
   }
   destroy() {
     if (this.focusTimer !== void 0) {
-      globalThis.clearTimeout(this.focusTimer);
+      window.clearTimeout(this.focusTimer);
       this.focusTimer = void 0;
     }
     document.removeEventListener("keydown", this.documentKeydown, true);
@@ -20129,11 +20123,11 @@ var SidebarNotesPanel = class {
    */
   dispose() {
     if (this.flashTimer !== void 0) {
-      globalThis.clearTimeout(this.flashTimer);
+      window.clearTimeout(this.flashTimer);
       this.flashTimer = void 0;
     }
     if (this.searchTimer !== void 0) {
-      globalThis.clearTimeout(this.searchTimer);
+      window.clearTimeout(this.searchTimer);
       this.searchTimer = void 0;
     }
   }
@@ -20158,9 +20152,9 @@ var SidebarNotesPanel = class {
     this.flashId = excerptId;
     this.refreshFlashStyles();
     if (this.flashTimer !== void 0) {
-      globalThis.clearTimeout(this.flashTimer);
+      window.clearTimeout(this.flashTimer);
     }
-    this.flashTimer = globalThis.setTimeout(() => {
+    this.flashTimer = window.setTimeout(() => {
       this.flashId = null;
       this.refreshFlashStyles();
       this.flashTimer = void 0;
@@ -20244,9 +20238,9 @@ var SidebarNotesPanel = class {
       search2.value = this.query;
       search2.addEventListener("input", () => {
         if (this.searchTimer !== void 0) {
-          globalThis.clearTimeout(this.searchTimer);
+          window.clearTimeout(this.searchTimer);
         }
-        this.searchTimer = globalThis.setTimeout(() => {
+        this.searchTimer = window.setTimeout(() => {
           this.searchTimer = void 0;
           this.query = search2.value.trim().toLocaleLowerCase();
           this.renderList();
@@ -20326,7 +20320,7 @@ var SidebarNotesPanel = class {
           note.setAttribute("data-editing", "1");
           note.addClass("is-editing");
           note.focus();
-          const sel = globalThis.getSelection();
+          const sel = window.getSelection();
           if (sel) {
             const range = document.createRange();
             range.selectNodeContents(note);
@@ -21323,7 +21317,7 @@ var TranslationDrawer = class {
         try {
           await this.handlers.onCopy?.(translated);
           copyBtn.setText("\u2713 \u5DF2\u590D\u5236");
-          globalThis.setTimeout(() => copyBtn.setText("\u590D\u5236"), 1500);
+          window.setTimeout(() => copyBtn.setText("\u590D\u5236"), 1500);
         } catch (error) {
           console.warn("[ez-reader] copy translation failed", error);
         }
@@ -21473,7 +21467,7 @@ var createContentDelegate = (format, deps) => {
   }
 };
 var generateExcerptId = (prefix) => {
-  const uuid = globalThis.crypto?.randomUUID?.();
+  const uuid = window.crypto?.randomUUID?.();
   if (typeof uuid === "string" && uuid.length > 0) {
     return `${prefix}-${uuid}`;
   }
@@ -21500,7 +21494,7 @@ var locatorForNoteWriter = (pos) => {
   }
 };
 var maybeExpandChineseSelection = (raw) => {
-  const sel = globalThis.document.getSelection();
+  const sel = window.document.getSelection();
   const range = sel?.rangeCount ? sel.getRangeAt(0) : void 0;
   if (!range) return { text: raw };
   const container = range.commonAncestorContainer;
@@ -21753,14 +21747,14 @@ var ReaderView = class extends import_obsidian15.ItemView {
       this.session = void 0;
     }
     if (this.persistProgressTimer !== void 0) {
-      globalThis.clearTimeout(this.persistProgressTimer);
+      window.clearTimeout(this.persistProgressTimer);
       this.persistProgressTimer = void 0;
       const pending = this.persistProgressPending;
       this.persistProgressPending = void 0;
       if (pending) await this.persistProgress(pending.fraction, pending.locator);
     }
     if (this.persistVisitedTimer !== void 0) {
-      globalThis.clearTimeout(this.persistVisitedTimer);
+      window.clearTimeout(this.persistVisitedTimer);
       this.persistVisitedTimer = void 0;
       await this.flushVisited();
     }
@@ -21793,8 +21787,8 @@ var ReaderView = class extends import_obsidian15.ItemView {
           void this.openSession();
         }
       };
-      globalThis.requestAnimationFrame(tryOpen);
-      globalThis.setTimeout(tryOpen, 100);
+      window.requestAnimationFrame(tryOpen);
+      window.setTimeout(tryOpen, 100);
     }
   }
   /** Public entry point used by the obsidian:// protocol handler. */
@@ -21840,7 +21834,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
   currentSessionToken = 0;
   markReady() {
     if (this.readyFallbackTimer !== void 0) {
-      globalThis.clearTimeout(this.readyFallbackTimer);
+      window.clearTimeout(this.readyFallbackTimer);
       this.readyFallbackTimer = void 0;
     }
     if (this.readyResolve) this.readyResolve();
@@ -21855,7 +21849,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       this.readyPromise = new Promise((resolve) => {
         this.readyResolve = resolve;
       });
-      this.readyFallbackTimer = globalThis.setTimeout(() => {
+      this.readyFallbackTimer = window.setTimeout(() => {
         this.readyFallbackTimer = void 0;
         this.markReady();
       }, 3e4);
@@ -21870,8 +21864,8 @@ var ReaderView = class extends import_obsidian15.ItemView {
     const show = () => {
       const root = this.containerEl.children[1];
       root.addClass("is-toolbar-visible");
-      if (visibleTimer !== void 0) globalThis.clearTimeout(visibleTimer);
-      visibleTimer = globalThis.setTimeout(() => {
+      if (visibleTimer !== void 0) window.clearTimeout(visibleTimer);
+      visibleTimer = window.setTimeout(() => {
         if (this.isImmersive) root.removeClass("is-toolbar-visible");
       }, 2400);
     };
@@ -21906,7 +21900,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       this.host?.removeEventListener("touchstart", onTouchStart);
       this.host?.removeEventListener("touchend", onTouchEnd);
       this.host?.removeEventListener("mousemove", onMouseMove);
-      if (visibleTimer !== void 0) globalThis.clearTimeout(visibleTimer);
+      if (visibleTimer !== void 0) window.clearTimeout(visibleTimer);
     });
   }
   /**
@@ -22052,7 +22046,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
   }
   /** Copy current document selection to clipboard (Ctrl+C-style shortcut). */
   copyCurrentSelection() {
-    const sel = globalThis.document.getSelection();
+    const sel = window.document.getSelection();
     const text = sel?.toString() ?? "";
     if (!text) return;
     void this.copyTextToClipboard(text);
@@ -22251,7 +22245,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
     const offSelect = this.session.on("selection-change", (event) => {
       const detail = event.detail;
       if (!detail?.text) {
-        if (selectionDebounce !== void 0) globalThis.clearTimeout(selectionDebounce);
+        if (selectionDebounce !== void 0) window.clearTimeout(selectionDebounce);
         selectionDebounce = void 0;
         this.selectionMenu?.hide();
         return;
@@ -22260,7 +22254,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       const text = expanded.text;
       this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter, fraction: this.fraction };
       if (text !== detail.text) {
-        const sel = globalThis.document.getSelection();
+        const sel = window.document.getSelection();
         if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
           const range = sel.getRangeAt(0);
           const node = range.startContainer.parentNode;
@@ -22276,10 +22270,10 @@ var ReaderView = class extends import_obsidian15.ItemView {
           }
         }
       }
-      if (selectionDebounce !== void 0) globalThis.clearTimeout(selectionDebounce);
-      selectionDebounce = globalThis.setTimeout(() => {
+      if (selectionDebounce !== void 0) window.clearTimeout(selectionDebounce);
+      selectionDebounce = window.setTimeout(() => {
         selectionDebounce = void 0;
-        const sel = globalThis.document.getSelection();
+        const sel = window.document.getSelection();
         const range = sel?.rangeCount ? sel.getRangeAt(0) : void 0;
         const rect = range?.getBoundingClientRect() ?? detail.rect;
         const hostOffset = this.findSessionIframeOffset();
@@ -22287,8 +22281,8 @@ var ReaderView = class extends import_obsidian15.ItemView {
           this.selectionMenu?.show(rect, hostOffset);
         } else {
           const fallbackRect = new DOMRect(
-            globalThis.innerWidth / 2 - 100,
-            globalThis.innerHeight - 120,
+            window.innerWidth / 2 - 100,
+            window.innerHeight - 120,
             200,
             40
           );
@@ -22322,7 +22316,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
       offSelect();
       offLinkClick();
       if (selectionDebounce !== void 0) {
-        globalThis.clearTimeout(selectionDebounce);
+        window.clearTimeout(selectionDebounce);
         selectionDebounce = void 0;
       }
     };
@@ -22445,7 +22439,7 @@ var ReaderView = class extends import_obsidian15.ItemView {
   async goToNext(direction) {
     if (!this.session) return;
     this.selectionMenu?.hide();
-    const sel = globalThis.document.getSelection();
+    const sel = window.document.getSelection();
     if (sel && !sel.isCollapsed) sel.removeAllRanges();
     await this.session.goTo(direction === 1 ? { kind: "next" } : { kind: "previous" });
   }
@@ -22512,9 +22506,9 @@ var ReaderView = class extends import_obsidian15.ItemView {
     if (pending === void 0 || distance >= 0.01) {
       this.persistProgressPending = { fraction, locator };
       if (this.persistProgressTimer !== void 0) {
-        globalThis.clearTimeout(this.persistProgressTimer);
+        window.clearTimeout(this.persistProgressTimer);
       }
-      this.persistProgressTimer = globalThis.setTimeout(() => {
+      this.persistProgressTimer = window.setTimeout(() => {
         this.persistProgressTimer = void 0;
         const next = this.persistProgressPending;
         if (next) {
@@ -22573,9 +22567,9 @@ var ReaderView = class extends import_obsidian15.ItemView {
    */
   schedulePersistVisited() {
     if (this.persistVisitedTimer !== void 0) {
-      globalThis.clearTimeout(this.persistVisitedTimer);
+      window.clearTimeout(this.persistVisitedTimer);
     }
-    this.persistVisitedTimer = globalThis.setTimeout(() => {
+    this.persistVisitedTimer = window.setTimeout(() => {
       this.persistVisitedTimer = void 0;
       void this.flushVisited();
     }, 300);
@@ -23112,15 +23106,15 @@ var debounceAsync = (fn, ms = 300) => {
   const debounced = (...args) => {
     pendingArgs = args;
     hasPending = true;
-    if (timer !== void 0) clearTimeout(timer);
-    timer = setTimeout(() => void invoke(), ms);
+    if (timer !== void 0) window.clearTimeout(timer);
+    timer = window.setTimeout(() => void invoke(), ms);
   };
   debounced.flush = async () => {
-    if (timer !== void 0) clearTimeout(timer);
+    if (timer !== void 0) window.clearTimeout(timer);
     await invoke();
   };
   debounced.cancel = () => {
-    if (timer !== void 0) clearTimeout(timer);
+    if (timer !== void 0) window.clearTimeout(timer);
     timer = void 0;
     hasPending = false;
     pendingArgs = void 0;
@@ -23133,6 +23127,9 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
     this.annotations = annotations;
     this.providerMap = new Map(providers.map((p3) => [p3.id, p3]));
   }
+  // TODO(community-plugin-review): PluginSettingTab 建议实现 getSettingDefinitions()
+  // 以走 Obsidian 的声明式设置 API。当前我们手写 render() 路径,
+  // 重构成声明式是较大的改动 — 留作后续 P2 polish, 本次 lint 清理不改行为.
   providerMap;
   // Slider drag + continuous text input fire dozens of onChange per
   // second. Without debouncing they race against each other in IO. Each
@@ -23494,7 +23491,8 @@ var SettingsTab = class extends import_obsidian16.PluginSettingTab {
           throw new Error("library/reading/bookmarks/excerpts \u5FC5\u987B\u662F\u6570\u7EC4");
         }
         await this.annotations.save(parsed);
-        new import_obsidian16.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${parsed.excerpts.length} \u6458\u5F55, ${parsed.bookmarks.length} \u4E66\u7B7E, ${parsed.library.length} \u4E66)`);
+        const counts = parsed;
+        new import_obsidian16.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${counts.excerpts.length} \u6458\u5F55, ${counts.bookmarks.length} \u4E66\u7B7E, ${counts.library.length} \u4E66)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         new import_obsidian16.Notice(`\u5BFC\u5165\u5931\u8D25: ${message}`);

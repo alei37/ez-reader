@@ -142,7 +142,7 @@ export class TranslationDrawer {
         try {
           await this.handlers.onCopy?.(translated);
           copyBtn.setText("✓ 已复制");
-          globalThis.setTimeout(() => copyBtn.setText("复制"), 1500);
+          window.setTimeout(() => copyBtn.setText("复制"), 1500);
         } catch (error) {
           console.warn("[ez-reader] copy translation failed", error);
         }

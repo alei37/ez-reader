@@ -1,4 +1,4 @@
-import { type Book, type BookId, type BookLocator, type BookMetadata, READER_CAPABLE_FORMATS } from "../entities/Book";
+import { type Book, type BookId, type BookMetadata, READER_CAPABLE_FORMATS } from "../entities/Book";
 import type { ReadingState, ReadingStatus } from "../entities/ReadingState";
 import type { AnnotationStore } from "../ports/AnnotationStore";
 import type { BookSource } from "../ports/BookSource";
@@ -161,9 +161,11 @@ export class LibraryService {
     }
 
     const inLibrary = [...this.entries.values()].filter((entry) => entry.book.addedToLibraryAt !== null).length;
+    // eslint-disable-next-line no-console -- intentional startup diagnostic for first-time vault scan results
     console.info(`[ez-reader] Library scan: ${this.entries.size} book(s) discovered, ${inLibrary} in library.`);
     for (const entry of this.entries.values()) {
       const flag = entry.book.addedToLibraryAt !== null ? "+" : "-";
+      // eslint-disable-next-line no-console -- intentional startup diagnostic listing each discovered book
       console.info(`[ez-reader]   [${flag}] ${entry.book.locator.format.toUpperCase().padEnd(4)} ${entry.book.locator.path}`);
     }
 
@@ -318,7 +320,7 @@ export class LibraryService {
   private updateBook(bookId: string, patch: Partial<Book>): boolean {
     const entry = this.entries.get(bookId);
     if (!entry) return false;
-    const next = { ...entry.book, ...patch } as Book;
+    const next: Book = { ...entry.book, ...patch };
     // 不变量检查: bookId 必须保持.
     if (next.id !== bookId) {
       console.warn("[ez-reader] updateBook: bookId changed, ignoring", { from: bookId, to: next.id });

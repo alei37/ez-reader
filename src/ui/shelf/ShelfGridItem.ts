@@ -68,12 +68,12 @@ export const renderGridItem = (entry: LibraryEntry, handlers: ShelfItemHandlers,
     // 操作一步 (点 → 等菜单 → 点"已置顶"). 旧行为保留 — 调用方不传
     // onTogglePin 时退回 "弹右键菜单".
     const pin = cover.createDiv({ cls: "ez-reader__shelf-grid__pin", attr: { title: handlers.onTogglePin ? "点击取消置顶" : "已置顶 — 右键菜单可取消", "aria-label": "已置顶" }, text: "📌" });
-    pin.addEventListener("click", (event) => {
+    pin.addEventListener("click", (event: MouseEvent) => {
       event.stopPropagation();
       if (handlers.onTogglePin) {
         handlers.onTogglePin(entry);
       } else {
-        handlers.onContextMenu(entry, event as MouseEvent);
+        handlers.onContextMenu(entry, event);
       }
     });
   }

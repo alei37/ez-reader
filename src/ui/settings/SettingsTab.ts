@@ -41,7 +41,7 @@ const debounceAsync = <T extends unknown[]>(
   fn: (...args: T) => Promise<void>,
   ms = 300
 ): ((...args: T) => void) & { flush(): Promise<void>; cancel(): void } => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: number | undefined;
   let pendingArgs: T | undefined;
   let hasPending = false;
   const invoke = async (): Promise<void> => {
@@ -60,15 +60,15 @@ const debounceAsync = <T extends unknown[]>(
   const debounced = (...args: T): void => {
     pendingArgs = args;
     hasPending = true;
-    if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => void invoke(), ms);
+    if (timer !== undefined) window.clearTimeout(timer);
+    timer = window.setTimeout(() => void invoke(), ms);
   };
   debounced.flush = async (): Promise<void> => {
-    if (timer !== undefined) clearTimeout(timer);
+    if (timer !== undefined) window.clearTimeout(timer);
     await invoke();
   };
   debounced.cancel = (): void => {
-    if (timer !== undefined) clearTimeout(timer);
+    if (timer !== undefined) window.clearTimeout(timer);
     timer = undefined;
     hasPending = false;
     pendingArgs = undefined;
@@ -77,6 +77,9 @@ const debounceAsync = <T extends unknown[]>(
 };
 
 export class SettingsTab extends PluginSettingTab {
+  // TODO(community-plugin-review): PluginSettingTab 建议实现 getSettingDefinitions()
+  // 以走 Obsidian 的声明式设置 API。当前我们手写 render() 路径,
+  // 重构成声明式是较大的改动 — 留作后续 P2 polish, 本次 lint 清理不改行为.
   private readonly providerMap: Map<string, TranslationProvider>;
   // Slider drag + continuous text input fire dozens of onChange per
   // second. Without debouncing they race against each other in IO. Each
@@ -535,7 +538,8 @@ export class SettingsTab extends PluginSettingTab {
       if (!file) return;
       const text = await file.text();
       try {
-        const parsed = JSON.parse(text);
+        // JSON.parse returns unknown (typed as any here for ESLint compliance).
+        const parsed: Record<string, unknown> = JSON.parse(text);
         if (!parsed || typeof parsed !== "object") {
           throw new Error("文件不是合法 JSON 对象");
         }
@@ -550,8 +554,9 @@ export class SettingsTab extends PluginSettingTab {
             !Array.isArray(parsed.bookmarks) || !Array.isArray(parsed.excerpts)) {
           throw new Error("library/reading/bookmarks/excerpts 必须是数组");
         }
-        await this.annotations.save(parsed);
-        new Notice(`数据已导入 (${parsed.excerpts.length} 摘录, ${parsed.bookmarks.length} 书签, ${parsed.library.length} 书)`);
+        await this.annotations.save(parsed as never);
+        const counts = parsed as { excerpts: unknown[]; bookmarks: unknown[]; library: unknown[] };
+        new Notice(`数据已导入 (${counts.excerpts.length} 摘录, ${counts.bookmarks.length} 书签, ${counts.library.length} 书)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         new Notice(`导入失败: ${message}`);

@@ -226,7 +226,7 @@ export class FoliateBookReader implements BookReader {
       return {
         title,
         authors,
-        languages: languages as BookMetadata["languages"],
+        languages,
         publisher: typeof raw.publisher === "string" && raw.publisher.trim() ? raw.publisher.trim() : undefined,
         identifier: typeof raw.identifier === "string" && raw.identifier.trim() ? raw.identifier.trim() : undefined,
         description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined,
@@ -362,7 +362,7 @@ class FoliateSession implements ReaderSession {
     } else {
       this.view.removeAttribute("cols");
     }
-    const renderer = this.view.renderer as (HTMLElement & { setStyles?: (css: string) => void }) | undefined;
+    const renderer = this.view.renderer;
     renderer?.setStyles?.(buildAppearanceCss(appearance));
   }
 
@@ -522,7 +522,7 @@ class FoliateSession implements ReaderSession {
 
     if (fromStart) this.findCursor = 0;
     else this.findCursor = (this.findCursor + 1) % this.findMatches.length;
-    const target = this.findMatches[this.findCursor]!;
+    const target = this.findMatches[this.findCursor];
 
     // 跳到目标: 用 fraction = (sectionIndex / total) 即可, 用户视觉上
     // 看到的就是该 section。foliate 翻页后 updateUI 会自动 display 目标 section。
@@ -638,6 +638,7 @@ class FoliateSession implements ReaderSession {
           if (!href) return;
           if (link.dataset["ezReaderInlined"] === "1") return;
           link.dataset["ezReaderInlined"] = "1";
+          // eslint-disable-next-line no-restricted-globals -- fetches blob: URLs (foliate-js injects chapter CSS via blob: <link> elements that Obsidian's CSP blocks). requestUrl doesn't support blob: URLs, so the browser fetch is the only option.
           fetch(href)
             .then((response) => response.text())
             .then((cssText) => {
@@ -663,6 +664,7 @@ class FoliateSession implements ReaderSession {
           if (matches.length === 0) continue;
           if (style.dataset["ezReaderInlinedImports"] === "1") continue;
           style.dataset["ezReaderInlinedImports"] = "1";
+          // eslint-disable-next-line no-restricted-globals -- fetches blob: URLs referenced from @import "blob:..." inside <style> text (foliate-js rewrites @import url(...) to @import "blob:..."). requestUrl doesn't support blob: URLs.
           Promise.all(matches.map((m) => fetch(m[1]).then((r) => r.text())))
             .then((cssTexts) => {
               let newText = text;
@@ -686,7 +688,7 @@ class FoliateSession implements ReaderSession {
       const headObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
           for (const node of Array.from(mutation.addedNodes)) {
-            if (node instanceof HTMLLinkElement || node instanceof HTMLStyleElement) {
+            if (node instanceof HTMLElement && (node.instanceOf(HTMLLinkElement) || node.instanceOf(HTMLStyleElement))) {
               scanAll(node);
             }
           }

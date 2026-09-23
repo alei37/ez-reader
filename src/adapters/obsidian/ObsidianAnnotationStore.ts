@@ -87,7 +87,7 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   private async mutate(fn: () => Promise<AnnotationSnapshot>): Promise<void> {
     const next = this.writeChain.then(fn).then(async (snapshot) => {
       this.cache = snapshot;
-      await this.plugin.saveData(snapshot as unknown as Record<string, unknown>);
+      await this.plugin.saveData(snapshot);
     });
     // Keep the chain alive even on errors — next caller still runs.
     this.writeChain = next.then(
@@ -391,7 +391,7 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       const current = snapshot.addedAtByBookId ?? {};
       // Don't downgrade an existing timestamp — once a book is added, its
       // "first added" moment stays stable across reopens.
-      if (current[bookId] !== undefined && current[bookId]! <= addedAt) return snapshot;
+      if (current[bookId] !== undefined && current[bookId] <= addedAt) return snapshot;
       return { ...snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
     });
   }

@@ -119,7 +119,7 @@ interface ActiveSelection {
  * 冲突概率 (62^16 ≈ 4.7e28) 比桌面差但远低于 daily excerpt count.
  */
 const generateExcerptId = (prefix: "bm" | "ex" | "th"): string => {
-  const uuid = globalThis.crypto?.randomUUID?.();
+  const uuid = window.crypto?.randomUUID?.();
   if (typeof uuid === "string" && uuid.length > 0) {
     return `${prefix}-${uuid}`;
   }
@@ -171,7 +171,7 @@ const locatorForNoteWriter = (pos: ReadingPosition): {
  * don't accidentally swallow an entire paragraph.
  */
 const maybeExpandChineseSelection = (raw: string): { text: string } => {
-  const sel = globalThis.document.getSelection();
+  const sel = window.document.getSelection();
   const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
   if (!range) return { text: raw };
   const container = range.commonAncestorContainer;
@@ -287,7 +287,7 @@ export class ReaderView extends ItemView {
    * 配合 1% 距离阈值避免跨页定位 race (用户翻到第 N 页,debounce 期间又翻
    * 到 N+1,旧 timer 会写 N 的 fraction 覆盖 — 距离阈值让最后一次保留).
    */
-  private persistProgressTimer: ReturnType<typeof setTimeout> | undefined;
+  private persistProgressTimer: number | undefined;
   private persistProgressPending: { fraction: number; locator: string | undefined } | undefined;
   /**
    * P2: visited toc ids 持久化 debounce — 跟 progress 同样 300ms. 每次
@@ -295,7 +295,7 @@ export class ReaderView extends ItemView {
    * IO 会刷屏). 跟 progress 不共用 timer — 两件事独立, 一个延迟不影响
    * 另一个 flush.
    */
-  private persistVisitedTimer: ReturnType<typeof setTimeout> | undefined;
+  private persistVisitedTimer: number | undefined;
   /** 上次已 flush 的 visited ids 数组 — 避免重复写相同内容. */
   private persistVisitedLastSnapshot: ReadonlyArray<string> = [];
 
@@ -506,7 +506,7 @@ export class ReaderView extends ItemView {
     // 在关闭时被记住). flush 完清 pending, 让 onClose 之后即便 timer
     // 误 fire 也不写盘.
     if (this.persistProgressTimer !== undefined) {
-      globalThis.clearTimeout(this.persistProgressTimer);
+      window.clearTimeout(this.persistProgressTimer);
       this.persistProgressTimer = undefined;
       const pending = this.persistProgressPending;
       this.persistProgressPending = undefined;
@@ -516,7 +516,7 @@ export class ReaderView extends ItemView {
     // 还没写盘, 立即 flush. 防止 "刚翻的章节没保存 → 关 view → 重启
     // 丢失" 的边角 case.
     if (this.persistVisitedTimer !== undefined) {
-      globalThis.clearTimeout(this.persistVisitedTimer);
+      window.clearTimeout(this.persistVisitedTimer);
       this.persistVisitedTimer = undefined;
       await this.flushVisited();
     }
@@ -569,9 +569,9 @@ export class ReaderView extends ItemView {
           void this.openSession();
         }
       };
-      globalThis.requestAnimationFrame(tryOpen);
+      window.requestAnimationFrame(tryOpen);
       // 兜底: 100ms 后再试一次
-      globalThis.setTimeout(tryOpen, 100);
+      window.setTimeout(tryOpen, 100);
     }
   }
 
@@ -614,7 +614,7 @@ export class ReaderView extends ItemView {
   // P0-1 修复: 30s 兜底 timer 必须保存 handle, 在 markReady / onClose /
   // setEntry 时 clear. 之前 fire-and-forget, view 关闭后 timer 还持有 view
   // 引用直到 30s 后 fire, 反复开关书会累积僵尸 timer.
-  private readyFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+  private readyFallbackTimer: number | undefined;
   // P0-7 修复: setEntry 是 sync, 旧 session.close() 不能 fire-and-forget
   // (见 setEntry 注释). 这里存 promise 让后续 openSession / onClose await.
   private pendingClosePromise: Promise<void> | undefined;
@@ -626,7 +626,7 @@ export class ReaderView extends ItemView {
 
   private markReady(): void {
     if (this.readyFallbackTimer !== undefined) {
-      globalThis.clearTimeout(this.readyFallbackTimer);
+      window.clearTimeout(this.readyFallbackTimer);
       this.readyFallbackTimer = undefined;
     }
     if (this.readyResolve) this.readyResolve();
@@ -643,7 +643,7 @@ export class ReaderView extends ItemView {
         this.readyResolve = resolve;
       });
       // 兜底: 30 秒还没就绪就强制 resolve,避免永久挂起.
-      this.readyFallbackTimer = globalThis.setTimeout(() => {
+      this.readyFallbackTimer = window.setTimeout(() => {
         this.readyFallbackTimer = undefined;
         this.markReady();
       }, 30000);
@@ -655,13 +655,13 @@ export class ReaderView extends ItemView {
     if (!this.host) return;
     let lastTouchY = 0;
     let lastTouchX = 0;
-    let visibleTimer: ReturnType<typeof setTimeout> | undefined;
+    let visibleTimer: number | undefined;
 
     const show = () => {
       const root = this.containerEl.children[1] as HTMLElement;
       root.addClass("is-toolbar-visible");
-      if (visibleTimer !== undefined) globalThis.clearTimeout(visibleTimer);
-      visibleTimer = globalThis.setTimeout(() => {
+      if (visibleTimer !== undefined) window.clearTimeout(visibleTimer);
+      visibleTimer = window.setTimeout(() => {
         if (this.isImmersive) root.removeClass("is-toolbar-visible");
       }, 2400);
     };
@@ -706,7 +706,7 @@ export class ReaderView extends ItemView {
       this.host?.removeEventListener("touchstart", onTouchStart);
       this.host?.removeEventListener("touchend", onTouchEnd);
       this.host?.removeEventListener("mousemove", onMouseMove);
-      if (visibleTimer !== undefined) globalThis.clearTimeout(visibleTimer);
+      if (visibleTimer !== undefined) window.clearTimeout(visibleTimer);
     });
   }
 
@@ -876,7 +876,7 @@ export class ReaderView extends ItemView {
 
   /** Copy current document selection to clipboard (Ctrl+C-style shortcut). */
   private copyCurrentSelection(): void {
-    const sel = globalThis.document.getSelection();
+    const sel = window.document.getSelection();
     const text = sel?.toString() ?? "";
     if (!text) return;
     void this.copyTextToClipboard(text);
@@ -1128,11 +1128,11 @@ private async showFontSettings(): Promise<void> {
 
     // 防抖: selectionchange 在用户拖拽过程中多次触发, 我们延迟 180ms
     // 等待用户真正完成选词再弹菜单
-    let selectionDebounce: ReturnType<typeof setTimeout> | undefined;
+    let selectionDebounce: number | undefined;
     const offSelect = this.session.on("selection-change", (event) => {
       const detail = (event as CustomEvent<{ text: string; locator?: string; rect?: DOMRect }>).detail;
       if (!detail?.text) {
-        if (selectionDebounce !== undefined) globalThis.clearTimeout(selectionDebounce);
+        if (selectionDebounce !== undefined) window.clearTimeout(selectionDebounce);
         selectionDebounce = undefined;
         this.selectionMenu?.hide();
         return;
@@ -1144,7 +1144,7 @@ private async showFontSettings(): Promise<void> {
       this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter, fraction: this.fraction };
       // 同步扩展 DOM Selection, 让用户视觉上看到选词扩展了
       if (text !== detail.text) {
-        const sel = globalThis.document.getSelection();
+        const sel = window.document.getSelection();
         if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
           // 把 selection 替换成整段 expanded text — 通过设置 Range
           const range = sel.getRangeAt(0);
@@ -1161,10 +1161,10 @@ private async showFontSettings(): Promise<void> {
           }
         }
       }
-      if (selectionDebounce !== undefined) globalThis.clearTimeout(selectionDebounce);
-      selectionDebounce = globalThis.setTimeout(() => {
+      if (selectionDebounce !== undefined) window.clearTimeout(selectionDebounce);
+      selectionDebounce = window.setTimeout(() => {
         selectionDebounce = undefined;
-        const sel = globalThis.document.getSelection();
+        const sel = window.document.getSelection();
         const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
         const rect = range?.getBoundingClientRect() ?? detail.rect;
         // foliate 选词 rect 是 iframe-viewport 相对 — 找 iframe 在 host 里的
@@ -1175,8 +1175,8 @@ private async showFontSettings(): Promise<void> {
           this.selectionMenu?.show(rect, hostOffset);
         } else {
           const fallbackRect = new DOMRect(
-            globalThis.innerWidth / 2 - 100,
-            globalThis.innerHeight - 120,
+            window.innerWidth / 2 - 100,
+            window.innerHeight - 120,
             200,
             40
           );
@@ -1225,7 +1225,7 @@ private async showFontSettings(): Promise<void> {
       // 在已 detach 的 view 上调用 selectionMenu.show() (虽然 selectionMenu
       // 还活着但 host 已经 undefined, 会出错)
       if (selectionDebounce !== undefined) {
-        globalThis.clearTimeout(selectionDebounce);
+        window.clearTimeout(selectionDebounce);
         selectionDebounce = undefined;
       }
     };
@@ -1370,7 +1370,7 @@ private async showFontSettings(): Promise<void> {
     if (!this.session) return;
     // 翻页前清掉选区和菜单 — 否则 SelectionMenu 留在旧页面位置
     this.selectionMenu?.hide();
-    const sel = globalThis.document.getSelection();
+    const sel = window.document.getSelection();
     if (sel && !sel.isCollapsed) sel.removeAllRanges();
     // ReaderSession.goTo 自身支持 { kind: "next" | "previous" }, 不再走
     // 重复的 session.next() / session.previous() (port 上是 redundant).
@@ -1449,9 +1449,9 @@ private async showFontSettings(): Promise<void> {
       // 替换 pending, timer 重置 (300ms)
       this.persistProgressPending = { fraction, locator };
       if (this.persistProgressTimer !== undefined) {
-        globalThis.clearTimeout(this.persistProgressTimer);
+        window.clearTimeout(this.persistProgressTimer);
       }
-      this.persistProgressTimer = globalThis.setTimeout(() => {
+      this.persistProgressTimer = window.setTimeout(() => {
         this.persistProgressTimer = undefined;
         const next = this.persistProgressPending;
         if (next) {
@@ -1518,9 +1518,9 @@ private async showFontSettings(): Promise<void> {
    */
   private schedulePersistVisited(): void {
     if (this.persistVisitedTimer !== undefined) {
-      globalThis.clearTimeout(this.persistVisitedTimer);
+      window.clearTimeout(this.persistVisitedTimer);
     }
-    this.persistVisitedTimer = globalThis.setTimeout(() => {
+    this.persistVisitedTimer = window.setTimeout(() => {
       this.persistVisitedTimer = undefined;
       void this.flushVisited();
     }, 300);

@@ -24,7 +24,7 @@ export class ShortcutHelpModal extends Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "EzReader 快捷键" });
 
-    const intro = contentEl.createEl("p", {
+    contentEl.createEl("p", {
       text: "在阅读器内直接按以下键(无需 Ctrl/Cmd)。按 Esc 关闭此面板。",
       cls: "ez-reader__shortcut-help__intro"
     });

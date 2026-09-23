@@ -69,7 +69,6 @@ export class BookmarksPanel {
       const row = this.root.createDiv({ cls: "ez-reader__bookmark-row" });
       // 上下文 (chapter + percentage + 时间) — 让用户知道是哪个位置的书签
       const contextLine = row.createDiv({ cls: "ez-reader__bookmark-row__context" });
-      const metaParts: string[] = [];
       if (bookmark.locator.chapter) {
         contextLine.createSpan({
           text: bookmark.locator.chapter,

@@ -1,4 +1,4 @@
-import { TFile, normalizePath, type App } from "obsidian";
+import { normalizePath, type App } from "obsidian";
 import type { Plugin } from "obsidian";
 import type { Book, BookFormat } from "../../core/entities/Book";
 import type { BookReader } from "../../core/ports/BookReader";
@@ -94,6 +94,7 @@ export class CoverCache {
           `extractCover(${book.locator.format})`
         );
       } catch (error) {
+        // eslint-disable-next-line no-console -- intentional: surfaces reader.extractCover failures with format + path so the user can identify the broken file
         console.warn(`[ez-reader] extractCover failed for ${book.locator.format} ${book.locator.path}`, error);
         return;
       }
@@ -107,6 +108,7 @@ export class CoverCache {
       await this.annotations.patchCoverPaths((current) => ({ ...current, [book.id]: path }));
       this.library.setCoverPath(book.id, path);
     } catch (error) {
+      // eslint-disable-next-line no-console -- intentional: top-level fallback so any unexpected throw in the cover-extraction flow is visible to the user with the file path
       console.warn(`[ez-reader] cover extraction failed for ${book.locator.path}`, error);
     } finally {
       this.inFlight.delete(book.id);
@@ -121,9 +123,10 @@ export class CoverCache {
   private raceWithTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | undefined> {
     return new Promise<T | undefined>((resolve) => {
       let settled = false;
-      const timer = globalThis.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (settled) return;
         settled = true;
+        // eslint-disable-next-line no-console -- intentional: surfaces per-reader extractCover timeout with the operation label so the user can see which reader hung
         console.warn(`[ez-reader] ${label} exceeded ${ms}ms — abandoning`);
         resolve(undefined);
       }, ms);
@@ -131,13 +134,14 @@ export class CoverCache {
         (value) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           resolve(value);
         },
         (error) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
+          // eslint-disable-next-line no-console -- intentional: surfaces reader.extractCover rejection with the operation label so the user knows which reader threw
           console.warn(`[ez-reader] ${label} rejected`, error);
           resolve(undefined);
         }
@@ -207,10 +211,12 @@ export class CoverCache {
    */
   async hydrateCovers(): Promise<void> {
     if (!(await this.app.vault.adapter.exists(this.coversDir))) {
+      // eslint-disable-next-line no-console -- intentional: surfaces covers-dir absence on first vault open so the user knows hydration is a no-op rather than silently failing
       console.info(`[ez-reader] hydrateCovers: covers dir missing: ${this.coversDir}`);
       return;
     }
     const listing = await this.app.vault.adapter.list(this.coversDir);
+    // eslint-disable-next-line no-console -- intentional: tells the user how many cover files were found during hydration
     console.info(`[ez-reader] hydrateCovers: found ${listing.files.length} file(s) in ${this.coversDir}`);
     if (listing.files.length === 0) return;
     // Pre-build slug → bookId Map for O(1) lookups. 之前每次都遍历整个 library
@@ -224,6 +230,7 @@ export class CoverCache {
       const fileName = filePath.split("/").pop() ?? "";
       const slug = fileName.replace(/\.[^.]+$/, "");
       if (!slug) {
+        // eslint-disable-next-line no-console -- intentional: surfaces malformed cover filenames so the user can rename / remove them
         console.warn(`[ez-reader] hydrateCovers: cannot extract slug from ${filePath}`);
         continue;
       }
@@ -232,11 +239,13 @@ export class CoverCache {
         // Orphan cover — vault 里没对应这本书 (用户可能删了书, 但 cover
         // 文件留在 covers/ 目录). 降级到 info 而不是 warn, 不污染用户 console.
         // 真正清理交给后续的清理工具 (不在 P0 范围).
+        // eslint-disable-next-line no-console -- intentional: tells the user a cover file is orphaned (no matching book), downgraded from warn so common case doesn't pollute the console
         console.info(`[ez-reader] hydrateCovers: no matching book for slug: ${slug} (orphan, ignored)`);
         continue;
       }
       const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
       this.library.setCoverPath(bookId, resourcePath);
+      // eslint-disable-next-line no-console -- intentional: confirms each cover file was successfully matched and re-bound to a library book on startup
       console.info(`[ez-reader] hydrateCovers: hydrated ${bookId}`);
     }
   }

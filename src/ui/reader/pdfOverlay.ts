@@ -62,7 +62,7 @@ const PDF_VIEW_TYPE = "pdf";
  *
  *  P2-6: fallback 到 Math.random — Android 旧 WebView 没 randomUUID. */
 const generateExcerptId = (prefix: "ex"): string => {
-  const uuid = globalThis.crypto?.randomUUID?.();
+  const uuid = window.crypto?.randomUUID?.();
   if (typeof uuid === "string" && uuid.length > 0) {
     return `${prefix}-${uuid}`;
   }
@@ -892,7 +892,7 @@ export class PdfOverlay {
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.classList.add("ez-reader__pdf-overlay-row--focus");
-    globalThis.setTimeout(() => target.classList.remove("ez-reader__pdf-overlay-row--focus"), 1500);
+    window.setTimeout(() => target.classList.remove("ez-reader__pdf-overlay-row--focus"), 1500);
   }
 }
 

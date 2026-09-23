@@ -1,6 +1,5 @@
 import type {
   BookBytesLoader,
-  ExtractedCover,
   HighlightSpec,
   ReaderEventMap,
   ReaderSession,
@@ -165,8 +164,10 @@ export class PagedTextSession implements ReaderSession {
       this.element.dispatchEvent(new WinCustomEvent("link-click", { detail: { href } }));
     } else {
       // Last resort: legacy createEvent path.
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- reason: fallback path for jsdom+esbuild test bundle where global CustomEvent is Node's built-in
       const ev = win?.document.createEvent("CustomEvent") as (CustomEvent & { initCustomEvent?: (t: string, b: boolean, c: boolean, d: unknown) => void }) | null;
       if (ev && typeof ev.initCustomEvent === "function") {
+        // eslint-disable-next-line @typescript-eslint/no-deprecated -- reason: fallback path for jsdom+esbuild test bundle where global CustomEvent is Node's built-in
         ev.initCustomEvent("link-click", false, false, { href });
         this.element.dispatchEvent(ev);
       }
@@ -245,7 +246,7 @@ export class PagedTextSession implements ReaderSession {
       const WinEvent = (win as unknown as { Event?: typeof Event } | null)?.Event;
       const closeEvent = WinEvent
         ? new WinEvent("close")
-        : ((win?.document?.createEvent?.("Event") as Event | undefined) ?? null);
+        : (win?.document?.createEvent?.("Event") ?? null);
       if (closeEvent) this.element.dispatchEvent(closeEvent);
     } catch (error) {
       console.warn("[ez-reader] PagedTextSession close event dispatch failed", error);
@@ -310,7 +311,7 @@ export class PagedTextSession implements ReaderSession {
           // Fall back to TOC id resolution.
           const tocIdx = this.content.toc.findIndex((t) => t.id === target.value);
           if (tocIdx >= 0 && this.content.chapterStartPages[tocIdx] !== undefined) {
-            await this.turnTo(this.content.chapterStartPages[tocIdx]!, "initial");
+            await this.turnTo(this.content.chapterStartPages[tocIdx], "initial");
           }
           return;
         }
@@ -435,7 +436,7 @@ export class PagedTextSession implements ReaderSession {
       this.findMatches = [];
       const needle = trimmed.toLocaleLowerCase();
       for (let i = 0; i < this.content.pages.length; i++) {
-        const text = stripHtmlTags(this.content.pages[i]!.html).toLocaleLowerCase();
+        const text = stripHtmlTags(this.content.pages[i].html).toLocaleLowerCase();
         let from = 0;
         let idx: number;
         while ((idx = text.indexOf(needle, from)) >= 0) {
@@ -450,7 +451,7 @@ export class PagedTextSession implements ReaderSession {
     if (this.findMatches.length === 0) return 0;
     if (fromStart) this.findCursor = 0;
     else this.findCursor = (this.findCursor + 1) % this.findMatches.length;
-    const target = this.findMatches[this.findCursor]!;
+    const target = this.findMatches[this.findCursor];
     this.direction = "initial";
     await this.turnTo(target.pageIndex, "initial");
     return this.findMatches.length;
@@ -661,7 +662,7 @@ export class PagedTextSession implements ReaderSession {
     if (segments.length === 0) return;
 
     for (let i = segments.length - 1; i >= 0; i--) {
-      const seg = segments[i]!;
+      const seg = segments[i];
       const text = seg.node.textContent ?? "";
       const before = text.slice(0, seg.start);
       const middle = text.slice(seg.start, seg.end);

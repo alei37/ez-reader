@@ -41,9 +41,9 @@ export class SidebarNotesPanel {
   /** P2: type filter — "all" / "thought" / "excerpt". 跟 tab 一对一. */
   private typeFilter: "all" | "thought" | "excerpt" = "all";
   private flashId: string | null = null;
-  private flashTimer: ReturnType<typeof setTimeout> | undefined;
+  private flashTimer: number | undefined;
   /** Debounce timer for the search box. */
-  private searchTimer: ReturnType<typeof setTimeout> | undefined;
+  private searchTimer: number | undefined;
   private searchInput: HTMLInputElement | undefined;
   /** Set of excerpt ids whose note region is currently expanded. */
   private expandedNotes = new Set<string>();
@@ -62,11 +62,11 @@ export class SidebarNotesPanel {
    */
   dispose(): void {
     if (this.flashTimer !== undefined) {
-      globalThis.clearTimeout(this.flashTimer);
+      window.clearTimeout(this.flashTimer);
       this.flashTimer = undefined;
     }
     if (this.searchTimer !== undefined) {
-      globalThis.clearTimeout(this.searchTimer);
+      window.clearTimeout(this.searchTimer);
       this.searchTimer = undefined;
     }
   }
@@ -97,9 +97,9 @@ export class SidebarNotesPanel {
     this.flashId = excerptId;
     this.refreshFlashStyles();
     if (this.flashTimer !== undefined) {
-      globalThis.clearTimeout(this.flashTimer);
+      window.clearTimeout(this.flashTimer);
     }
-    this.flashTimer = globalThis.setTimeout(() => {
+    this.flashTimer = window.setTimeout(() => {
       this.flashId = null;
       this.refreshFlashStyles();
       this.flashTimer = undefined;
@@ -201,9 +201,9 @@ export class SidebarNotesPanel {
       // 150ms debounce — 用户连击输入不会每按一字符全量重建笔记列表.
       search.addEventListener("input", () => {
         if (this.searchTimer !== undefined) {
-          globalThis.clearTimeout(this.searchTimer);
+          window.clearTimeout(this.searchTimer);
         }
-        this.searchTimer = globalThis.setTimeout(() => {
+        this.searchTimer = window.setTimeout(() => {
           this.searchTimer = undefined;
           this.query = search.value.trim().toLocaleLowerCase();
           this.renderList();
@@ -300,7 +300,7 @@ export class SidebarNotesPanel {
           note.addClass("is-editing");
           note.focus();
           // select 全文 — 跟 BookmarkModal 同样的 UX
-          const sel = globalThis.getSelection();
+          const sel = window.getSelection();
           if (sel) {
             const range = document.createRange();
             range.selectNodeContents(note);
@@ -422,7 +422,7 @@ export class SidebarNotesPanel {
         attr: { type: "button", title: "删除这条笔记", "aria-label": "删除这条笔记" }
       });
       remove.onclick = async () => {
-        // P1 修复: 之前用 globalThis.confirm, 在 Obsidian 移动端 WebView
+        // P1 修复: 之前用 window.confirm, 在 Obsidian 移动端 WebView
         // 表现不一致. 改用 Obsidian Modal, 通过 SidebarNotesPanel 的
         // handlers.app 注入 (ReaderView 已经持有 app).
         if (!this.app) {

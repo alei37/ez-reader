@@ -116,7 +116,7 @@ const segmentize = (input: string): Segment[] => {
 const findTagEnd = (input: string, start: number): number => {
   let inQuote: string | null = null;
   for (let i = start + 1; i < input.length; i++) {
-    const ch = input[i]!;
+    const ch = input[i];
     if (inQuote) {
       if (ch === inQuote) inQuote = null;
     } else if (ch === '"' || ch === "'") {
@@ -143,7 +143,7 @@ const parseTag = (
   // Match `name` then optional whitespace + attrs.
   const m = /^([a-zA-Z][a-zA-Z0-9:-]*)([\s\S]*)$/.exec(body);
   if (!m) return null;
-  return { name: m[1]!.toLowerCase(), attrs: m[2] ?? "", isClosing, isComment: false, isDoctype: false };
+  return { name: m[1].toLowerCase(), attrs: m[2] ?? "", isClosing, isComment: false, isDoctype: false };
 };
 
 const sanitizeAttrs = (rawAttrs: string): string | null => {
@@ -153,17 +153,15 @@ const sanitizeAttrs = (rawAttrs: string): string | null => {
   const attrRegex = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)(?:\s*=\s*("([^"]*)"|'([^']*)'))?/g;
   let result = "";
   let cursor = 0;
-  let matched = false;
   let m: RegExpExecArray | null;
   while ((m = attrRegex.exec(rawAttrs)) !== null) {
-    matched = true;
     if (m.index !== cursor) {
       // Skip whitespace between attributes; reject anything else.
       const gap = rawAttrs.slice(cursor, m.index);
       if (/\S/.test(gap)) return null;
     }
     cursor = m.index + m[0].length;
-    const name = m[1]!.toLowerCase();
+    const name = m[1].toLowerCase();
     const value = m[3] !== undefined ? m[3] : m[4] !== undefined ? m[4] : "";
     if (name.startsWith("on")) {
       // Event handler — drop the attribute, keep the tag.

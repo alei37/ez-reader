@@ -26,7 +26,7 @@ export class SearchBar {
   private currentQuery = "";
   private isVisible = false;
   // C5 修复: show() 里 50ms 延迟 focus 的 setTimeout handle, 让 destroy() clear.
-  private focusTimer: ReturnType<typeof setTimeout> | undefined;
+  private focusTimer: number | undefined;
   private readonly documentKeydown: (event: KeyboardEvent) => void;
   private readonly inputKeydown: (event: KeyboardEvent) => void;
 
@@ -111,9 +111,9 @@ export class SearchBar {
     // 上 throw DOMException. 同 100ms 延迟 — 让 CSS transition 跑完, 否则
     // 动画期间的 focus 在某些 WebView 上会让动画卡顿。
     if (this.focusTimer !== undefined) {
-      globalThis.clearTimeout(this.focusTimer);
+      window.clearTimeout(this.focusTimer);
     }
-    this.focusTimer = globalThis.setTimeout(() => {
+    this.focusTimer = window.setTimeout(() => {
       this.focusTimer = undefined;
       try {
         this.input.focus();
@@ -140,7 +140,7 @@ export class SearchBar {
 
   destroy(): void {
     if (this.focusTimer !== undefined) {
-      globalThis.clearTimeout(this.focusTimer);
+      window.clearTimeout(this.focusTimer);
       this.focusTimer = undefined;
     }
     document.removeEventListener("keydown", this.documentKeydown, true);

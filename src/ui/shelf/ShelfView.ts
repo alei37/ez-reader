@@ -169,20 +169,20 @@ export class ShelfView extends ItemView {
     }
   }
 
-  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private refreshTimer: number | undefined;
   private scheduleRefresh(): void {
-    if (this.refreshTimer !== undefined) globalThis.clearTimeout(this.refreshTimer);
-    this.refreshTimer = globalThis.setTimeout(() => {
+    if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = undefined;
       this.renderRefresh();
     }, 100);
   }
   /** Debounced search refresh — 150ms 是用户在 <input type=search> 上能感知的
    *  最短延迟, 慢于这个就开始觉得"卡".  短于 150ms 反而像是抖动. */
-  private searchTimer: ReturnType<typeof setTimeout> | undefined;
+  private searchTimer: number | undefined;
   private scheduleSearchRefresh(): void {
-    if (this.searchTimer !== undefined) globalThis.clearTimeout(this.searchTimer);
-    this.searchTimer = globalThis.setTimeout(() => {
+    if (this.searchTimer !== undefined) window.clearTimeout(this.searchTimer);
+    this.searchTimer = window.setTimeout(() => {
       this.searchTimer = undefined;
       this.renderRefresh();
     }, 150);
@@ -193,11 +193,11 @@ export class ShelfView extends ItemView {
     this.settingsUnsubscribe?.();
     this.settingsUnsubscribe = undefined;
     if (this.refreshTimer !== undefined) {
-      globalThis.clearTimeout(this.refreshTimer);
+      window.clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
     }
     if (this.searchTimer !== undefined) {
-      globalThis.clearTimeout(this.searchTimer);
+      window.clearTimeout(this.searchTimer);
       this.searchTimer = undefined;
     }
     this.clearPendingG();
@@ -211,7 +211,7 @@ export class ShelfView extends ItemView {
   // g g 序列状态: pendingG timer 跟一次性 capture-phase listener 提到
   // class 字段, onClose 统一清掉. 之前是闭包变量, view 关闭后 listener
   // 仍然挂在 document 上, 下一个 g 会触发已 detach view 的回调.
-  private pendingG: ReturnType<typeof setTimeout> | undefined;
+  private pendingG: number | undefined;
   private pendingGOnce: ((event: KeyboardEvent) => void) | undefined;
 
   /**
@@ -258,7 +258,7 @@ export class ShelfView extends ItemView {
       if (key === "g") {
         event.preventDefault();
         this.clearPendingG();
-        this.pendingG = globalThis.setTimeout(() => {
+        this.pendingG = window.setTimeout(() => {
           this.pendingG = undefined;
           // P2-3 兜底: timer 到期没触发 g g (用户按了别的键后没再按), 仍要
           // 清掉 capture-phase listener — 否则下次 g 会触发老的 pendingGOnce,
@@ -288,7 +288,7 @@ export class ShelfView extends ItemView {
   /** Remove any in-flight `g g` timer and the matching capture-phase listener. */
   private clearPendingG(): void {
     if (this.pendingG !== undefined) {
-      globalThis.clearTimeout(this.pendingG);
+      window.clearTimeout(this.pendingG);
       this.pendingG = undefined;
     }
     if (this.pendingGOnce) {
@@ -391,7 +391,7 @@ export class ShelfView extends ItemView {
     menu.addItem((item) =>
       item.setTitle("在 Obsidian 中查看").setIcon("file-text").onClick(() => {
         const file = this.deps.app.vault.getAbstractFileByPath(entry.book.locator.path);
-        if (file instanceof TFile) this.deps.app.workspace.openLinkText(file.path, "", true);
+        if (file instanceof TFile) void this.deps.app.workspace.openLinkText(file.path, "", true);
       })
     );
     menu.addSeparator();
@@ -513,7 +513,7 @@ export class ShelfView extends ItemView {
     // 而不是立刻以为好了又点一次 (再次触发又 hang 90s 体验更糟).
     let timedOut = false;
     const timeoutMs = 90_000;
-    const timeoutHandle = globalThis.setTimeout(() => {
+    const timeoutHandle = window.setTimeout(() => {
       timedOut = true;
       console.error(`[ez-reader] shelf addAllToLibrary timed out after ${timeoutMs}ms`);
     }, timeoutMs);
@@ -533,12 +533,12 @@ export class ShelfView extends ItemView {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`全部加入失败: ${message}`);
     } finally {
-      globalThis.clearTimeout(timeoutHandle);
+      window.clearTimeout(timeoutHandle);
       this.addingAll = false;
       if (timedOut) {
         // 超时后让按钮多 disabled 几秒, 避免立刻又触发同样的 hang.
         // 没超时则立即放开按钮.
-        globalThis.setTimeout(() => this.toolbar.setAddAllBusy(false), 3000);
+        window.setTimeout(() => this.toolbar.setAddAllBusy(false), 3000);
       } else {
         this.toolbar.setAddAllBusy(false);
       }
@@ -550,7 +550,7 @@ export class ShelfView extends ItemView {
   private withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | undefined> {
     return new Promise<T | undefined>((resolve) => {
       let settled = false;
-      const timer = globalThis.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (settled) return;
         settled = true;
         console.warn(`[ez-reader] ${label} exceeded ${ms}ms — leaving promise pending`);
@@ -560,13 +560,13 @@ export class ShelfView extends ItemView {
         (value) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           resolve(value);
         },
         (error) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           console.warn(`[ez-reader] ${label} rejected`, error);
           resolve(undefined);
         }

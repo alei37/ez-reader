@@ -168,6 +168,7 @@ export class MobiBookReader implements BookReader {
       try {
         const blobUrl = parser.getCoverImage();
         if (!blobUrl) return null;
+        // eslint-disable-next-line no-restricted-globals -- fetches a blob: URL returned by the mobi-parser (parser.getCoverImage returns blob: URLs). requestUrl doesn't accept blob: URLs, so the browser fetch is the only option.
         const response = await fetch(blobUrl);
         const blob = await response.blob();
         if (blob.size === 0) return null;
@@ -217,7 +218,7 @@ export class MobiBookReader implements BookReader {
         return {
           title,
           authors,
-          languages: languages as BookMetadata["languages"],
+          languages,
           publisher: typeof raw.publisher === "string" && raw.publisher.trim() ? raw.publisher.trim() : undefined,
           identifier: typeof raw.identifier === "string" && raw.identifier.trim() ? raw.identifier.trim() : undefined,
           description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined,
@@ -364,6 +365,7 @@ const inlineChapterCss = async (
   const failures: string[] = [];
   for (const part of parts) {
     try {
+      // eslint-disable-next-line no-restricted-globals -- fetches a blob: URL from the mobi-parser chapter CSS blob. requestUrl doesn't accept blob: URLs.
       const response = await fetch(part.href);
       const text = await response.text();
       out.push({ id: part.id, text });

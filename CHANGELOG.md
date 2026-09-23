@@ -4,6 +4,35 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-22
+
+### 修复 (Fixed)
+
+- **系统化 lint cleanup (round 2)** — 0.2.5 auto-review 已经 Completed, 但仍有 100+ warning-level lint findings。0.2.6 一次性扫掉一批不会破行为 / 不会破 review 的 lint noise:
+  - 删冗余 `as Type` 断言 (~40 处, e.g. `x as Book` where x already is `Book`)
+  - 删 unused imports (~10 处, e.g. `App`, `TFile`, `BookLocator`, `ExtractedCover`, `inputLabel`, `metaParts`, `intro`, `matched`, `fulfilled`)
+  - 删 unused locals (5 处)
+  - `globalThis` → `window` (~70 处, 涉及 ShelfView / AddToLibraryModal / ReaderView / pdfOverlay / SearchBar / SidebarNotesPanel / TranslationDrawer / Plugin.ts / CoverCache / polyfills.ts) — popout-window 兼容
+  - `instanceof HTMLElement` → `.instanceOf(HTMLElement)` (1 处 FoliateBookReader)
+  - `activeLeaf` deprecated → `getLeaf()` (2 处)
+  - `setTimeout/clearTimeout/requestAnimationFrame` → `window.*` (10 处, popout compat)
+  - 修 `lexical declaration in case block` 缺 braces (1 处 ReaderView)
+  - 修 `unexpected await of non-Promise` (1 处)
+  - 加 `void` 给 unawaited promises (4 处, e.g. `revealLeaf`, `openLinkText`)
+  - `fetch(blob:)` calls → 加 eslint-disable reason (5 处, requestUrl 不能处理 blob:)
+  - console.* diagnostic calls → 加 `no-console` disable reason (10 处, intentional diagnostics)
+  - PluginSettingTab.getSettingDefinitions 留 TODO (declarative API migration, 后续 work)
+  - `JSON.parse` in SettingsTab → 缩到 `Record<string, unknown>` (消除 4 处 unsafe-any)
+  - Timer 类型 `ReturnType<typeof setTimeout>` (NodeJS.Timeout) → `number` (DOM Window),配合 `window.setTimeout` overload
+
+### 故意未处理
+
+- `Uses document.createElement instead of Obsidian's createEl helpers` (~50 处) — reviewer 不卡, 机械但量大, 跳过
+- `Avoid !important` in CSS (13 处) — 覆盖 Obsidian 内置样式必需
+- `Unexpected unknown type selector "foliate-view"` (5 处) — EPUB iframe 必需
+- `fetch` → `requestUrl` 不可用 (blob: URL requestUrl 不支持)
+- `PluginSettingTab.getSettingDefinitions()` (1 处) — 需要 declarative settings API 重构, 留 TODO
+
 ## [0.2.5] - 2026-09-22
 
 ### 修复 (Fixed)

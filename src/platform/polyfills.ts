@@ -152,9 +152,9 @@ if (
 // capture structuredClone as a separate free binding (no bundler
 // indirection in this code path). The globalThis install covers every
 // runtime lookup foliate-js exercises.
-if (typeof (globalThis as { structuredClone?: unknown }).structuredClone !== "function") {
+if (typeof (window as { structuredClone?: unknown }).structuredClone !== "function") {
   const jsonClone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-  Object.defineProperty(globalThis, "structuredClone", {
+  Object.defineProperty(window, "structuredClone", {
     value: jsonClone,
     writable: true,
     configurable: true
@@ -171,7 +171,7 @@ if (typeof (globalThis as { structuredClone?: unknown }).structuredClone !== "fu
 import { bytesFromBufferSource, sha1Bytes } from "./Sha1";
 
 const installSha1DigestFallback = (): void => {
-  const cryptoObj = (globalThis as { crypto?: Crypto }).crypto;
+  const cryptoObj = (window as { crypto?: Crypto }).crypto;
   if (cryptoObj && typeof cryptoObj.subtle?.digest === "function") return;
 
   const subtle = {
@@ -198,7 +198,7 @@ const installSha1DigestFallback = (): void => {
   } else {
     // No crypto at all — install a minimal stub.
     try {
-      Object.defineProperty(globalThis, "crypto", {
+      Object.defineProperty(window, "crypto", {
         value: { subtle, getRandomValues: (a: Uint8Array) => a },
         configurable: true,
         writable: true
@@ -223,12 +223,12 @@ interface PolyfillReport {
 }
 export const collectPolyfillReport = (): PolyfillReport => {
   const checks: ReadonlyArray<readonly [string, unknown]> = [
-    ["Object.groupBy", (globalThis as { Object?: { groupBy?: unknown } }).Object?.groupBy],
-    ["Map.groupBy", (globalThis as { Map?: { groupBy?: unknown } }).Map?.groupBy],
+    ["Object.groupBy", (window as { Object?: { groupBy?: unknown } }).Object?.groupBy],
+    ["Map.groupBy", (window as { Map?: { groupBy?: unknown } }).Map?.groupBy],
     ["Promise.withResolvers", Promise.withResolvers],
     ["ReadableStream[Symbol.asyncIterator]", typeof ReadableStream !== "undefined" && typeof ReadableStream.prototype[Symbol.asyncIterator] === "function"],
-    ["structuredClone", typeof (globalThis as { structuredClone?: unknown }).structuredClone === "function"],
-    ["crypto.subtle.digest", typeof (globalThis as { crypto?: { subtle?: { digest?: unknown } } }).crypto?.subtle?.digest === "function"],
+    ["structuredClone", typeof (window as { structuredClone?: unknown }).structuredClone === "function"],
+    ["crypto.subtle.digest", typeof (window as { crypto?: { subtle?: { digest?: unknown } } }).crypto?.subtle?.digest === "function"],
     ["ResizeObserver", typeof ResizeObserver !== "undefined"],
     ["Intl.Segmenter", typeof Intl !== "undefined" && typeof (Intl as { Segmenter?: unknown }).Segmenter === "function"],
     ["customElements", typeof customElements !== "undefined"]

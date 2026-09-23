@@ -242,7 +242,7 @@ export class AddToLibraryModal extends Modal {
     // 永远 disabled — 用户唯一的选择是关闭整个 Obsidian 重启.
     let timedOut = false;
     const timeoutMs = 30_000;
-    const timeoutHandle = globalThis.setTimeout(() => {
+    const timeoutHandle = window.setTimeout(() => {
       timedOut = true;
       console.error(`[ez-reader] confirmSelection timed out after ${timeoutMs}ms — closing modal forcibly`);
     }, timeoutMs);
@@ -263,9 +263,6 @@ export class AddToLibraryModal extends Modal {
         "confirmSelection.addToLibrary"
       );
       if (timedOut) throw new Error("addToLibrary 超时");
-      const fulfilled = (settled ?? []).filter(
-        (r): r is PromiseFulfilledResult<void> => r.status === "fulfilled"
-      );
       const rejected = (settled ?? []).filter(
         (r): r is PromiseRejectedResult => r.status === "rejected"
       );
@@ -280,6 +277,7 @@ export class AddToLibraryModal extends Modal {
       await this.raceWithTimeout(this.extractCoversFor(books), timeoutMs, "confirmSelection.extractCoversFor");
       if (timedOut) throw new Error("extractCoversFor 超时");
       if (rejected.length > 0) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- PromiseSettledResult.reason is `any` per TS lib; guard before use
         const firstReason = rejected[0]?.reason;
         const message = firstReason instanceof Error ? firstReason.message : String(firstReason);
         const total = totalRejectedMessage(rejected.length, ids.length);
@@ -293,7 +291,7 @@ export class AddToLibraryModal extends Modal {
       // 避免 finally 后又调到 this.close().
       return;
     } finally {
-      globalThis.clearTimeout(timeoutHandle);
+      window.clearTimeout(timeoutHandle);
       // 即使 timeout 触发或 throw, 也要解锁按钮 + 关 modal — 不让 UI 卡死.
       setActionsBusy(false);
       this.close();
@@ -304,7 +302,7 @@ export class AddToLibraryModal extends Modal {
     setActionsBusy(true);
     let timedOut = false;
     const timeoutMs = 60_000;
-    const timeoutHandle = globalThis.setTimeout(() => {
+    const timeoutHandle = window.setTimeout(() => {
       timedOut = true;
       console.error(`[ez-reader] confirmAddAll timed out after ${timeoutMs}ms — closing modal forcibly`);
     }, timeoutMs);
@@ -325,7 +323,7 @@ export class AddToLibraryModal extends Modal {
       // finally 仍会跑 (解锁 + close), explicit return 避免跳过 finally.
       return;
     } finally {
-      globalThis.clearTimeout(timeoutHandle);
+      window.clearTimeout(timeoutHandle);
       setActionsBusy(false);
       this.close();
     }
@@ -339,7 +337,7 @@ export class AddToLibraryModal extends Modal {
   private raceWithTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T | undefined> {
     return new Promise<T | undefined>((resolve) => {
       let resolved = false;
-      const timer = globalThis.setTimeout(() => {
+      const timer = window.setTimeout(() => {
         if (resolved) return;
         console.warn(`[ez-reader] ${label} exceeded ${ms}ms — leaving promise pending`);
         resolve(undefined);
@@ -348,13 +346,13 @@ export class AddToLibraryModal extends Modal {
         (value) => {
           if (resolved) return;
           resolved = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           resolve(value);
         },
         (error) => {
           if (resolved) return;
           resolved = true;
-          globalThis.clearTimeout(timer);
+          window.clearTimeout(timer);
           // 把 reject 翻成 resolve(undefined) — 让调用方根据 timedOut flag
           // 决定是否重 throw 或直接走关闭路径, 避免 race-with-resolve 的反模式.
           console.warn(`[ez-reader] ${label} rejected`, error);
