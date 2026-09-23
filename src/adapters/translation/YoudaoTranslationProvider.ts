@@ -87,7 +87,7 @@ export class YoudaoTranslationProvider extends BaseTranslationProvider {
   readonly id = "youdao";
   readonly displayName = "有道智云 · 文本翻译";
   readonly signupUrl = "https://ai.youdao.com/console/#/service-singleton/text";
-  readonly signupHint = "注册有道智云账号 → 创建应用 → 选「文本翻译」 → 拿到 appKey + appSecret,JSON 格式粘贴到 key 字段";
+  readonly signupHint = "注册有道智云账号 → 创建应用 → 选「文本翻译」 → 复制应用 ID 和应用密钥,分别填到下面两个框";
 
   protected readonly providerName = "有道";
 

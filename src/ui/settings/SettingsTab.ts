@@ -314,7 +314,7 @@ export class SettingsTab extends PluginSettingTab {
     });
     new Setting(containerEl)
       .setName("摘录笔记目录")
-      .setDesc("双链笔记文件保存位置,留空则不自动保存笔记")
+      .setDesc("双链笔记文件保存位置,留空则不自动保存笔记。保存第一条摘录时会自动创建目录,无需手动 mkdir")
       .addText((text) => {
         void this.loadSettings().then((s) => {
           text.setValue(s.notesDirectory);
@@ -323,7 +323,7 @@ export class SettingsTab extends PluginSettingTab {
       });
     new Setting(containerEl)
       .setName("主题研究目录")
-      .setDesc("主题研究笔记保存位置")
+      .setDesc("主题研究笔记保存位置,默认与摘录笔记共享 ezreader-notes 根目录。目录会在首次写入时自动创建")
       .addText((text) => {
         void this.loadSettings().then((s) => {
           text.setValue(s.researchDirectory);
@@ -354,6 +354,9 @@ export class SettingsTab extends PluginSettingTab {
         dropdown.addOption("youdao", "有道智云 · 文本翻译");
         dropdown.addOption("deepl", "DeepL");
         dropdown.addOption("google-translation-v3", "Google Translate (Cloud v3)");
+        dropdown.addOption("mymemory", "MyMemory (免费, 无需注册)");
+        dropdown.addOption("openai-compatible", "自定义 LLM (OpenAI 兼容)");
+        dropdown.addOption("anthropic-compatible", "自定义 LLM (Anthropic 兼容)");
         void this.loadSettings().then((s) => {
           dropdown.setValue(s.translation?.providerId ?? "none");
         });
@@ -362,14 +365,22 @@ export class SettingsTab extends PluginSettingTab {
             if (value === "none") {
               return { ...s, translation: null };
             }
+            // 切 provider 时清掉旧 key: 有道是 JSON {appKey, appSecret},
+            // DeepL 是裸字符串, Google 是另一种 JSON. 三者不通用, 留着只会
+            // 让用户看到下一屏"格式不对"的报错, 不如直接清掉让重新填.
+            const prevProvider = s.translation?.providerId;
             const next: TranslationSettings = {
               providerId: value,
-              apiKey: s.translation?.apiKey ?? "",
+              apiKey: prevProvider === value ? (s.translation?.apiKey ?? "") : "",
               sourceLocale: s.translation?.sourceLocale ?? "auto",
               targetLocale: s.translation?.targetLocale ?? "zh-CN"
             };
             return { ...s, translation: next };
           });
+          // patchSettings 已经 await, 这时 disk 上是新 provider. 立即重渲染
+          // API key 输入区(有道 = 两个, 其他 = 一个), 老 DOM 留着用户会被旧
+          // placeholder 误导.
+          await this.renderTranslationApiKeyUi(containerEl);
         });
       });
     const hint = providerSetting.settingEl.createDiv({ cls: "ez-reader__settings-hint is-hidden" });
@@ -399,36 +410,8 @@ export class SettingsTab extends PluginSettingTab {
       const value = (event.target as HTMLSelectElement).value;
       refreshHint(value);
     });
-    new Setting(containerEl)
-      .setName("翻译 API key")
-      .setDesc("翻译是本插件唯一会访问网络的特性。留空 = 不联网。")
-      .addText((text) => {
-        text.inputEl.type = "password";
-        const saveKey = this.debounceSave(async (value: string) => {
-          await this.annotations.patchSettings((s) => {
-            if (!s.translation) {
-              // P1 修复: 之前用户切到 "none" 后再输 key, patchSettings 静默
-              // 丢弃, key 永远存不上. 现在如果 user 在输入 key (非空),
-              // 自动恢复到默认 provider, 这样能存上.
-              if (!value) return s;
-              return {
-                ...s,
-                translation: {
-                  providerId: "youdao",
-                  apiKey: value,
-                  sourceLocale: "auto",
-                  targetLocale: "zh-CN"
-                }
-              };
-            }
-            return { ...s, translation: { ...s.translation, apiKey: value } };
-          });
-        });
-        void this.loadSettings().then((s) => {
-          text.setValue(s.translation?.apiKey ?? "");
-        });
-        text.onChange((value) => saveKey(value));
-      });
+    // 渲染 API key 输入区(根据 provider 决定是两字段还是有道模式)
+    void this.renderTranslationApiKeyUi(containerEl);
     new Setting(containerEl)
       .setName("目标语言")
       .setDesc("默认翻译到的语言(例如 zh-CN / en-US)")
@@ -443,6 +426,271 @@ export class SettingsTab extends PluginSettingTab {
           text.setValue(s.translation?.targetLocale ?? "zh-CN");
         });
         text.onChange((value) => saveTargetLocale(value));
+      });
+  }
+
+  /**
+   * 渲染"翻译 API key"输入块 — 根据 provider 动态决定是两字段(有道)还是
+   * 单字段(DeepL/Google). API key 在底层仍以 JSON 字符串存 (provider
+   * 接口契约不变), UI 只是把 JSON 的两个字段拆出来让用户更好填.
+   *
+   * @param containerEl 设置页根容器,API key 输入区插在「翻译服务」+「目标语言」之间
+   */
+  private async renderTranslationApiKeyUi(containerEl: HTMLElement): Promise<void> {
+    // 清掉上一次的渲染残留(切 provider 时旧的两/单字段都要摘掉)
+    containerEl.querySelectorAll(".ez-reader__translation-apikey").forEach((node) => node.remove());
+    const settings = await this.loadSettings();
+    const providerId = settings.translation?.providerId ?? "none";
+
+    if (providerId === "none") {
+      // 没选 provider 不显示 API key 输入框 — 用户没必要填
+      return;
+    }
+
+    const anchor = containerEl.querySelector(".ez-reader__settings-hint");
+    const wrap = document.createElement("div");
+    wrap.addClass("ez-reader__translation-apikey");
+    if (anchor && anchor.parentElement) {
+      anchor.parentElement.insertBefore(wrap, anchor.nextSibling);
+    } else {
+      containerEl.appendChild(wrap);
+    }
+
+    if (providerId === "youdao") {
+      this.renderYoudaoKeyFields(wrap, settings);
+    } else if (providerId === "mymemory") {
+      // MyMemory 是公共匿名 API, 完全不需要 key — 显示一个"无需 key"的提示,
+      // 不渲染输入框. 选 MyMemory 时 provider 切换逻辑会清掉旧 apiKey, 这里
+      // 不需要再 patch.
+      this.renderNoKeyHint(wrap, "MyMemory 是公共免费翻译服务,无需注册也无需 API key。每日每个 IP 1 万字符额度,适合偶尔查词。");
+    } else if (providerId === "openai-compatible") {
+      this.renderLLMConfigFields(wrap, settings, {
+        baseUrlHint: "https://api.openai.com/v1",
+        title: "LLM · API 基础地址",
+        desc: "OpenAI 兼容格式的 /v1 端点。例如 https://api.openai.com/v1, https://api.deepseek.com/v1",
+        examples: [
+          "DeepSeek: https://api.deepseek.com/v1 + model=deepseek-chat",
+          "智谱 GLM: https://open.bigmodel.cn/api/paas/v4 + model=glm-4-flash (免费)",
+          "通义千问: https://dashscope.aliyuncs.com/compatible-mode/v1 + model=qwen-turbo",
+          "OpenAI: https://api.openai.com/v1 + model=gpt-4o-mini"
+        ]
+      });
+    } else if (providerId === "anthropic-compatible") {
+      this.renderLLMConfigFields(wrap, settings, {
+        baseUrlHint: "https://api.minimax.cn/anthropic",
+        title: "LLM · API 基础地址",
+        desc: "Anthropic Messages API 兼容端点 (会自动追加 /v1/messages)。例如 https://api.minimax.cn/anthropic",
+        examples: [
+          "MiniMax: https://api.minimax.cn/anthropic + model=MiniMax-Text",
+          "Anthropic: https://api.anthropic.com + model=claude-3-5-sonnet-20241022"
+        ]
+      });
+    } else {
+      this.renderSingleKeyField(wrap, settings);
+    }
+  }
+
+  /**
+   * 给"无需 API key"的 provider (e.g. MyMemory) 显示一段说明 — 不渲染输入
+   * 框, 让用户知道为什么没看到 key 字段不是因为 bug.
+   */
+  private renderNoKeyHint(wrap: HTMLElement, text: string): void {
+    const note = wrap.createDiv({ cls: "ez-reader__translation-apikey__no-key" });
+    note.setText(text);
+  }
+
+  /**
+   * 有道: 两个 password 字段分别填 appKey 和 appSecret, 在用户输入时合并成
+   * JSON `{"appKey":"...","appSecret":"..."}` 存到 settings.translation.apiKey。
+   * 这样底层 provider 接口(`apiKey: string`)不需要改, 老数据(已经是 JSON
+   * 格式)也能直接读到两个字段里.
+   */
+  private renderYoudaoKeyFields(wrap: HTMLElement, settings: PluginSettings): void {
+    let stored: { appKey: string; appSecret: string } = { appKey: "", appSecret: "" };
+    const raw = settings.translation?.apiKey ?? "";
+    if (raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw) as Partial<{ appKey: string; appSecret: string }>;
+        stored = {
+          appKey: typeof parsed.appKey === "string" ? parsed.appKey : "",
+          appSecret: typeof parsed.appSecret === "string" ? parsed.appSecret : ""
+        };
+      } catch {
+        // 老数据可能是裸字符串 / 损坏 JSON, 留空让用户重新填
+      }
+    }
+    const persist = this.debounceSave(async (next: { appKey: string; appSecret: string }) => {
+      const json = JSON.stringify(next);
+      await this.annotations.patchSettings((s) => {
+        if (!s.translation) return s;
+        return { ...s, translation: { ...s.translation, apiKey: json } };
+      });
+    });
+    // 输入框右侧加「👁 显示」按钮 — 默认 password 类型(掩码), 点一下切到 text
+    // 类型, 方便用户校对粘错/漏字符. 再点一次切回 password.
+    const addPasswordField = (label: string, desc: string, key: "appKey" | "appSecret"): void => {
+      new Setting(wrap)
+        .setName(label)
+        .setDesc(desc)
+        .addText((text) => {
+          text.inputEl.type = "password";
+          text.inputEl.autocomplete = "off";
+          text.inputEl.spellcheck = false;
+          text.setPlaceholder(key === "appKey" ? "应用 ID, 16 位字符串" : "应用密钥, 只在创建时显示一次");
+          text.setValue(stored[key]);
+          const update = (value: string): void => {
+            const next = { appKey: stored.appKey, appSecret: stored.appSecret };
+            next[key] = value.trim();
+            stored = next;
+            void persist(next);
+          };
+          text.onChange((value) => update(value));
+        })
+        .addExtraButton((button) => {
+          button.setIcon("eye");
+          button.setTooltip("显示 / 隐藏");
+          button.onClick(() => {
+            const inputs = wrap.querySelectorAll<HTMLInputElement>(".ez-reader__translation-apikey input");
+            const idx = key === "appKey" ? 0 : 1;
+            const target = inputs[idx];
+            if (!target) return;
+            const isHidden = target.type === "password";
+            target.type = isHidden ? "text" : "password";
+            button.setIcon(isHidden ? "eye-off" : "eye");
+          });
+        });
+    };
+    addPasswordField(
+      "有道 · 应用 ID (appKey)",
+      "在有道智云控制台 → 我的应用 → 应用详情 查看",
+      "appKey"
+    );
+    addPasswordField(
+      "有道 · 应用密钥 (appSecret)",
+      "只在创建应用时显示一次,丢失请重置密钥",
+      "appSecret"
+    );
+  }
+
+  /**
+   * DeepL / Google: 单字段输入(DeepL 是裸 key, Google 是 service account JSON).
+   * 用户切换到这两个 provider 时刚才选这个编辑旧的 JSON apiKey 字段会被 provider 切换清空.
+   */
+  /**
+   * 自定义 LLM provider 通用三字段渲染 — OpenAI 兼容 / Anthropic 兼容 共用
+   * 这个 UI. 内部用 JSON `{"baseUrl":"...","apiKey":"...","model":"..."}`
+   * 存到 settings.translation.apiKey, provider 接口(apiKey: string)不变.
+   *
+   * @param opts.baseUrlHint  baseUrl 字段的 placeholder, 不同 provider 不同
+   * @param opts.title        第一个字段的标题(目前都叫 "LLM · API 基础地址")
+   * @param opts.desc         第一个字段的描述(讲 endpoint 路径约定)
+   * @param opts.examples     末尾示例数组, 一行一个
+   */
+  private renderLLMConfigFields(
+    wrap: HTMLElement,
+    settings: PluginSettings,
+    opts: { baseUrlHint: string; title: string; desc: string; examples: string[] }
+  ): void {
+    let stored = { baseUrl: "", apiKey: "", model: "" };
+    const raw = settings.translation?.apiKey ?? "";
+    if (raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw) as Partial<{ baseUrl: string; apiKey: string; model: string }>;
+        stored = {
+          baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
+          apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
+          model: typeof parsed.model === "string" ? parsed.model : ""
+        };
+      } catch {
+        // 老 JSON 损坏 — 留空让用户重填
+      }
+    }
+    const persist = this.debounceSave(async (next: { baseUrl: string; apiKey: string; model: string }) => {
+      const json = JSON.stringify(next);
+      await this.annotations.patchSettings((s) => {
+        if (!s.translation) return s;
+        return { ...s, translation: { ...s.translation, apiKey: json } };
+      });
+    });
+    const update = (patch: Partial<typeof stored>): void => {
+      const next = { ...stored, ...patch };
+      stored = next;
+      void persist(next);
+    };
+    new Setting(wrap)
+      .setName(opts.title)
+      .setDesc(opts.desc)
+      .addText((text) => {
+        text.inputEl.type = "text";
+        text.inputEl.autocomplete = "off";
+        text.inputEl.placeholder = opts.baseUrlHint;
+        text.setValue(stored.baseUrl);
+        text.onChange((value) => update({ baseUrl: value.trim() }));
+      });
+    new Setting(wrap)
+      .setName("LLM · API Key")
+      .setDesc("对应 API 基础地址的密钥")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text.inputEl.autocomplete = "off";
+        text.inputEl.spellcheck = false;
+        text.setPlaceholder("sk-...");
+        text.setValue(stored.apiKey);
+        text.onChange((value) => update({ apiKey: value.trim() }));
+      })
+      .addExtraButton((button) => {
+        button.setIcon("eye");
+        button.setTooltip("显示 / 隐藏");
+        button.onClick(() => {
+          const input = wrap.querySelector<HTMLInputElement>(".ez-reader__translation-apikey input[type='password']");
+          if (!input) return;
+          const isHidden = input.type === "password";
+          input.type = isHidden ? "text" : "password";
+          button.setIcon(isHidden ? "eye-off" : "eye");
+        });
+      });
+    new Setting(wrap)
+      .setName("LLM · 模型名")
+      .setDesc("具体模型标识, 见下方示例或供应商控制台")
+      .addText((text) => {
+        text.inputEl.type = "text";
+        text.inputEl.autocomplete = "off";
+        text.inputEl.placeholder = "model-id";
+        text.setValue(stored.model);
+        text.onChange((value) => update({ model: value.trim() }));
+      });
+    const examples = wrap.createDiv({ cls: "ez-reader__translation-apikey__examples" });
+    examples.setText("常用示例:\n" + opts.examples.map((line) => `  ${line}`).join("\n"));
+  }
+
+  private renderSingleKeyField(wrap: HTMLElement, settings: PluginSettings): void {
+    const desc = settings.translation?.providerId === "google-translation-v3"
+      ? "Google: 粘贴 service account JSON 的完整内容({...}),不是 API key。"
+      : "DeepL: 在 DeepL Pro 控制台 → Account → Authentication key 复制。";
+    new Setting(wrap)
+      .setName("翻译 API key")
+      .setDesc(desc)
+      .addText((text) => {
+        text.inputEl.type = "password";
+        const saveKey = this.debounceSave(async (value: string) => {
+          await this.annotations.patchSettings((s) => {
+            if (!s.translation) {
+              if (!value) return s;
+              return {
+                ...s,
+                translation: {
+                  providerId: settings.translation?.providerId ?? "deepl",
+                  apiKey: value,
+                  sourceLocale: "auto",
+                  targetLocale: "zh-CN"
+                }
+              };
+            }
+            return { ...s, translation: { ...s.translation, apiKey: value } };
+          });
+        });
+        text.setValue(settings.translation?.apiKey ?? "");
+        text.onChange((value) => saveKey(value));
       });
   }
 

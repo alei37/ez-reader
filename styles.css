@@ -2802,6 +2802,169 @@
   z-index: 2;
 }
 
+/* === PDF 选词翻译浮动小弹窗 === */
+/* 跟 selection menu 共享 position: fixed + document.body 挂载,
+ * 区别是宽度更宽 (260px) + 多行 body (原文 + 译文 + 按钮).
+ * z-index 跟 notes panel/search bar 同级, 不盖 floating menu. */
+.ez-reader__pdf-translation {
+  position: fixed;
+  z-index: 30;
+  width: 280px;
+  max-width: calc(100vw - 32px);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+
+.ez-reader__pdf-translation.is-hidden {
+  display: none;
+}
+
+.ez-reader__pdf-translation__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  /* P2: header 当作拖拽手柄 — cursor: grab 提示用户可以拖。
+   * 按到 × 按钮时不会启动拖 (makeDraggable 内 closest("button") 短路)，
+   * 所以 × 仍然保持 pointer。 */
+  cursor: grab;
+}
+
+.ez-reader__pdf-translation.is-dragging {
+  cursor: grabbing;
+  /* 拖拽期间禁止文字选中, 鼠标快速移动时不会顺带选到 body 文字. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ez-reader__pdf-translation.is-dragging * {
+  /* 子元素也别选中 — firefox 默认行为会把鼠标下的文本选中. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ez-reader__pdf-translation__source {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  /* 限制 3 行 + 多了省略 — 长原文不撑高弹窗, 不挤压译文. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.ez-reader__pdf-translation__close {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.ez-reader__pdf-translation__close:hover {
+  color: var(--text-normal);
+}
+
+.ez-reader__pdf-translation__body {
+  padding: 10px;
+  min-height: 32px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ez-reader__pdf-translation__body.is-loading {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.ez-reader__pdf-translation__body.is-error {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+  border-radius: 0;
+  font-size: 12px;
+}
+
+.ez-reader__pdf-translation__provider {
+  padding: 0 10px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ez-reader__pdf-translation__actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 10px 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 8px;
+}
+
+.ez-reader__pdf-translation__actions button {
+  flex: 1 1 auto;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+
+.ez-reader__pdf-translation__actions button:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ez-reader__pdf-translation__copy-btn {
+  min-width: 60px;
+}
+
+/* 「无需 API key」provider 的提示 — e.g. MyMemory. 跟 hint 样式一致,
+ * 但更紧凑, 因为它只在 API key 区域出现一次. */
+.ez-reader__translation-apikey__no-key {
+  padding: 8px 12px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* OpenAI 兼容 provider 的常用示例块 — monospace 字体, 多行展示,
+ * 方便用户复制 baseUrl 和 model. */
+.ez-reader__translation-apikey__examples {
+  margin-top: 6px;
+  padding: 8px 12px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+}
+
 /* P1: 点击 PDF 黄条 → 笔记面板 focus flash. */
 .ez-reader__pdf-overlay-row--focus {
   background: var(--interactive-accent) !important;
@@ -2907,6 +3070,7 @@
 
 /* === Settings === */
 .ez-reader__settings-hint {
+  flex-basis: 100%;
   margin: -4px 0 12px 0;
   padding: 10px 12px;
   background: var(--background-secondary);

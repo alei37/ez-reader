@@ -11,6 +11,9 @@ import { PdfCoverExtractor } from "./adapters/obsidian/PdfCoverExtractor";
 import { GoogleTranslationProvider } from "./adapters/translation/GoogleTranslationProvider";
 import { YoudaoTranslationProvider } from "./adapters/translation/YoudaoTranslationProvider";
 import { DeeplTranslationProvider } from "./adapters/translation/DeeplTranslationProvider";
+import { MyMemoryTranslationProvider } from "./adapters/translation/MyMemoryTranslationProvider";
+import { OpenAICompatibleTranslationProvider } from "./adapters/translation/OpenAICompatibleTranslationProvider";
+import { AnthropicCompatibleTranslationProvider } from "./adapters/translation/AnthropicCompatibleTranslationProvider";
 import { LibraryService } from "./core/services/LibraryService";
 import { ReadingService } from "./core/services/ReadingService";
 import { TranslationCoordinator } from "./core/services/TranslationService";
@@ -114,7 +117,16 @@ export default class EzReaderPlugin extends Plugin {
     this.translation = new TranslationCoordinator(this.annotationStore, [
       new YoudaoTranslationProvider(),
       new DeeplTranslationProvider(),
-      new GoogleTranslationProvider()
+      new GoogleTranslationProvider(),
+      // P2: 免费无 key provider — 给不想注册信用卡/有道那种付费账户的用户。
+      // 每天每个 IP 1 万字符,质量略低于 DeepL/Google 但够用。
+      new MyMemoryTranslationProvider(),
+      // P2: 用户自定义 LLM (OpenAI 兼容) — DeepSeek / 智谱 / 通义 / OpenAI
+      // 都走同一接口, 在 settings 里填 baseUrl + apiKey + model 即可.
+      new OpenAICompatibleTranslationProvider(),
+      // P2: 用户自定义 LLM (Anthropic Messages API 兼容) — MiniMax 等。
+      // 注意是 /v1/messages 不是 /chat/completions, 鉴权走 x-api-key 头.
+      new AnthropicCompatibleTranslationProvider()
     ]);
     // Settings 改完立即 bust translation 30s cache, 让下一次 translate 拿到新 provider / key.
     this.annotationStore.onSettingsChanged(() => this.translation.invalidate());
@@ -144,7 +156,22 @@ export default class EzReaderPlugin extends Plugin {
       // Cover hydration must run after the library has populated its
       // entries — slug → bookId mapping needs them to exist.
       await this.covers.hydrateCovers();
+      // P3: Obsidian 重启后会自动恢复之前打开的 leaf, 但 `openInBuiltInViewer`
+      // 这条挂 overlay 的路径只在用户从书架打开时才会跑 — 自动恢复的 PDF
+      // leaf 没人挂 overlay, 用户就看到「翻译弹窗/选词菜单不见了」。这里扫
+      // 一遍所有已打开的 PDF leaf, 给在书架里的 PDF 补挂 overlay.
+      await this.attachOverlaysToOpenLibraryPdfs();
     });
+    // P3: 用户从书架外 (反向链接 / 全局搜索 / 文件浏览器) 点开 PDF 时,
+    // `openInBuiltInViewer` 不会被调用, overlay 也漏挂. active-leaf-change
+    // 覆盖这条路径 — 每次切到 PDF leaf 都 check 一下, 缺就补挂. findPdfOverlayForLeaf
+    // 是 WeakMap 查表, 命中就 return, 0 开销.
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (!leaf || leaf.view.getViewType() !== "pdf") return;
+        void this.attachOverlayToPdfLeafIfLibraryBook(leaf);
+      })
+    );
 
     this.addSettingTab(new SettingsTab(this.app, this, this.annotationStore, this.translation.listProviders()));
 
@@ -498,12 +525,36 @@ export default class EzReaderPlugin extends Plugin {
     }) ?? this.app.workspace.getMostRecentLeaf();
     if (!target) return;
     // 挂 overlay
+    await this.attachOverlayToPdfLeafIfLibraryBook(target);
+  }
+
+  /**
+   * 给已存在的 PDF leaf 挂 overlay, 当且仅当:
+   *   1. 该 leaf 还没挂过 (WeakMap ATTACHED 查不到)
+   *   2. 该 leaf 里的 PDF 文件路径在书架里 (LibraryService.list() 能找到)
+   *
+   * 第二条故意收窄 — 我们不想让插件给 vault 里每一个随机 PDF 都塞选词菜单 /
+   * 翻译弹窗 / 笔记侧栏按钮, 用户的心智模型是「EzReader 只管书架里的书」。
+   * 想读 vault 里的其他 PDF, 先加到书架再开。
+   *
+   * 三处 caller 共用:
+   *   1. `openInBuiltInViewer` — 从书架打开
+   *   2. `attachOverlaysToOpenLibraryPdfs` — onLayoutReady 时扫一遍已打开 leaf
+   *   3. `active-leaf-change` listener — 用户从书架外点开 PDF 时兜底
+   */
+  private async attachOverlayToPdfLeafIfLibraryBook(leaf: WorkspaceLeaf): Promise<void> {
+    const { findPdfOverlayForLeaf, PdfOverlay } = await import("./ui/reader/pdfOverlay");
+    if (findPdfOverlayForLeaf(leaf)) return;
+    const view = leaf.view as { file?: { path?: string } };
+    const filePath = view.file?.path;
+    if (!filePath) return;
+    const entry = this.library.list().find((e) => e.book.locator.path === filePath);
+    if (!entry) return;
     try {
-      const { PdfOverlay } = await import("./ui/reader/pdfOverlay");
       const overlay = new PdfOverlay({
         app: this.app,
-        pdfLeaf: target,
-        bookPath: entry.book.locator.path,
+        pdfLeaf: leaf,
+        bookPath: filePath,
         reading: this.reading,
         translation: this.translation,
         library: this.library,
@@ -513,6 +564,18 @@ export default class EzReaderPlugin extends Plugin {
       overlay.mount();
     } catch (error) {
       console.warn("[ez-reader] failed to attach PdfOverlay", error);
+    }
+  }
+
+  /**
+   * 扫描当前 workspace 里所有 PDF leaf, 给书架里的 PDF 补挂 overlay.
+   * 主要场景: Obsidian 重启后自动恢复上次打开的 PDF leaf, 但 overlay 没存
+   * 盘, 只能重建.
+   */
+  private async attachOverlaysToOpenLibraryPdfs(): Promise<void> {
+    const pdfLeaves = this.app.workspace.getLeavesOfType("pdf");
+    for (const leaf of pdfLeaves) {
+      await this.attachOverlayToPdfLeafIfLibraryBook(leaf);
     }
   }
 

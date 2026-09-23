@@ -7,6 +7,7 @@ import type { LibraryService } from "../../core/services/LibraryService";
 import type { Bookmark } from "../../core/entities/Bookmark";
 import type { Excerpt } from "../../core/entities/Excerpt";
 import type { ReadingPosition } from "../../core/entities/ReadingState";
+import type { Locale } from "../../core/types/Locale";
 import { findHighlightRect, findNextPageWithText, findTextOnPage as findTextOnPageInLayer } from "../../core/pdf/highlight";
 import { computeSelectionMenuPosition } from "./selectionMenuPosition";
 
@@ -42,6 +43,10 @@ interface PendingSelection {
   text: string;
   locator: string;
   pageNumber: number;
+  /** Selection rect at the time of capture. Re-used to anchor the
+   *  translation popover so it lands near where the user picked the
+   *  word, not wherever the cursor has wandered since. */
+  rect: DOMRect;
 }
 
 interface RenderedHighlight {
@@ -148,6 +153,11 @@ export class PdfOverlay {
   private readonly notesPanel: HTMLElement;
   private readonly highlightLayer: HTMLElement;
   private readonly searchBar: HTMLElement;
+  /** P2: PDF 选词翻译的浮动小弹窗 — 替代之前的 `new Notice` toast (3 秒消失
+   *  还盖在最上面, 译文长就截掉, 用户复制也不方便). 挂到 `document.body`,
+   *  position: fixed, 锚定到选词 rect 附近 (复用 selectionMenuPosition).
+   *  内容: 原文 (小) + 译文 (主) + 复制 / 换语言重译 / × 按钮. */
+  private readonly translationPopoverEl: HTMLElement;
   private readonly disposers: Array<() => void> = [];
   private readonly highlightsByExcerpt = new Map<string, RenderedHighlight>();
   private pendingSelection: PendingSelection | undefined;
@@ -180,6 +190,10 @@ export class PdfOverlay {
     this.searchBar = createSearchBar(document.body, {
       onSearch: (q, fromStart) => void this.runPdfSearch(q, fromStart),
       onClose: () => this.closePdfSearch()
+    });
+    this.translationPopoverEl = createTranslationPopover(document.body, {
+      onCopy: () => void this.handleCopyTranslation(),
+      onCycleTarget: () => void this.handleCycleTranslationTarget()
     });
 
     this.renderHighlightsDebounced = debounce(() => void this.renderHighlights(), 250);
@@ -234,7 +248,7 @@ export class PdfOverlay {
         return;
       }
       const locator = `#page=${pageNumber}`;
-      this.pendingSelection = { text, locator, pageNumber };
+      this.pendingSelection = { text, locator, pageNumber, rect };
       showMenuAt(this.menuEl, rect);
     };
     // 拖选时 selectionchange 一帧内会触发多次; debounce 到 80ms 等用户
@@ -249,12 +263,16 @@ export class PdfOverlay {
       if (
         this.menuEl.contains(target) ||
         this.notesBtn.contains(target) ||
-        this.notesPanel.contains(target)
+        this.notesPanel.contains(target) ||
+        this.translationPopoverEl.contains(target)
       ) {
         return;
       }
       const sel = document.getSelection();
       if (!sel || sel.isCollapsed) this.hideMenu();
+      // 点空白处关闭翻译弹窗 — 跟 menu/notes 一样的「outside-click 关」
+      // 行为, 用户不用专门找 × 按钮。
+      this.hideTranslationPopover();
     };
     document.addEventListener("mousedown", onDocClick);
     this.disposers.push(() => document.removeEventListener("mousedown", onDocClick));
@@ -556,6 +574,7 @@ export class PdfOverlay {
     this.notesPanel.remove();
     this.highlightLayer.remove();
     this.searchBar.remove();
+    this.translationPopoverEl.remove();
     this.clearPdfSearchHighlights();
     this.pendingSelection = undefined;
     this.highlightsByExcerpt.clear();
@@ -615,13 +634,126 @@ export class PdfOverlay {
   private async handleTranslate(): Promise<void> {
     if (!this.pendingSelection) return;
     const text = this.pendingSelection.text;
+    const rect = this.pendingSelection.rect;
     this.hideMenu();
+    this.showTranslationPopover(text, rect);
     try {
       const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
-      new Notice(`翻译 (${this.targetLocale}):\n${result.text}`, 10000);
+      this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new Notice(`翻译失败: ${message}`);
+      this.renderTranslationError(text, message);
+    }
+  }
+
+  /**
+   * 在选区附近显示浮动翻译小弹窗, 显示「正在翻译…」状态。位置复用
+   * selectionMenuPosition 算法 — 跟选词菜单同位置, 不会跑到屏幕外。
+   */
+  private showTranslationPopover(sourceText: string, anchorRect: DOMRect): void {
+    const popover = this.translationPopoverEl;
+    const sourceEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__source");
+    const bodyEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__body");
+    const providerEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__provider");
+    if (sourceEl) sourceEl.setText(sourceText);
+    if (bodyEl) {
+      bodyEl.empty();
+      bodyEl.setText("正在翻译…");
+      bodyEl.addClass("is-loading");
+      bodyEl.removeClass("is-error");
+    }
+    if (providerEl) providerEl.setText(`→ ${this.targetLocale}`);
+    popover.removeClass("is-hidden");
+    // Anchor to the selection rect — same algorithm as selectionMenuAt.
+    // 千万不要在这里设 `display: flex` 作为 inline style — 那会盖过
+    // `.is-hidden { display: none }`,导致点 × 关不掉 (issue: 翻译后 ×
+    // 无效). 默认 CSS 已经是 `display: flex`, 只需要 removeClass("is-hidden").
+    popover.setCssProps({ left: "-9999px", top: "-9999px" });
+    requestAnimationFrame(() => {
+      const popoverRect = popover.getBoundingClientRect();
+      const pos = computeSelectionMenuPosition(anchorRect, popoverRect, {
+        width: window.innerWidth,
+        height: window.innerHeight
+      });
+      popover.setCssProps({ left: `${pos.left}px`, top: `${pos.top}px` });
+    });
+  }
+
+  private renderTranslationResult(
+    sourceText: string,
+    translated: string,
+    detected: string | null,
+    providerId: string
+  ): void {
+    const popover = this.translationPopoverEl;
+    const sourceEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__source");
+    const bodyEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__body");
+    const providerEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__provider");
+    if (sourceEl) sourceEl.setText(sourceText);
+    if (bodyEl) {
+      bodyEl.empty();
+      bodyEl.setText(translated);
+      bodyEl.removeClass("is-loading");
+      bodyEl.removeClass("is-error");
+    }
+    if (providerEl) {
+      const detectedPart = detected ? `检测到 ${detected} · ` : "";
+      providerEl.setText(`${detectedPart}${providerId} · → ${this.targetLocale}`);
+    }
+  }
+
+  private renderTranslationError(sourceText: string, message: string): void {
+    const popover = this.translationPopoverEl;
+    const sourceEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__source");
+    const bodyEl = popover.querySelector<HTMLElement>(".ez-reader__pdf-translation__body");
+    if (sourceEl) sourceEl.setText(sourceText);
+    if (bodyEl) {
+      bodyEl.empty();
+      bodyEl.setText(`翻译失败: ${message}`);
+      bodyEl.removeClass("is-loading");
+      bodyEl.addClass("is-error");
+    }
+  }
+
+  private hideTranslationPopover(): void {
+    this.translationPopoverEl.addClass("is-hidden");
+  }
+
+  /** Popover 内「复制」按钮 — 把当前译文写到剪贴板, 按钮短暂 ✓ 提示。 */
+  private async handleCopyTranslation(): Promise<void> {
+    const bodyEl = this.translationPopoverEl.querySelector<HTMLElement>(".ez-reader__pdf-translation__body");
+    if (!bodyEl) return;
+    const translated = bodyEl.textContent ?? "";
+    try {
+      // 跟 selection menu / drawer 共用 navigator.clipboard 路径。
+      await navigator.clipboard.writeText(translated);
+      const btn = this.translationPopoverEl.querySelector<HTMLButtonElement>(".ez-reader__pdf-translation__copy-btn");
+      if (btn) {
+        const original = btn.textContent ?? "复制";
+        btn.setText("✓ 已复制");
+        window.setTimeout(() => btn.setText(original), 1500);
+      }
+    } catch (error) {
+      console.warn("[ez-reader] copy translation failed", error);
+    }
+  }
+
+  /** Popover 内「换语言重译」按钮 — cycle 目标语言后复用 showTranslationPopover。 */
+  private async handleCycleTranslationTarget(): Promise<void> {
+    if (!this.pendingSelection) return;
+    const cycle: Locale[] = ["zh-CN", "en", "ja", "ko", "fr", "de"];
+    const currentIdx = cycle.indexOf(this.targetLocale);
+    const next = cycle[(currentIdx + 1) % cycle.length] ?? "zh-CN";
+    this.targetLocale = next;
+    const text = this.pendingSelection.text;
+    const rect = this.pendingSelection.rect;
+    this.showTranslationPopover(text, rect);
+    try {
+      const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
+      this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.renderTranslationError(text, message);
     }
   }
 
@@ -1222,4 +1354,143 @@ const findPdfTotalPages = (container: HTMLElement): number | null => {
     }
   }
   return max > 0 ? max : null;
+};
+
+/**
+ * PDF 选词翻译的浮动小弹窗。position: fixed 锚到选词 rect 附近 (跟
+ * selectionMenuAt 同算法), 内容:
+ *   - 原文 (浅灰小字, 最多 3 行, 多了省略)
+ *   - 译文 (主显示区)
+ *   - meta (检测到的源语言 · provider · 目标语言)
+ *   - 按钮: 复制 / 换语言重译 / × 关闭
+ *
+ * 替代之前的 `new Notice(...)` 模式 — 那个过几秒自动消失、长译文截掉、
+ * 没复制按钮。新计划跟 ReaderView 的 TranslationDrawer 视觉一致但更紧凑。
+ */
+const createTranslationPopover = (
+  parent: HTMLElement,
+  opts: { onCopy: () => void; onCycleTarget: () => void }
+): HTMLElement => {
+  const root = document.createElement("div");
+  root.className = "ez-reader__pdf-translation is-hidden";
+  root.setAttribute("role", "dialog");
+  root.setAttribute("aria-label", "翻译结果");
+  const header = document.createElement("div");
+  header.className = "ez-reader__pdf-translation__header";
+  const source = document.createElement("div");
+  source.className = "ez-reader__pdf-translation__source";
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "ez-reader__pdf-translation__close";
+  closeBtn.textContent = "×";
+  closeBtn.title = "关闭";
+  closeBtn.setAttribute("aria-label", "关闭翻译");
+  closeBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    root.addClass("is-hidden");
+  });
+  header.append(source, closeBtn);
+  const body = document.createElement("div");
+  body.className = "ez-reader__pdf-translation__body is-loading";
+  body.textContent = "正在翻译…";
+  const provider = document.createElement("div");
+  provider.className = "ez-reader__pdf-translation__provider";
+  const actions = document.createElement("div");
+  actions.className = "ez-reader__pdf-translation__actions";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "ez-reader__pdf-translation__copy-btn";
+  copyBtn.textContent = "复制";
+  copyBtn.setAttribute("aria-label", "复制译文");
+  copyBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    opts.onCopy();
+  });
+  const cycleBtn = document.createElement("button");
+  cycleBtn.type = "button";
+  cycleBtn.className = "ez-reader__pdf-translation__cycle-btn";
+  cycleBtn.textContent = "换语言重译";
+  cycleBtn.setAttribute("aria-label", "切换目标语言后重新翻译");
+  cycleBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    opts.onCycleTarget();
+  });
+  actions.append(copyBtn, cycleBtn);
+  root.append(header, body, provider, actions);
+  // 拖拽 — 按 header(避开 × 按钮)就能拖到屏幕任意位置。拖出视口的边界
+  // 由 makeDraggable 内部 clamp, 不会丢到屏幕外找不回来.
+  makeDraggable(root, header);
+  parent.appendChild(root);
+  return root;
+};
+
+/**
+ * 让 el 跟随 handle 鼠标拖动 — 只用原生 mousedown/move/up, 不引外部库.
+ *
+ * - 鼠标按 handle(左键) 启动拖拽, 记录起始鼠标位置 + el 起始位置 + 尺寸
+ * - mousemove 把 el.setCssProps({left, top}) 用「orig + dx/dy」算出, 同
+ *   时 clamp 到视口内(防止拖出去找不回来)
+ * - mouseup / 鼠标离开 document 都结束
+ * - 按到 button / input / select / textarea 不启动拖拽(避免点 × 误拖)
+ * - 拖拽期间给 el 加 `is-dragging` class, CSS 切 cursor + 关掉文字选择
+ *
+ * 每次 drag 都是新的: 不会保存位置, 下次 showTranslationPopover 会重新
+ * anchor 到新选词附近 (用户期望的是「每条翻译就近弹」, 不是「全局记忆位置」).
+ */
+const makeDraggable = (el: HTMLElement, handle: HTMLElement): void => {
+  let dragState: {
+    startX: number;
+    startY: number;
+    origLeft: number;
+    origTop: number;
+    width: number;
+    height: number;
+  } | null = null;
+
+  const cleanup = (): void => {
+    dragState = null;
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+    el.removeClass("is-dragging");
+  };
+
+  const onMouseMove = (event: MouseEvent): void => {
+    if (!dragState) return;
+    const dx = event.clientX - dragState.startX;
+    const dy = event.clientY - dragState.startY;
+    // Clamp 到视口 — 0..(viewport - el 尺寸), 防止用户拖到屏外找不回来.
+    const maxLeft = Math.max(0, window.innerWidth - dragState.width);
+    const maxTop = Math.max(0, window.innerHeight - dragState.height);
+    const newLeft = Math.max(0, Math.min(maxLeft, dragState.origLeft + dx));
+    const newTop = Math.max(0, Math.min(maxTop, dragState.origTop + dy));
+    el.setCssProps({ left: `${newLeft}px`, top: `${newTop}px` });
+  };
+
+  const onMouseUp = (): void => {
+    cleanup();
+  };
+
+  handle.addEventListener("mousedown", (event) => {
+    // 只响应左键 — 右键 / 中键不拖
+    if (event.button !== 0) return;
+    // 不要在按钮 / 输入控件上启动拖拽 — 用户点 × 误触发拖拽会很怪
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, input, select, textarea, [role='button']")) return;
+    event.preventDefault();
+    const rect = el.getBoundingClientRect();
+    dragState = {
+      startX: event.clientX,
+      startY: event.clientY,
+      origLeft: rect.left,
+      origTop: rect.top,
+      width: rect.width,
+      height: rect.height
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    el.addClass("is-dragging");
+  });
 };
