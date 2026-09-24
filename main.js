@@ -12538,7 +12538,7 @@ __export(pdfOverlay_exports, {
   PdfOverlay: () => PdfOverlay,
   findPdfOverlayForLeaf: () => findPdfOverlayForLeaf
 });
-var import_obsidian18, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable;
+var import_obsidian18, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, attachInlineNoteEditor, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable, NOTES_BTN_POS_KEY, readNotesBtnPos, writeNotesBtnPos;
 var init_pdfOverlay = __esm({
   "src/ui/reader/pdfOverlay.ts"() {
     "use strict";
@@ -12560,8 +12560,8 @@ var init_pdfOverlay = __esm({
     debounce2 = (fn, ms) => {
       let timer;
       return (...args) => {
-        if (timer !== void 0) clearTimeout(timer);
-        timer = setTimeout(() => fn(...args), ms);
+        if (timer !== void 0) window.clearTimeout(timer);
+        timer = window.setTimeout(() => fn(...args), ms);
       };
     };
     findActivePageNumber = (container) => {
@@ -12635,9 +12635,14 @@ var init_pdfOverlay = __esm({
         });
         this.notesPanel = createNotesPanel(document.body);
         this.notesBtn = createNotesButton(document.body, {
-          onClick: () => this.toggleNotesPanel()
+          onClick: () => this.toggleNotesPanel(),
+          bookPath: this.opts.bookPath
         });
         this.highlightLayer = createHighlightLayer(document.body);
+        this.highlightLayer.addEventListener("click", this.onHighlightClick);
+        this.disposers.push(
+          () => this.highlightLayer.removeEventListener("click", this.onHighlightClick)
+        );
         this.searchBar = createSearchBar(document.body, {
           onSearch: (q2, fromStart) => void this.runPdfSearch(q2, fromStart),
           onClose: () => this.closePdfSearch()
@@ -12731,10 +12736,10 @@ var init_pdfOverlay = __esm({
             const now = performance.now();
             this.repositionHighlights();
             lastUpdate = now;
-            rafHandle = requestAnimationFrame(tick);
+            rafHandle = window.requestAnimationFrame(tick);
           };
-          rafHandle = requestAnimationFrame(tick);
-          this.disposers.push(() => cancelAnimationFrame(rafHandle));
+          rafHandle = window.requestAnimationFrame(tick);
+          this.disposers.push(() => window.cancelAnimationFrame(rafHandle));
         }
         const onLeafChange = () => {
           if (!this.isLeafAlive()) this.unmount();
@@ -12743,12 +12748,12 @@ var init_pdfOverlay = __esm({
         this.disposers.push(() => this.opts.app.workspace.off("active-leaf-change", onLeafChange));
         let persistTimer;
         const schedulePositionPersist = () => {
-          if (persistTimer !== void 0) clearTimeout(persistTimer);
-          persistTimer = setTimeout(() => void this.persistCurrentPosition(), 250);
+          if (persistTimer !== void 0) window.clearTimeout(persistTimer);
+          persistTimer = window.setTimeout(() => void this.persistCurrentPosition(), 250);
         };
         this.disposers.push(() => {
           if (persistTimer !== void 0) {
-            clearTimeout(persistTimer);
+            window.clearTimeout(persistTimer);
             persistTimer = void 0;
           }
         });
@@ -12829,14 +12834,24 @@ var init_pdfOverlay = __esm({
           const divs = [];
           for (const rect of item.rects) {
             const div = drawHighlight(this.highlightLayer, rect, item.ex.id, item.ex.text);
-            div.addEventListener("click", (event) => {
+            let handled = false;
+            const handleHighlightTap = (event) => {
+              if (handled) return;
+              handled = true;
               event.preventDefault();
               event.stopPropagation();
               if (!this.notesPanel.classList.contains("is-open")) {
                 this.toggleNotesPanel();
               }
               this.focusExcerptInPanel(item.ex.id);
-            });
+            };
+            div.addEventListener(
+              "mousedown",
+              handleHighlightTap,
+              true
+              /* capture */
+            );
+            div.addEventListener("click", handleHighlightTap);
             divs.push(div);
           }
           this.highlightsByExcerpt.set(item.ex.id, {
@@ -12993,6 +13008,12 @@ var init_pdfOverlay = __esm({
               }
               await this.refreshNotesPanel();
               new import_obsidian18.Notice("\u6458\u5F55\u5DF2\u5220\u9664");
+            },
+            // P2: 让面板里的 note 字段可内联编辑 — 用户点黄线 → 跳到这条摘录 →
+            // 自动进编辑模式; blur 保存走 reading.updateExcerptNote (不动 highlight /
+            // createdAt / locator, 只 patch note).
+            onUpdateNote: async (id, note) => {
+              await this.opts.reading.updateExcerptNote(this.bookId, id, { note });
             }
           });
         } catch (error) {
@@ -13018,6 +13039,61 @@ var init_pdfOverlay = __esm({
         }
       }
       /**
+       * 点击黄色高亮 → 打开笔记面板 + 滚动到对应摘录行 + 让 note 进入编辑模式.
+       * user 期望 "看到想法 + 能改" (P2 feedback). handler 是箭头函数, 避免
+       * `this` 在事件触发时变成 highlightLayer 元素.
+       */
+      onHighlightClick = (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const hl = target.closest(".ez-reader__pdf-overlay-highlight");
+        if (!hl) return;
+        const excerptId = hl.getAttribute("data-excerpt-id");
+        if (!excerptId) return;
+        event.stopPropagation();
+        void this.focusExcerptInNotesPanel(excerptId);
+      };
+      /**
+       * 在笔记面板中找到指定 excerpt, 滚到可视区, 让它的 note 进入编辑模式.
+       * 面板之前没开就先开; 已经开就 refreshNotesPanel 一次保证数据最新.
+       *
+       * 实现注意: 不 dispatchEvent 触发 click — synthetic event 在某些 Electron
+       * 版本里被 attachInlineNoteEditor 里某些 bound listener 吞掉. 直接调
+       * startEdit 内部逻辑 (在 renderNotesPanelContent 闭包里捕获). 这里通过
+       * noteEl 的 data-editing sentinel + is-editing class 切换让用户看到
+       * 「进入编辑态」的视觉变化.
+       */
+      async focusExcerptInNotesPanel(excerptId) {
+        if (!this.notesPanel.classList.contains("is-open")) {
+          this.toggleNotesPanel();
+        }
+        await this.refreshNotesPanel();
+        const row = this.notesPanel.querySelector(
+          `[data-excerpt-id="${CSS.escape(excerptId)}"]`
+        );
+        if (!row) {
+          return;
+        }
+        row.scrollIntoView({ block: "center", behavior: "smooth" });
+        row.addClass("is-just-focused");
+        window.setTimeout(() => row.removeClass("is-just-focused"), 1500);
+        const noteEl = row.querySelector(".ez-reader__pdf-overlay-notes-panel__note");
+        if (!noteEl) return;
+        if (noteEl.getAttribute("data-editing") === "1") return;
+        noteEl.setAttribute("data-editing", "1");
+        noteEl.removeClass("is-placeholder");
+        noteEl.addClass("is-editing");
+        noteEl.contentEditable = "true";
+        noteEl.focus();
+        const range = document.createRange();
+        range.selectNodeContents(noteEl);
+        const selection = window.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }
+      /**
        * 在选区附近显示浮动翻译小弹窗, 显示「正在翻译…」状态。位置复用
        * selectionMenuPosition 算法 — 跟选词菜单同位置, 不会跑到屏幕外。
        */
@@ -13036,7 +13112,7 @@ var init_pdfOverlay = __esm({
         if (providerEl) providerEl.setText(`\u2192 ${this.targetLocale}`);
         popover.removeClass("is-hidden");
         popover.setCssProps({ left: "-9999px", top: "-9999px" });
-        requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
           const popoverRect = popover.getBoundingClientRect();
           const pos = computeSelectionMenuPosition(anchorRect, popoverRect, {
             width: window.innerWidth,
@@ -13429,7 +13505,7 @@ var init_pdfOverlay = __esm({
         left: "-9999px",
         top: "-9999px"
       });
-      requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
         const menuRect = menu.getBoundingClientRect();
         const pos = computeSelectionMenuPosition(rect, menuRect, {
           width: window.innerWidth,
@@ -13445,12 +13521,22 @@ var init_pdfOverlay = __esm({
       const btn = document.createElement("button");
       btn.className = "ez-reader__pdf-overlay-notes-btn";
       btn.textContent = "\u{1F4DD}";
-      btn.title = "\u7B14\u8BB0 (bookmarks / excerpts)";
+      btn.title = "\u7B14\u8BB0 (bookmarks / excerpts) \u2014 \u62D6\u52A8\u79FB\u52A8\u4F4D\u7F6E";
+      const saved = readNotesBtnPos(opts.bookPath);
+      if (saved) {
+        btn.setCssProps({
+          top: `${saved.top}px`,
+          left: `${saved.left}px`,
+          bottom: "auto",
+          right: "auto"
+        });
+      }
       btn.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         opts.onClick();
       });
+      makeDraggable(btn, btn, (left, top) => writeNotesBtnPos(opts.bookPath, { left, top }));
       parent.appendChild(btn);
       return btn;
     };
@@ -13558,6 +13644,16 @@ var init_pdfOverlay = __esm({
           const row = panel.createEl("div", { cls: "ez-reader__pdf-overlay-notes-panel__row" });
           row.setAttribute("data-excerpt-id", ex.id);
           row.createEl("div", { text: ex.text, cls: "excerpt" });
+          const noteEl = row.createEl("div", {
+            cls: "ez-reader__pdf-overlay-notes-panel__note",
+            text: ex.note || ""
+          });
+          noteEl.setAttribute("data-editing", "0");
+          if (ex.note) noteEl.addClass("has-content");
+          else noteEl.addClass("is-placeholder");
+          if (handlers.onUpdateNote) {
+            attachInlineNoteEditor(noteEl, ex, handlers.onUpdateNote);
+          }
           const pos = ex.locator.position;
           if (pos.kind === "pdf") {
             const target = pos.selection ?? `#page=${pos.page}`;
@@ -13570,7 +13666,49 @@ var init_pdfOverlay = __esm({
         }
       }
     };
-    drawHighlight = (layer, rect, excerptId, searchText) => {
+    attachInlineNoteEditor = (noteEl, ex, onUpdate) => {
+      noteEl.setAttribute("title", "\u70B9\u51FB\u7F16\u8F91\u60F3\u6CD5");
+      noteEl.addEventListener("click", () => {
+        if (noteEl.getAttribute("data-editing") === "1") return;
+        noteEl.setAttribute("data-editing", "1");
+        noteEl.removeClass("is-placeholder");
+        noteEl.addClass("is-editing");
+        noteEl.setText(ex.note || "");
+        noteEl.contentEditable = "true";
+        noteEl.focus();
+        const range = document.createRange();
+        range.selectNodeContents(noteEl);
+        const selection = window.getSelection();
+        if (selection) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      });
+      noteEl.addEventListener("blur", () => {
+        if (noteEl.getAttribute("data-editing") !== "1") return;
+        const next = (noteEl.textContent ?? "").trim();
+        noteEl.contentEditable = "false";
+        noteEl.removeClass("is-editing");
+        noteEl.setAttribute("data-editing", "0");
+        if (next) noteEl.addClass("has-content");
+        else noteEl.removeClass("has-content");
+        noteEl.toggleClass("is-placeholder", next.length === 0);
+        if (next !== ex.note) {
+          void onUpdate(ex.id, next);
+        }
+      });
+      noteEl.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          noteEl.setText(ex.note || "");
+          noteEl.blur();
+          event.preventDefault();
+        } else if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          noteEl.blur();
+        }
+      });
+    };
+    drawHighlight = (layer, rect, excerptId, searchText, onClick) => {
       const hl = document.createElement("div");
       hl.className = "ez-reader__pdf-overlay-highlight";
       hl.dataset.excerptId = excerptId;
@@ -13581,6 +13719,12 @@ var init_pdfOverlay = __esm({
         width: `${rect.width}px`,
         height: `${rect.height}px`
       });
+      if (onClick) {
+        hl.addEventListener("click", (event) => {
+          event.stopPropagation();
+          onClick(excerptId);
+        });
+      }
       layer.appendChild(hl);
       return hl;
     };
@@ -13653,7 +13797,7 @@ var init_pdfOverlay = __esm({
       parent.appendChild(root);
       return root;
     };
-    makeDraggable = (el, handle) => {
+    makeDraggable = (el, handle, onMove) => {
       let dragState = null;
       const cleanup = () => {
         dragState = null;
@@ -13670,6 +13814,7 @@ var init_pdfOverlay = __esm({
         const newLeft = Math.max(0, Math.min(maxLeft, dragState.origLeft + dx));
         const newTop = Math.max(0, Math.min(maxTop, dragState.origTop + dy));
         el.setCssProps({ left: `${newLeft}px`, top: `${newTop}px` });
+        onMove?.(newLeft, newTop);
       };
       const onMouseUp = () => {
         cleanup();
@@ -13677,7 +13822,10 @@ var init_pdfOverlay = __esm({
       handle.addEventListener("mousedown", (event) => {
         if (event.button !== 0) return;
         const target = event.target;
-        if (target?.closest("button, input, select, textarea, [role='button']")) return;
+        const nestedButton = target?.closest(
+          "button, input, select, textarea, [role='button']"
+        );
+        if (nestedButton && nestedButton !== handle) return;
         event.preventDefault();
         const rect = el.getBoundingClientRect();
         dragState = {
@@ -13692,6 +13840,26 @@ var init_pdfOverlay = __esm({
         document.addEventListener("mouseup", onMouseUp);
         el.addClass("is-dragging");
       });
+    };
+    NOTES_BTN_POS_KEY = "ez-reader.pdf.notesBtnPos.";
+    readNotesBtnPos = (bookPath) => {
+      try {
+        const raw = localStorage.getItem(NOTES_BTN_POS_KEY + bookPath);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.top === "number" && typeof parsed.left === "number") {
+          return { top: parsed.top, left: parsed.left };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    };
+    writeNotesBtnPos = (bookPath, pos) => {
+      try {
+        localStorage.setItem(NOTES_BTN_POS_KEY + bookPath, JSON.stringify(pos));
+      } catch {
+      }
     };
   }
 });
