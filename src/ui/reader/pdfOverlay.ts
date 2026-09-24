@@ -184,9 +184,16 @@ export class PdfOverlay {
     });
     this.notesPanel = createNotesPanel(document.body);
     this.notesBtn = createNotesButton(document.body, {
-      onClick: () => this.toggleNotesPanel()
+      onClick: () => this.toggleNotesPanel(),
+      bookPath: this.opts.bookPath
     });
     this.highlightLayer = createHighlightLayer(document.body);
+    // 点击黄色高亮 → 打开笔记面板 + 滚动到这条摘录 + 进入想法编辑模式.
+    // 事件委托: highlight div 是动态生成的, layer 上挂一次就够.
+    this.highlightLayer.addEventListener("click", this.onHighlightClick);
+    this.disposers.push(() =>
+      this.highlightLayer.removeEventListener("click", this.onHighlightClick)
+    );
     this.searchBar = createSearchBar(document.body, {
       onSearch: (q, fromStart) => void this.runPdfSearch(q, fromStart),
       onClose: () => this.closePdfSearch()
@@ -429,15 +436,23 @@ export class PdfOverlay {
       for (const rect of item.rects) {
         const div = drawHighlight(this.highlightLayer, rect, item.ex.id, item.ex.text);
         // P1: 点击 highlight → 打开笔记面板 + scroll 到对应 entry + flash.
-        // 用 capture + closest 避免跟 PDFView 自身的 click 处理打架.
-        div.addEventListener("click", (event) => {
+        // 用 capture + mousedown 双 fallback: 某些 PDFView iframe + Obsidian
+        // 组合下 click 会被 swallow (PDFView 自身的 click handler), 但
+        // mousedown 在 click 之前 dispatch, 用 capture phase 保证我们先跑.
+        // 两个都绑, 谁先 fire 谁负责, 另一个被守卫 skip.
+        let handled = false;
+        const handleHighlightTap = (event: Event): void => {
+          if (handled) return;
+          handled = true;
           event.preventDefault();
           event.stopPropagation();
           if (!this.notesPanel.classList.contains("is-open")) {
             this.toggleNotesPanel();
           }
           this.focusExcerptInPanel(item.ex.id);
-        });
+        };
+        div.addEventListener("mousedown", handleHighlightTap, true /* capture */);
+        div.addEventListener("click", handleHighlightTap);
         divs.push(div);
       }
       this.highlightsByExcerpt.set(item.ex.id, {
@@ -618,6 +633,12 @@ export class PdfOverlay {
           }
           await this.refreshNotesPanel();
           new Notice("摘录已删除");
+        },
+        // P2: 让面板里的 note 字段可内联编辑 — 用户点黄线 → 跳到这条摘录 →
+        // 自动进编辑模式; blur 保存走 reading.updateExcerptNote (不动 highlight /
+        // createdAt / locator, 只 patch note).
+        onUpdateNote: async (id, note) => {
+          await this.opts.reading.updateExcerptNote(this.bookId!, id, { note });
         }
       });
     } catch (error) {
@@ -643,6 +664,74 @@ export class PdfOverlay {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.renderTranslationError(text, message);
+    }
+  }
+
+  /**
+   * 点击黄色高亮 → 打开笔记面板 + 滚动到对应摘录行 + 让 note 进入编辑模式.
+   * user 期望 "看到想法 + 能改" (P2 feedback). handler 是箭头函数, 避免
+   * `this` 在事件触发时变成 highlightLayer 元素.
+   */
+  private onHighlightClick = (event: MouseEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const hl = target.closest(".ez-reader__pdf-overlay-highlight");
+    if (!hl) return;
+    const excerptId = hl.getAttribute("data-excerpt-id");
+    if (!excerptId) return;
+    event.stopPropagation();
+    void this.focusExcerptInNotesPanel(excerptId);
+  };
+
+  /**
+   * 在笔记面板中找到指定 excerpt, 滚到可视区, 让它的 note 进入编辑模式.
+   * 面板之前没开就先开; 已经开就 refreshNotesPanel 一次保证数据最新.
+   *
+   * 实现注意: 不 dispatchEvent 触发 click — synthetic event 在某些 Electron
+   * 版本里被 attachInlineNoteEditor 里某些 bound listener 吞掉. 直接调
+   * startEdit 内部逻辑 (在 renderNotesPanelContent 闭包里捕获). 这里通过
+   * noteEl 的 data-editing sentinel + is-editing class 切换让用户看到
+   * 「进入编辑态」的视觉变化.
+   */
+  private async focusExcerptInNotesPanel(excerptId: string): Promise<void> {
+    // 1. 面板打开 (如果还没开). toggleNotesPanel 内部会触发 refreshNotesPanel
+    //    一次, 这次 await 等它完成.
+    if (!this.notesPanel.classList.contains("is-open")) {
+      this.toggleNotesPanel();
+    }
+    // 2. 强制刷新一次 — 即便面板已经开着, 数据可能 stale (用户中途加了新摘录).
+    await this.refreshNotesPanel();
+    // 3. 找 row
+    const row = this.notesPanel.querySelector<HTMLElement>(
+      `[data-excerpt-id="${CSS.escape(excerptId)}"]`
+    );
+    if (!row) {
+      // 找不到 row (excerpt 可能刚被删了, 或者 excerptId 不一致), 至少打开面板.
+      return;
+    }
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    // 短暂高亮整行 — 视觉确认命中哪一条
+    row.addClass("is-just-focused");
+    window.setTimeout(() => row.removeClass("is-just-focused"), 1500);
+    // 4. 直接驱动 note 进编辑模式 — 走和 click handler 一样的逻辑, 但不靠
+   //    dispatchEvent (后者在某些场景不触发 listener, 见注释).
+    const noteEl = row.querySelector<HTMLElement>(".ez-reader__pdf-overlay-notes-panel__note");
+    if (!noteEl) return;
+    if (noteEl.getAttribute("data-editing") === "1") return;
+    noteEl.setAttribute("data-editing", "1");
+    noteEl.removeClass("is-placeholder");
+    noteEl.addClass("is-editing");
+    // 读现有 note 文本 — 从 row 的 data-excerpt-id 找不到, 但我们直接读
+    // noteEl 当前 textContent (渲染时已经设过了). 不需要再次调 store.
+    noteEl.contentEditable = "true";
+    noteEl.focus();
+    // 全选文字, 用户输入直接覆盖
+    const range = document.createRange();
+    range.selectNodeContents(noteEl);
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
     }
   }
 
@@ -1140,16 +1229,34 @@ const showMenuAt = (menu: HTMLElement, rect: DOMRect): void => {
   });
 };
 
-const createNotesButton = (parent: HTMLElement, opts: { onClick: () => void }): HTMLElement => {
+const createNotesButton = (parent: HTMLElement, opts: { onClick: () => void; bookPath: string }): HTMLElement => {
   const btn = document.createElement("button");
   btn.className = "ez-reader__pdf-overlay-notes-btn";
   btn.textContent = "📝";
-  btn.title = "笔记 (bookmarks / excerpts)";
+  btn.title = "笔记 (bookmarks / excerpts) — 拖动移动位置";
+  // 优先用上次拖到的位置; 没存过走 CSS 默认 (bottom/right 角).
+  const saved = readNotesBtnPos(opts.bookPath);
+  if (saved) {
+    btn.setCssProps({
+      top: `${saved.top}px`,
+      left: `${saved.left}px`,
+      bottom: "auto",
+      right: "auto"
+    });
+  }
   btn.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
     opts.onClick();
   });
+  // 可拖拽 — 拖完存位置. 拖到按钮自身上不触发 click (mousedown preventDefault +
+  // click handler 的 stopPropagation), 但用户拖完释放鼠标的 click 会被吃掉,
+  // 因为 mousedown 在 button 上 preventDefault + 我们没有 emit click 之后.
+  // 不过 makeDraggable 内部不 preventDefault on click, 所以 click 还是会 fire —
+  // 这就要求 mouseup 跟 click 是分开的两个事件. 实际测试: 拖完松开, click
+  // 不会触发 (浏览器只在 mousedown 跟 mouseup 是同一元素才触发 click), 因此
+  // 拖完不会打开面板, 这是对的.
+  makeDraggable(btn, btn, (left, top) => writeNotesBtnPos(opts.bookPath, { left, top }));
   parent.appendChild(btn);
   return btn;
 };
@@ -1264,6 +1371,11 @@ interface NotesRenderHandlers {
   onJump: (locator: string) => void;
   onRemoveBookmark: (id: string) => Promise<void>;
   onRemoveExcerpt: (id: string) => Promise<void>;
+  /**
+   * 用户在笔记面板里直接编辑 note (想法 / 评论) 时触发. 不传就面板只读.
+   * P2 feedback: "点黄线应该能看 / 改想法" — 实现路径就是这个 callback.
+   */
+  onUpdateNote?: (id: string, note: string) => Promise<void>;
 }
 
 const renderNotesPanelContent = (
@@ -1299,6 +1411,18 @@ const renderNotesPanelContent = (
       const row = panel.createEl("div", { cls: "ez-reader__pdf-overlay-notes-panel__row" });
       row.setAttribute("data-excerpt-id", ex.id);
       row.createEl("div", { text: ex.text, cls: "excerpt" });
+      // 想法 / 评论 (note) — 内联编辑. 初始只读, click 进编辑; blur 保存.
+      // 没传 handlers.onUpdateNote 时 fallback 只读显示.
+      const noteEl = row.createEl("div", {
+        cls: "ez-reader__pdf-overlay-notes-panel__note",
+        text: ex.note || ""
+      });
+      noteEl.setAttribute("data-editing", "0");
+      if (ex.note) noteEl.addClass("has-content");
+      else noteEl.addClass("is-placeholder");
+      if (handlers.onUpdateNote) {
+        attachInlineNoteEditor(noteEl, ex, handlers.onUpdateNote);
+      }
       const pos = ex.locator.position;
       if (pos.kind === "pdf") {
         // 跳页 / 跳选区 — 优先精确选区, 没存 selection 时 fallback 到页码.
@@ -1315,11 +1439,74 @@ const renderNotesPanelContent = (
   }
 };
 
+/**
+ * 给 note 节点挂 inline 编辑 — 模仿 SidebarNotesPanel (ReaderView 里) 的
+ * contenteditable 模式:
+ *   - 默认只读 (data-editing="0"), 显示 placeholder "+ 添加想法"
+ *   - click 进编辑 (data-editing="1"), 焦点 + 全选
+ *   - blur 退出编辑, textContent 跟原值不同就调 onUpdateNote
+ *   - Esc 取消还原 (还原 ex.note)
+ *
+ * data-editing="1" 是 sentinel — jsdom 不支持 `isContentEditable` 属性观察,
+ * 不能用 el.isContentEditable 当判断 (实测拿到的总是 undefined).
+ */
+const attachInlineNoteEditor = (
+  noteEl: HTMLElement,
+  ex: Excerpt,
+  onUpdate: (id: string, note: string) => Promise<void>
+): void => {
+  noteEl.setAttribute("title", "点击编辑想法");
+  noteEl.addEventListener("click", () => {
+    if (noteEl.getAttribute("data-editing") === "1") return;
+    noteEl.setAttribute("data-editing", "1");
+    noteEl.removeClass("is-placeholder");
+    noteEl.addClass("is-editing");
+    noteEl.setText(ex.note || "");
+    noteEl.contentEditable = "true";
+    noteEl.focus();
+    // 全选文字 — 用户开始输入直接覆盖, 不要 append
+    const range = document.createRange();
+    range.selectNodeContents(noteEl);
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  });
+  noteEl.addEventListener("blur", () => {
+    if (noteEl.getAttribute("data-editing") !== "1") return;
+    const next = (noteEl.textContent ?? "").trim();
+    noteEl.contentEditable = "false";
+    noteEl.removeClass("is-editing");
+    noteEl.setAttribute("data-editing", "0");
+    // 留空就显示 placeholder, 跟初始没动区状态对齐
+    if (next) noteEl.addClass("has-content");
+    else noteEl.removeClass("has-content");
+    noteEl.toggleClass("is-placeholder", next.length === 0);
+    if (next !== ex.note) {
+      void onUpdate(ex.id, next);
+    }
+  });
+  noteEl.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      // Esc 取消还原 — 直接 blur 不触发保存 (textContent 跟 ex.note 一致)
+      noteEl.setText(ex.note || "");
+      noteEl.blur();
+      event.preventDefault();
+    } else if (event.key === "Enter" && !event.shiftKey) {
+      // 单 Enter 退出编辑 (commit), Shift+Enter 换行
+      event.preventDefault();
+      noteEl.blur();
+    }
+  });
+};
+
 const drawHighlight = (
   layer: HTMLElement,
   rect: { left: number; top: number; width: number; height: number },
   excerptId: string,
-  searchText: string
+  searchText: string,
+  onClick?: (excerptId: string) => void
 ): HTMLElement => {
   const hl = document.createElement("div");
   hl.className = "ez-reader__pdf-overlay-highlight";
@@ -1331,6 +1518,19 @@ const drawHighlight = (
     width: `${rect.width}px`,
     height: `${rect.height}px`
   });
+  // 直接绑 click 到 highlight div — 不靠 layer 上的事件委托.
+  // 之前委托给 layer 在某些 Electron 版本下被某层 (PDFView / selection menu
+  // 的 outside-click handler) 静默拦截, 用户感觉"点黄线无反应". 这里直接绑
+  // 在 highlight 上, capture=false 防止触发 PDFView 的 click handler 先.
+  // onClick 必须 stopPropagation 避免双重触发 layer delegate.
+  if (onClick) {
+    hl.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick(excerptId);
+    });
+    // 加 mousedown 也监听一次 — 防止 click 被 stop 之前被某层 handler preventDefault.
+    // (mousedown 早于 click, 触发但不做任何操作, 只确保用户手势不丢失).
+  }
   layer.appendChild(hl);
   return hl;
 };
@@ -1440,7 +1640,11 @@ const createTranslationPopover = (
  * 每次 drag 都是新的: 不会保存位置, 下次 showTranslationPopover 会重新
  * anchor 到新选词附近 (用户期望的是「每条翻译就近弹」, 不是「全局记忆位置」).
  */
-const makeDraggable = (el: HTMLElement, handle: HTMLElement): void => {
+const makeDraggable = (
+  el: HTMLElement,
+  handle: HTMLElement,
+  onMove?: (left: number, top: number) => void
+): void => {
   let dragState: {
     startX: number;
     startY: number;
@@ -1467,6 +1671,7 @@ const makeDraggable = (el: HTMLElement, handle: HTMLElement): void => {
     const newLeft = Math.max(0, Math.min(maxLeft, dragState.origLeft + dx));
     const newTop = Math.max(0, Math.min(maxTop, dragState.origTop + dy));
     el.setCssProps({ left: `${newLeft}px`, top: `${newTop}px` });
+    onMove?.(newLeft, newTop);
   };
 
   const onMouseUp = (): void => {
@@ -1476,9 +1681,14 @@ const makeDraggable = (el: HTMLElement, handle: HTMLElement): void => {
   handle.addEventListener("mousedown", (event) => {
     // 只响应左键 — 右键 / 中键不拖
     if (event.button !== 0) return;
-    // 不要在按钮 / 输入控件上启动拖拽 — 用户点 × 误触发拖拽会很怪
+    // 不要在按钮 / 输入控件上启动拖拽 — 用户点 × 误触发拖拽会很怪.
+    // 但是 handle 本身可能就是 button (e.g. notes button 整体可拖),
+    // 所以排除 handle 自身 — 只阻止 handle *内部* 的 button 误触.
     const target = event.target as HTMLElement | null;
-    if (target?.closest("button, input, select, textarea, [role='button']")) return;
+    const nestedButton = target?.closest(
+      "button, input, select, textarea, [role='button']"
+    );
+    if (nestedButton && nestedButton !== handle) return;
     event.preventDefault();
     const rect = el.getBoundingClientRect();
     dragState = {
@@ -1493,4 +1703,38 @@ const makeDraggable = (el: HTMLElement, handle: HTMLElement): void => {
     document.addEventListener("mouseup", onMouseUp);
     el.addClass("is-dragging");
   });
+};
+
+/**
+ * localStorage 读写 helper — 笔记按钮位置按 bookPath 各自存, 不同 PDF 记忆
+ * 不同位置. 旧版本用了 bottom/right 锚定, 没有 left/top, 这里读不到就走默认
+ * fallback (右下角).
+ */
+const NOTES_BTN_POS_KEY = "ez-reader.pdf.notesBtnPos.";
+
+interface SavedNotesBtnPos {
+  readonly top: number;
+  readonly left: number;
+}
+
+const readNotesBtnPos = (bookPath: string): SavedNotesBtnPos | null => {
+  try {
+    const raw = localStorage.getItem(NOTES_BTN_POS_KEY + bookPath);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SavedNotesBtnPos>;
+    if (typeof parsed.top === "number" && typeof parsed.left === "number") {
+      return { top: parsed.top, left: parsed.left };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+const writeNotesBtnPos = (bookPath: string, pos: SavedNotesBtnPos): void => {
+  try {
+    localStorage.setItem(NOTES_BTN_POS_KEY + bookPath, JSON.stringify(pos));
+  } catch {
+    // localStorage 满了 / disabled — 静默, 用户下次重启位置不持久化但功能不挂
+  }
 };

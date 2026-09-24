@@ -3241,13 +3241,23 @@
   background: var(--background-primary);
   color: var(--text-normal);
   font-size: 20px;
-  cursor: pointer;
+  cursor: grab;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+  /* P2: 按钮可拖 — 用户拖到不挡视野的位置. 位置存 localStorage 按 bookPath
+   * 各自记忆 (不同 PDF 不互相影响). makeDraggable 在拖拽期间给 el 加
+   * is-dragging class, 切到 grabbing + 关掉文字选中. */
 }
 
 .ez-reader__pdf-overlay-notes-btn.is-active {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
+  cursor: grab;
+}
+
+.ez-reader__pdf-overlay-notes-btn.is-dragging {
+  cursor: grabbing;
+  /* 拖拽期间稍微变亮提示 — 视觉反馈 */
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
 }
 
 .ez-reader__pdf-overlay-notes-panel {
@@ -3291,10 +3301,13 @@
 
 .ez-reader__pdf-overlay-notes-panel__row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 4px 0;
+  gap: 4px;
+  padding: 2px 0;
   border-bottom: 1px solid var(--background-modifier-border-hover);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .ez-reader__pdf-overlay-notes-panel__row .label,
@@ -3306,22 +3319,85 @@
 }
 
 .ez-reader__pdf-overlay-notes-panel__row .excerpt {
+  /* 紧凑模式: excerpt 最多 2 行 + ellipsis. 之前不限制会撑开 panel 让
+   * 单条 500 字选区占满整个 panel, 别的条目挤到下面看不见. */
   white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 11px;
+  color: var(--text-normal);
 }
 
+/* 紧凑模式: jump / delete 按钮默认半透明, hover 行时才清晰显示.
+ * 之前一直显示, 多个按钮挤在一行会盖掉 excerpt 文字. */
 .ez-reader__pdf-overlay-notes-panel__row .jump,
 .ez-reader__pdf-overlay-notes-panel__row .remove {
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 14px;
-  padding: 2px 6px;
-  color: var(--text-muted);
+  font-size: 12px;
+  padding: 1px 5px;
+  color: var(--text-faint);
+  opacity: 0.35;
+  transition: opacity 100ms ease, color 100ms ease;
+}
+
+.ez-reader__pdf-overlay-notes-panel__row:hover .jump,
+.ez-reader__pdf-overlay-notes-panel__row:hover .remove {
+  opacity: 1;
 }
 
 .ez-reader__pdf-overlay-notes-panel__row .jump:hover,
 .ez-reader__pdf-overlay-notes-panel__row .remove:hover {
   color: var(--text-normal);
+}
+
+/* 想法 / 评论 (note) — 内联编辑. 默认显示原文, hover 提示可编辑,
+ * 编辑态加边框 + 圈聚焦. placeholder 状态灰色斜体, 引导用户添加. */
+.ez-reader__pdf-overlay-notes-panel__note {
+  flex: 1 1 100%;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: text;
+  word-break: break-word;
+  white-space: pre-wrap;
+  transition: background 100ms ease, outline-color 100ms ease;
+  outline: 1px dashed transparent;
+}
+
+.ez-reader__pdf-overlay-notes-panel__note:hover {
+  background: var(--background-modifier-hover);
+}
+
+.ez-reader__pdf-overlay-notes-panel__note.is-placeholder {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.ez-reader__pdf-overlay-notes-panel__note.is-placeholder::before {
+  /* 没想法时显示「+ 添加想法」占位, 用 CSS 伪元素避免节点文本被覆盖. */
+  content: "+ 添加想法";
+}
+
+.ez-reader__pdf-overlay-notes-panel__note.is-editing {
+  background: var(--background-primary);
+  outline-color: var(--interactive-accent);
+  cursor: text;
+}
+
+.ez-reader__pdf-overlay-notes-panel__note.is-editing.is-placeholder::before {
+  /* 编辑态下清掉 placeholder, 避免和用户输入的空白混在一起. */
+  content: "";
+}
+
+/* focusExcerptInNotesPanel 时短暂高亮整行 — 用户视觉确认 focus 命中. */
+.ez-reader__pdf-overlay-notes-panel__row.is-just-focused {
+  background: var(--background-modifier-hover);
+  transition: background 0.6s ease;
 }
 
 /* ===== PDF Highlight Layer (P5) ===== */
@@ -3330,8 +3406,9 @@
   position: fixed;
   inset: 0;
   pointer-events: none;
-  /* z-index 100 — 高于 Obsidian 默认 UI (< 50) 和 PDF++ 的 backlink layer */
-  z-index: 100;
+  /* z-index 9996 — 高于 Obsidian PDF iframe (默认 auto) 和大部分 UI.
+   * 留 9997 给 notes panel, 9998 给 notes button. */
+  z-index: 9996;
 }
 
 .ez-reader__pdf-overlay-highlight {
@@ -3342,6 +3419,8 @@
   pointer-events: auto;
   cursor: pointer;
   transition: background 0.15s ease;
+  /* z-index: auto 在 stacking context 里有时会被兄弟节点遮 — 显式提升. */
+  z-index: 1;
 }
 
 .ez-reader__pdf-overlay-highlight:hover {
