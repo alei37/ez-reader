@@ -4,6 +4,43 @@
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-09-28
+
+### 新增 (Added)
+
+- **PDF: 笔记按钮可拖动** — 拖到任意位置后按书分别记忆 (localStorage per bookPath), 重启 Obsidian 后还在原位
+- **PDF: 点黄线查看/编辑想法** — 点击已有黄色高亮直接跳到笔记侧栏对应条目, 并自动进 inline 编辑 (Cmd+Enter 保存, Esc 取消)
+- **PDF: 翻译浮动弹窗可拖动** — header 可拖, 边界 clamp 到视口
+- **PDF: 笔记侧栏紧凑模式** — 行 padding 2px / gap 4px / 字号 12 / line-height 1.4; excerpt 文本 2 行截断 + ellipsis; jump/delete 按钮 hover 才显 (默认 opacity 0.35)
+
+### 修复 (Fixed)
+
+- **PDF 点黄线无反应** — 之前 click 事件被 PDFView 的某些 handler 静默 swallow. 改成 mousedown (capture phase) + click (bubble phase) 双绑定, shared handled flag 谁先 fire 谁负责, 避免双重触发
+- **PDF 高亮 z-index 被 PDFView iframe 遮挡** — highlight layer z-index 100 → 9996, highlight div z-index: auto → 1
+
+## [0.2.9] - 2026-09-23
+
+### 修复 (Fixed)
+
+- **styles.css 多余 `}` 导致 0.2.8 review Failed** — line 2966 一个孤立右大括号 (从之前 edit 漏下来的), 删掉即可
+
+## [0.2.8] - 2026-09-23
+
+### 新增 (Added)
+
+- **三个新 translation provider** — MyMemory (免费匿名, 无需 key, IP 日 1 万字符) / 自定义 OpenAI 兼容 (DeepSeek / 智谱 GLM / 通义千问 / OpenAI) / 自定义 Anthropic 兼容 (MiniMax 等走 `/anthropic` 路径)
+- **有道设置拆两字段** — appKey + appSecret 分别填, 老 JSON 数据自动迁移回填; key 字段加 👁 显示/隐藏切换按钮
+- **切 provider 自动清空旧 key** — 各 provider 格式不通用, 留着只会误导
+- **PDF 翻译浮动弹窗替代 10 秒 toast** — 锚定到选词附近, 内嵌原文 / 译文 / provider meta + 复制 / 换语言重译 (zh↔en↔ja↔ko↔fr↔de) / × 按钮
+- **PDF 重启 Obsidian 后自动接管** — `onLayoutReady` 扫描已打开 PDF leaf + `active-leaf-change` 监听覆盖书架外打开的 PDF
+- **默认 notes 目录改成 `ezreader-notes/`** — 替代原来的 `zz_阅读与研究/`, 新装或重置设置的用户生效, 老用户 data.json 不动
+
+### 修复 (Fixed)
+
+- **翻译请求改走 Obsidian `requestUrl`** — 绕过渲染端 CSP 拦截 (`fetch()` 在 Obsidian 插件里会被阻止, 导致 "Failed to fetch")
+- **错误码有针对性提示** — 401 key 错 / 404 baseUrl 错 (漏 `/anthropic` 后缀) / 400 model 名错 / 429 频率限制
+- **PDF hover 高亮 z-index 修到 1** — 不被 PDF++ 的 backlink layer 遮
+
 ## [0.2.7] - 2026-09-23
 
 ### 修复 (Fixed)
