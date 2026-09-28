@@ -1,5 +1,7 @@
 # EzReader
 
+**English** (this file) · **中文** → [README.zh-CN.md](README.zh-CN.md)
+
 Read local ebooks in Obsidian — progress tracking, highlights, research notes, optional online translation.
 
 ![Personal shelf](docs/screenshots/shelf.webp)
