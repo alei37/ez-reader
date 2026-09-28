@@ -12538,7 +12538,7 @@ __export(pdfOverlay_exports, {
   PdfOverlay: () => PdfOverlay,
   findPdfOverlayForLeaf: () => findPdfOverlayForLeaf
 });
-var import_obsidian18, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, attachInlineNoteEditor, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable, NOTES_BTN_POS_KEY, readNotesBtnPos, writeNotesBtnPos;
+var import_obsidian18, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, attachInlineNoteEditor, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable, NOTES_BTN_POS_KEY, NOTES_BTN_SIZE, readNotesBtnPos, writeNotesBtnPos;
 var init_pdfOverlay = __esm({
   "src/ui/reader/pdfOverlay.ts"() {
     "use strict";
@@ -13842,15 +13842,21 @@ var init_pdfOverlay = __esm({
       });
     };
     NOTES_BTN_POS_KEY = "ez-reader.pdf.notesBtnPos.";
+    NOTES_BTN_SIZE = 44;
     readNotesBtnPos = (bookPath) => {
       try {
         const raw = localStorage.getItem(NOTES_BTN_POS_KEY + bookPath);
         if (!raw) return null;
         const parsed = JSON.parse(raw);
-        if (typeof parsed.top === "number" && typeof parsed.left === "number") {
-          return { top: parsed.top, left: parsed.left };
-        }
-        return null;
+        if (typeof parsed.top !== "number" || typeof parsed.left !== "number") return null;
+        if (!isFinite(parsed.top) || !isFinite(parsed.left)) return null;
+        if (parsed.top < 0 || parsed.left < 0) return null;
+        const maxLeft = Math.max(0, window.innerWidth - NOTES_BTN_SIZE);
+        const maxTop = Math.max(0, window.innerHeight - NOTES_BTN_SIZE);
+        return {
+          top: Math.max(0, Math.min(maxTop, parsed.top)),
+          left: Math.max(0, Math.min(maxLeft, parsed.left))
+        };
       } catch {
         return null;
       }

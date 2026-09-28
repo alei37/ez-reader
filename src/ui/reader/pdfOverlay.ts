@@ -1709,6 +1709,10 @@ const makeDraggable = (
  * localStorage 读写 helper — 笔记按钮位置按 bookPath 各自存, 不同 PDF 记忆
  * 不同位置. 旧版本用了 bottom/right 锚定, 没有 left/top, 这里读不到就走默认
  * fallback (右下角).
+ *
+ * 防越界: 读到的 top/left 必须 finite + 在当前 viewport 内, 否则忽略走默认.
+ * 之前没 clamp, 理论上用户拖到屏外 + 缩放窗口后下次 reload 按钮会跑屏外
+ * (用户体感: "笔记图标不见了"). 实际触发概率低但成本是 0, 加保险.
  */
 const NOTES_BTN_POS_KEY = "ez-reader.pdf.notesBtnPos.";
 
@@ -1717,15 +1721,27 @@ interface SavedNotesBtnPos {
   readonly left: number;
 }
 
+const NOTES_BTN_SIZE = 44;
+
 const readNotesBtnPos = (bookPath: string): SavedNotesBtnPos | null => {
   try {
     const raw = localStorage.getItem(NOTES_BTN_POS_KEY + bookPath);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<SavedNotesBtnPos>;
-    if (typeof parsed.top === "number" && typeof parsed.left === "number") {
-      return { top: parsed.top, left: parsed.left };
-    }
-    return null;
+    if (typeof parsed.top !== "number" || typeof parsed.left !== "number") return null;
+    // NaN / Infinity 都要拒 — typeof NaN === "number", 但 CSS 用 NaN 会让
+    // 元素不渲染, 用户看到「按钮不见了」
+    if (!isFinite(parsed.top) || !isFinite(parsed.left)) return null;
+    // 负数 (理论上拖拽期间已经被 clamp 到 >= 0, 但旧版本可能存了负值)
+    if (parsed.top < 0 || parsed.left < 0) return null;
+    // Clamp 到当前 viewport — 用户可能在 4K 屏拖好, 切到 1080p 重启就
+    // 跑屏外. viewport 在按钮创建时拿到, 那时同步计算.
+    const maxLeft = Math.max(0, window.innerWidth - NOTES_BTN_SIZE);
+    const maxTop = Math.max(0, window.innerHeight - NOTES_BTN_SIZE);
+    return {
+      top: Math.max(0, Math.min(maxTop, parsed.top)),
+      left: Math.max(0, Math.min(maxLeft, parsed.left))
+    };
   } catch {
     return null;
   }
