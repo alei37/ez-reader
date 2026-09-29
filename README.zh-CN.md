@@ -37,7 +37,9 @@
 
 ### PDF
 
-EzReader 走 Obsidian 自带的 `pdf` view — 标准 `[[path.pdf]]` 链接直接可用,与 [obsidian-pdf-plus](https://github.com/RyotaUshio/obsidian-pdf-plus) 等增强插件并存。透明 overlay 加:
+> **想要最好的 PDF 阅读体验,推荐装 [obsidian-pdf-plus](https://github.com/RyotaUshio/obsidian-pdf-plus)**。它比 EzReader 这层薄 overlay 强得多(注释、搜索、目录、跳页等)。**注意:** PDF++ 会替换 Obsidian 内置 PDFView 的 DOM,所以 EzReader 下面列的 PDF overlay 功能跟它 **不能共存** — 二选一。
+
+EzReader 走 Obsidian 自带的 `pdf` view — 标准 `[[path.pdf]]` 链接直接可用。透明 overlay 加 (前提:没装第三方 PDF 接管插件):
 
 - **选词菜单** — 跟 EPUB 一样的 想法 / 摘录 / 翻译 / 复制
 - **翻译浮动小弹窗** 锚到选词处,**header 可拖拽**(边界 clamp 到视口)。有 复制 / 换语言重译 / × 按钮
@@ -99,7 +101,7 @@ cp main.js styles.css manifest.json /path/to/<Vault>/.obsidian/plugins/ez-reader
 <details>
 <summary><strong>PDF 打开了但没笔记侧栏 / 没选词菜单?</strong></summary>
 
-有第三方插件(PDF++ 等)接管了 Obsidian PDFView 改了 DOM,overlay 挂不上。看 console 有没有 `[ez-reader] handleProtocol: PdfOverlay not found`。阅读不受影响 — 跳页 fallback 走 `setEphemeralState` / `openLinkText("#page=N")`。临时禁用冲突插件试一下。
+有第三方插件(PDF++ 等)接管了 Obsidian PDFView 改了 DOM,EzReader 的 overlay 挂不上。看 console 有没有 `[ez-reader] handleProtocol: PdfOverlay not found`。阅读不受影响 — 跳页 fallback 走 `setEphemeralState` / `openLinkText("#page=N")`。我们建议保留 PDF++(PDF 阅读体验更好)同时接受 EzReader 的 PDF overlay 在那里不工作;临时禁用 PDF++ 可试 EzReader overlay。
 </details>
 
 <details>

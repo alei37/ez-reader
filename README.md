@@ -37,7 +37,9 @@ Powered by [foliate-js](https://github.com/johnfactotum/foliate-js) 1.0.1 (with 
 
 ### PDF
 
-EzReader defers to Obsidian's built-in `pdf` view — standard `[[path.pdf]]` links work, and the plugin coexists with [obsidian-pdf-plus](https://github.com/RyotaUshio/obsidian-pdf-plus) etc. A transparent overlay adds:
+> **For the best PDF reading experience, install [obsidian-pdf-plus](https://github.com/RyotaUshio/obsidian-pdf-plus).** It is a much more capable PDF reader (annotations, search, outline, page jump, etc.) than EzReader's thin overlay. **Heads-up:** PDF++ replaces Obsidian's built-in PDFView DOM, so EzReader's PDF overlay features below do **not** work alongside it — pick one or the other.
+
+EzReader itself defers to Obsidian's built-in `pdf` view — standard `[[path.pdf]]` links work out of the box. A transparent overlay adds (only when no third-party PDF plugin is active):
 
 - **Selection menu** with the same Thought / Excerpt / Translate / Copy actions as EPUB.
 - **Translation popover** anchored to the selection, with **draggable** header (clamped to viewport). Has Copy + Change-target-language + × buttons.
@@ -99,7 +101,7 @@ Requires Node.js ≥ 22.13 and pnpm ≥ 11.9.
 <details>
 <summary><strong>PDF opens but no notes sidebar / no selection menu?</strong></summary>
 
-A third-party plugin (PDF++ etc.) is taking over Obsidian's PDFView and changing its DOM, so the overlay cannot attach. Check for `[ez-reader] handleProtocol: PdfOverlay not found` in the console. Reading still works — page jumps fall back to `setEphemeralState` / `openLinkText("#page=N")`. Temporarily disable the conflicting plugin to test.
+A third-party plugin (PDF++ etc.) is taking over Obsidian's PDFView and changing its DOM, so EzReader's overlay cannot attach. Check for `[ez-reader] handleProtocol: PdfOverlay not found` in the console. Reading still works — page jumps fall back to `setEphemeralState` / `openLinkText("#page=N")`. We recommend keeping PDF++ for the better PDF experience and accepting that EzReader's PDF overlay won't fire there; temporarily disable PDF++ to test the overlay.
 </details>
 
 <details>
