@@ -133,17 +133,17 @@ export class ShelfToolbar {
   }
 
   private renderDensityButton(density: ShelfDensity): void {
-    // 重建内容 — 简单可靠, 4 个档位不值得搞 diff. SVG icon 用 2×2/3×3 grid
-    // 暗示密度, 当前档位用 label 文字明确. SVG markup comes from our
-    // own densityIconSvg() helper (no user input), but we still parse it
-    // through DOMParser rather than assigning to innerHTML directly to
-    // satisfy the Obsidian auto-review "do not write to DOM directly
-    // using innerHTML/outerHTML" lint rule.
+    // 重建内容 — 简单可靠, 4 个档位不值得搞 diff. SVG icon 用 N 个 rect
+    // 暗示密度, 当前档位用 label 文字明确.
+    //
+    // 不用 DOMParser 也不用 innerHTML — Obsidian auto-review 禁 innerHTML/outerHTML;
+    // 而 DOMParser.parseFromString("<svg>", "image/svg+xml") 在某些渲染器里
+    // (含 JSDOM 和部分 Electron 版本) 给出的 svg 元素 namespaceURI=null,
+    // 被当成 HTMLUnknownElement, 浏览器画不出来. 直接 createElementNS 创建
+    // SVG namespace 元素, 任何环境都正确.
     this.densityButton.empty();
     const iconWrap = this.densityButton.createDiv({ cls: "ez-reader__shelf-toolbar__density__icon" });
-    const parsedIcon = new DOMParser().parseFromString(densityIconSvg(density), "image/svg+xml")
-      .documentElement;
-    iconWrap.replaceChildren(parsedIcon);
+    iconWrap.replaceChildren(createDensityIconElement(density));
     this.densityButton.createSpan({ text: SHELF_DENSITY_LABELS[density] });
     this.densityButton.setAttribute("title", `封面密度: ${SHELF_DENSITY_LABELS[density]} (点击循环)`);
   }
@@ -177,20 +177,37 @@ const countActiveFilters = (filter: ShelfFilter): number => {
 /**
  * Tiny SVG glyph showing how many cover cells fit a row at each density.
  * 4 cells = compact (lots of small covers), 1 cell = large (one big
- * cover per row). Pure inline SVG so the toolbar doesn't pull in a
- * icon library.
+ * cover per row). Built with createElementNS so the resulting `<svg>`
+ * is in the SVG namespace (which innerHTML/DOMParser parsing can't
+ * guarantee in every renderer).
  */
-const densityIconSvg = (density: ShelfDensity): string => {
-  switch (density) {
-    case "compact":
-      return `<svg viewBox="0 0 14 14"><rect x="0" y="2" width="3" height="10" rx="0.5"/><rect x="4" y="2" width="3" height="10" rx="0.5"/><rect x="8" y="2" width="3" height="10" rx="0.5"/></svg>`;
-    case "default":
-      return `<svg viewBox="0 0 14 14"><rect x="0" y="2" width="6" height="10" rx="0.5"/><rect x="8" y="2" width="6" height="10" rx="0.5"/></svg>`;
-    case "spacious":
-      return `<svg viewBox="0 0 14 14"><rect x="1" y="2" width="5" height="10" rx="0.5"/><rect x="8" y="2" width="5" height="10" rx="0.5"/></svg>`;
-    case "large":
-      return `<svg viewBox="0 0 14 14"><rect x="3" y="2" width="8" height="10" rx="0.5"/></svg>`;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+interface DensityRect {
+  readonly x: number;
+  readonly width: number;
+}
+
+const DENSITY_RECTS: Readonly<Record<ShelfDensity, ReadonlyArray<DensityRect>>> = Object.freeze({
+  compact:  [{ x: 0, width: 3 }, { x: 4, width: 3 }, { x: 8, width: 3 }],
+  default:  [{ x: 0, width: 6 }, { x: 8, width: 6 }],
+  spacious: [{ x: 1, width: 5 }, { x: 8, width: 5 }],
+  large:    [{ x: 3, width: 8 }],
+});
+
+const createDensityIconElement = (density: ShelfDensity): SVGElement => {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 14 14");
+  for (const { x, width } of DENSITY_RECTS[density]) {
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", String(x));
+    rect.setAttribute("y", "2");
+    rect.setAttribute("width", String(width));
+    rect.setAttribute("height", "10");
+    rect.setAttribute("rx", "0.5");
+    svg.appendChild(rect);
   }
+  return svg;
 };
 
 /**

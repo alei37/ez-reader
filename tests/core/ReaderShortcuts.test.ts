@@ -34,6 +34,15 @@ test("PageUp/PageDown → prev/next (PDF reader convention)", () => {
   assert.equal(routeShortcut(key("PageDown"), DEFAULT_SHORTCUTS), "next");
 });
 
+test("ArrowUp/ArrowDown → prev/next (Kindle / 微信读书 muscle memory)", () => {
+  assert.equal(routeShortcut(key("ArrowUp"), DEFAULT_SHORTCUTS), "prev");
+  assert.equal(routeShortcut(key("ArrowDown"), DEFAULT_SHORTCUTS), "next");
+  // Fixed shortcut — should still work even when user remaps prev/next.
+  const remapped = { ...DEFAULT_SHORTCUTS, prev: "k", next: "j" };
+  assert.equal(routeShortcut(key("ArrowUp"), remapped), "prev");
+  assert.equal(routeShortcut(key("ArrowDown"), remapped), "next");
+});
+
 test("Space → next; Shift+Space → prev", () => {
   assert.equal(routeShortcut(key(" "), DEFAULT_SHORTCUTS), "next");
   assert.equal(routeShortcut(key(" ", { shiftKey: true }), DEFAULT_SHORTCUTS), "prev");
@@ -109,8 +118,9 @@ test("Custom shortcuts are honored — arrow keys become user-configurable", () 
   assert.equal(routeShortcut(key("j"), custom), "next");
   assert.equal(routeShortcut(key("n"), custom), "toggleNotes");
   // ArrowLeft no longer matches because user remapped prev to k.
-  // PageUp/PageDown remain hardcoded prev/next.
+  // PageUp/PageDown + ArrowUp/ArrowDown remain hardcoded prev/next.
   assert.equal(routeShortcut(key("ArrowLeft"), custom), null);
+  assert.equal(routeShortcut(key("ArrowUp"), custom), "prev");
   assert.equal(routeShortcut(key("PageUp"), custom), "prev");
 });
 

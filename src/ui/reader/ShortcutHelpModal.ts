@@ -41,8 +41,8 @@ export class ShortcutHelpModal extends Modal {
       {
         title: "翻页",
         rows: [
-          ["← / PageUp", "上一页"],
-          ["→ / PageDown / Space", "下一页"],
+          ["← / ↑ / PageUp", "上一页"],
+          ["→ / ↓ / PageDown / Space", "下一页"],
           ["Shift + Space", "上一页"],
           ["Home / End", "跳到首 / 末"]
         ]

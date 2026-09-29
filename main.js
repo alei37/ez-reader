@@ -12206,8 +12206,8 @@ var init_ShortcutHelpModal = __esm({
           {
             title: "\u7FFB\u9875",
             rows: [
-              ["\u2190 / PageUp", "\u4E0A\u4E00\u9875"],
-              ["\u2192 / PageDown / Space", "\u4E0B\u4E00\u9875"],
+              ["\u2190 / \u2191 / PageUp", "\u4E0A\u4E00\u9875"],
+              ["\u2192 / \u2193 / PageDown / Space", "\u4E0B\u4E00\u9875"],
               ["Shift + Space", "\u4E0A\u4E00\u9875"],
               ["Home / End", "\u8DF3\u5230\u9996 / \u672B"]
             ]
@@ -19169,8 +19169,7 @@ var ShelfToolbar = class {
   renderDensityButton(density) {
     this.densityButton.empty();
     const iconWrap = this.densityButton.createDiv({ cls: "ez-reader__shelf-toolbar__density__icon" });
-    const parsedIcon = new DOMParser().parseFromString(densityIconSvg(density), "image/svg+xml").documentElement;
-    iconWrap.replaceChildren(parsedIcon);
+    iconWrap.replaceChildren(createDensityIconElement(density));
     this.densityButton.createSpan({ text: SHELF_DENSITY_LABELS[density] });
     this.densityButton.setAttribute("title", `\u5C01\u9762\u5BC6\u5EA6: ${SHELF_DENSITY_LABELS[density]} (\u70B9\u51FB\u5FAA\u73AF)`);
   }
@@ -19196,17 +19195,26 @@ var countActiveFilters = (filter3) => {
   if (filter3.recency) count += 1;
   return count;
 };
-var densityIconSvg = (density) => {
-  switch (density) {
-    case "compact":
-      return `<svg viewBox="0 0 14 14"><rect x="0" y="2" width="3" height="10" rx="0.5"/><rect x="4" y="2" width="3" height="10" rx="0.5"/><rect x="8" y="2" width="3" height="10" rx="0.5"/></svg>`;
-    case "default":
-      return `<svg viewBox="0 0 14 14"><rect x="0" y="2" width="6" height="10" rx="0.5"/><rect x="8" y="2" width="6" height="10" rx="0.5"/></svg>`;
-    case "spacious":
-      return `<svg viewBox="0 0 14 14"><rect x="1" y="2" width="5" height="10" rx="0.5"/><rect x="8" y="2" width="5" height="10" rx="0.5"/></svg>`;
-    case "large":
-      return `<svg viewBox="0 0 14 14"><rect x="3" y="2" width="8" height="10" rx="0.5"/></svg>`;
+var SVG_NS = "http://www.w3.org/2000/svg";
+var DENSITY_RECTS = Object.freeze({
+  compact: [{ x: 0, width: 3 }, { x: 4, width: 3 }, { x: 8, width: 3 }],
+  default: [{ x: 0, width: 6 }, { x: 8, width: 6 }],
+  spacious: [{ x: 1, width: 5 }, { x: 8, width: 5 }],
+  large: [{ x: 3, width: 8 }]
+});
+var createDensityIconElement = (density) => {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 14 14");
+  for (const { x: x3, width } of DENSITY_RECTS[density]) {
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", String(x3));
+    rect.setAttribute("y", "2");
+    rect.setAttribute("width", String(width));
+    rect.setAttribute("height", "10");
+    rect.setAttribute("rx", "0.5");
+    svg.appendChild(rect);
   }
+  return svg;
 };
 var nextShelfDensity = (current) => {
   const idx = SHELF_DENSITIES.indexOf(current);
@@ -22194,8 +22202,10 @@ var routeShortcut = (event, shortcuts, enabled = true) => {
   if (!enabled) return null;
   switch (event.key) {
     case "PageUp":
+    case "ArrowUp":
       return "prev";
     case "PageDown":
+    case "ArrowDown":
       return "next";
     case "Home":
       return "first";
@@ -22301,7 +22311,7 @@ var generateExcerptId = (prefix) => {
   const fallback = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
   return `${prefix}-${fallback}`;
 };
-var isEditableTarget = (target) => target instanceof Element && Boolean(target.closest("input, textarea, select, button, [contenteditable='true'], a"));
+var isEditableTarget = (target) => target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
 var locatorForNoteWriter = (pos) => {
   switch (pos.kind) {
     case "reflow":
@@ -23009,6 +23019,55 @@ var ReaderView = class extends import_obsidian16.ItemView {
     if (typeof this.session.setOnIframeKeydown === "function") {
       this.session.setOnIframeKeydown(routeFromIframe);
     }
+    let selectionDebounce;
+    const offSelect = this.session.on("selection-change", (event) => {
+      const detail = event.detail;
+      if (!detail?.text) {
+        if (selectionDebounce !== void 0) window.clearTimeout(selectionDebounce);
+        selectionDebounce = void 0;
+        this.selectionMenu?.hide();
+        return;
+      }
+      const expanded = maybeExpandChineseSelection(detail.text);
+      const text = expanded.text;
+      this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter, fraction: this.fraction };
+      if (text !== detail.text) {
+        const sel = window.document.getSelection();
+        if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+          const range = sel.getRangeAt(0);
+          const node = range.startContainer.parentNode;
+          if (node && node.textContent?.includes(text)) {
+            const newRange = document.createRange();
+            const startOffset = (node.textContent ?? "").indexOf(text);
+            if (startOffset >= 0) {
+              newRange.setStart(node, startOffset);
+              newRange.setEnd(node, startOffset + text.length);
+              sel.removeAllRanges();
+              sel.addRange(newRange);
+            }
+          }
+        }
+      }
+      if (selectionDebounce !== void 0) window.clearTimeout(selectionDebounce);
+      selectionDebounce = window.setTimeout(() => {
+        selectionDebounce = void 0;
+        const sel = window.document.getSelection();
+        const range = sel?.rangeCount ? sel.getRangeAt(0) : void 0;
+        const rect = range?.getBoundingClientRect() ?? detail.rect;
+        const hostOffset = this.findSessionIframeOffset();
+        if (rect && rect.width > 0) {
+          this.selectionMenu?.show(rect, hostOffset);
+        } else {
+          const fallbackRect = new DOMRect(
+            window.innerWidth / 2 - 100,
+            window.innerHeight - 120,
+            200,
+            40
+          );
+          this.selectionMenu?.show(fallbackRect, hostOffset);
+        }
+      }, 180);
+    });
     const progressEnabled = await this.isProgressMemoryEnabled();
     const stored = this.entry.reading.position;
     if (stored && progressEnabled) {
@@ -23067,55 +23126,6 @@ var ReaderView = class extends import_obsidian16.ItemView {
       const detail = event.detail;
       if (!detail?.href) return;
       void this.handleLinkClick(detail.href);
-    });
-    let selectionDebounce;
-    const offSelect = this.session.on("selection-change", (event) => {
-      const detail = event.detail;
-      if (!detail?.text) {
-        if (selectionDebounce !== void 0) window.clearTimeout(selectionDebounce);
-        selectionDebounce = void 0;
-        this.selectionMenu?.hide();
-        return;
-      }
-      const expanded = maybeExpandChineseSelection(detail.text);
-      const text = expanded.text;
-      this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter, fraction: this.fraction };
-      if (text !== detail.text) {
-        const sel = window.document.getSelection();
-        if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
-          const range = sel.getRangeAt(0);
-          const node = range.startContainer.parentNode;
-          if (node && node.textContent?.includes(text)) {
-            const newRange = document.createRange();
-            const startOffset = (node.textContent ?? "").indexOf(text);
-            if (startOffset >= 0) {
-              newRange.setStart(node, startOffset);
-              newRange.setEnd(node, startOffset + text.length);
-              sel.removeAllRanges();
-              sel.addRange(newRange);
-            }
-          }
-        }
-      }
-      if (selectionDebounce !== void 0) window.clearTimeout(selectionDebounce);
-      selectionDebounce = window.setTimeout(() => {
-        selectionDebounce = void 0;
-        const sel = window.document.getSelection();
-        const range = sel?.rangeCount ? sel.getRangeAt(0) : void 0;
-        const rect = range?.getBoundingClientRect() ?? detail.rect;
-        const hostOffset = this.findSessionIframeOffset();
-        if (rect && rect.width > 0) {
-          this.selectionMenu?.show(rect, hostOffset);
-        } else {
-          const fallbackRect = new DOMRect(
-            window.innerWidth / 2 - 100,
-            window.innerHeight - 120,
-            200,
-            40
-          );
-          this.selectionMenu?.show(fallbackRect, hostOffset);
-        }
-      }, 180);
     });
     if (this.session.tableOfContents) {
       try {

@@ -100,11 +100,20 @@ export const routeShortcut = (
   if (!enabled) return null;
 
   // Fixed shortcuts (not user-configurable; users with muscle memory from
-  // Adobe / Preview / Calibre will appreciate these).
+  // Adobe / Preview / Calibre / Kindle will appreciate these).
+  //
+  // PageUp/PageDown + ArrowUp/ArrowDown are always prev/next regardless of
+  // what `cfg.prev` / `cfg.next` are bound to. Two reasons:
+  //   1. Muscle memory from every PDF reader / Calibre / Kindle app uses
+  //      ↑/↓/PageUp/PageDown for paging. Hardcoding matches user expectation.
+  //   2. Users who remap `cfg.prev` to e.g. "k" (vim style) still want
+  //      ↑/↓ to work — they shouldn't have to reconfigure four keys.
   switch (event.key) {
     case "PageUp":
+    case "ArrowUp":
       return "prev";
     case "PageDown":
+    case "ArrowDown":
       return "next";
     case "Home":
       return "first";

@@ -129,7 +129,22 @@ const generateExcerptId = (prefix: "bm" | "ex" | "th"): string => {
 
 const isEditableTarget = (target: EventTarget | null): boolean =>
   target instanceof Element &&
-  Boolean(target.closest("input, textarea, select, button, [contenteditable='true'], a"));
+  Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  // P0 修复 (EPUB/iframe focus): 之前 selector 里带 `a` (链接) + `button`.
+  // 两个不同问题:
+  //
+  // (1) `a` — EPUB / MOBI 满页都是 `<a>` (章节跳转、注释引用). 用户点
+  //     击 / tab 进任一 `<a>` 后, target.closest("a") 命中, isEditableTarget
+  //     返回 true, ← / → / H / B / s / t 全部失效. `a` 不算 editable
+  //     (← / → 不会激活 link, Enter 才会), 应该排除.
+  //
+  // (2) `button` — toolbar (◀ ▶ 翻页按钮、字号、笔记、沉浸等) + shelf
+  //     的密度按钮都是 button. 用户悬浮在 toolbar 上时, event.target 是
+  //     `<button>`, isEditableTarget 命中, ← / → 翻页不响应, 必须把
+  //     鼠标移到 iframe 中间 (文字上) 才能用键盘. user feedback: "鼠标
+  //     必须放在文章页面中间才可以使用左右箭头翻页". 期望行为: 鼠标
+  //     在阅读器内任意位置, ← / → 都应该翻页. arrow keys 不会激活 button
+  //     (Enter / Space 才会), 拦截是安全的, 应该排除.
 
 /**
  * Map a `ReadingPosition` to the locator shape `NoteWriter.appendExcerpt`
@@ -1040,7 +1055,79 @@ private async showFontSettings(): Promise<void> {
       this.session.setOnIframeKeydown(routeFromIframe);
     }
 
-    // 进度记忆: 跳转到上次位置 (受 settings 开关控制)
+    // selectionchange 在用户拖拽过程中多次触发, 我们延迟 180ms 等待用户
+    // 真正完成选词再弹菜单. 提到 openSession 顶部声明, 让下面提前挂的
+    // offSelect 闭包能 capture 到 (let 的 temporal dead zone 不会跨过)。
+    let selectionDebounce: number | undefined;
+
+    // P0 修复: 在 resumeFromPosition 之前先挂 selection-change listener ——
+    // FoliateBookReader.bindSelectionChange 内的 loadListener 会在每次
+    // foliate 翻页时把 keydown listener 挂到新的 iframe.contentDocument。
+    // 如果先调 resumeFromPosition 再挂 listener, 第一次加载的 "load" 事件
+    // 已经 fire 完, 没人接, 第一页的 keydown listener 永远挂不上,
+    // 用户在第一页按 ←/→ 翻页不响应。
+    // 现在把 on("selection-change") 提到 resumeFrom 之前, loadListener
+    // 就能接住第一次 load.
+    const offSelect = this.session.on("selection-change", (event) => {
+      const detail = (event as CustomEvent<{ text: string; locator?: string; rect?: DOMRect }>).detail;
+      if (!detail?.text) {
+        if (selectionDebounce !== undefined) window.clearTimeout(selectionDebounce);
+        selectionDebounce = undefined;
+        this.selectionMenu?.hide();
+        return;
+      }
+      // 中文段落里, 浏览器按"字符"分词. 如果只选了一两个字符 (没有空格), 自动扩到最近的句号/逗号,
+      // 这样想法/摘录更有意义. CJK 段落 (没有空格 / 拉丁词比例低) 才触发.
+      const expanded = maybeExpandChineseSelection(detail.text);
+      const text = expanded.text;
+      this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter, fraction: this.fraction };
+      // 同步扩展 DOM Selection, 让用户视觉上看到选词扩展了
+      if (text !== detail.text) {
+        const sel = window.document.getSelection();
+        if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+          // 把 selection 替换成整段 expanded text — 通过设置 Range
+          const range = sel.getRangeAt(0);
+          const node = range.startContainer.parentNode;
+          if (node && node.textContent?.includes(text)) {
+            const newRange = document.createRange();
+            const startOffset = (node.textContent ?? "").indexOf(text);
+            if (startOffset >= 0) {
+              newRange.setStart(node, startOffset);
+              newRange.setEnd(node, startOffset + text.length);
+              sel.removeAllRanges();
+              sel.addRange(newRange);
+            }
+          }
+        }
+      }
+      if (selectionDebounce !== undefined) window.clearTimeout(selectionDebounce);
+      selectionDebounce = window.setTimeout(() => {
+        selectionDebounce = undefined;
+        const sel = window.document.getSelection();
+        const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
+        const rect = range?.getBoundingClientRect() ?? detail.rect;
+        // foliate 选词 rect 是 iframe-viewport 相对 — 找 iframe 在 host 里的
+        // 偏移,传给 selectionMenu 让它把 rect 转到 host viewport 空间,
+        // 否则菜单飘到屏幕左上角.
+        const hostOffset = this.findSessionIframeOffset();
+        if (rect && rect.width > 0) {
+          this.selectionMenu?.show(rect, hostOffset);
+        } else {
+          const fallbackRect = new DOMRect(
+            window.innerWidth / 2 - 100,
+            window.innerHeight - 120,
+            200,
+            40
+          );
+          this.selectionMenu?.show(fallbackRect, hostOffset);
+        }
+      }, 180);
+    });
+
+    // 进度记忆: 跳转到上次位置 (受 settings 开关控制). offSelect 必须已经
+    // 挂好 (上面), 这样 resumeFromPosition 触发 foliate 第一次 load 事件时
+    // 我们的 loadListener 才能接住, keydown listener 才能挂到第一个
+    // iframe.contentDocument — 否则用户在 EPUB 第一页按 ←/→ 翻页不响应.
     const progressEnabled = await this.isProgressMemoryEnabled();
     const stored = this.entry.reading.position;
     if (stored && progressEnabled) {
@@ -1127,63 +1214,12 @@ private async showFontSettings(): Promise<void> {
     });
 
     // 防抖: selectionchange 在用户拖拽过程中多次触发, 我们延迟 180ms
-    // 等待用户真正完成选词再弹菜单
-    let selectionDebounce: number | undefined;
-    const offSelect = this.session.on("selection-change", (event) => {
-      const detail = (event as CustomEvent<{ text: string; locator?: string; rect?: DOMRect }>).detail;
-      if (!detail?.text) {
-        if (selectionDebounce !== undefined) window.clearTimeout(selectionDebounce);
-        selectionDebounce = undefined;
-        this.selectionMenu?.hide();
-        return;
-      }
-      // 中文段落里, 浏览器按"字符"分词. 如果只选了一两个字符 (没有空格), 自动扩到最近的句号/逗号,
-      // 这样想法/摘录更有意义. CJK 段落 (没有空格 / 拉丁词比例低) 才触发.
-      const expanded = maybeExpandChineseSelection(detail.text);
-      const text = expanded.text;
-      this.pendingSelection = { text, rect: detail.rect, locator: detail.locator, chapter: this.chapter, fraction: this.fraction };
-      // 同步扩展 DOM Selection, 让用户视觉上看到选词扩展了
-      if (text !== detail.text) {
-        const sel = window.document.getSelection();
-        if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
-          // 把 selection 替换成整段 expanded text — 通过设置 Range
-          const range = sel.getRangeAt(0);
-          const node = range.startContainer.parentNode;
-          if (node && node.textContent?.includes(text)) {
-            const newRange = document.createRange();
-            const startOffset = (node.textContent ?? "").indexOf(text);
-            if (startOffset >= 0) {
-              newRange.setStart(node, startOffset);
-              newRange.setEnd(node, startOffset + text.length);
-              sel.removeAllRanges();
-              sel.addRange(newRange);
-            }
-          }
-        }
-      }
-      if (selectionDebounce !== undefined) window.clearTimeout(selectionDebounce);
-      selectionDebounce = window.setTimeout(() => {
-        selectionDebounce = undefined;
-        const sel = window.document.getSelection();
-        const range = sel?.rangeCount ? sel.getRangeAt(0) : undefined;
-        const rect = range?.getBoundingClientRect() ?? detail.rect;
-        // foliate 选词 rect 是 iframe-viewport 相对 — 找 iframe 在 host 里的
-        // 偏移,传给 selectionMenu 让它把 rect 转到 host viewport 空间,
-        // 否则菜单飘到屏幕左上角.
-        const hostOffset = this.findSessionIframeOffset();
-        if (rect && rect.width > 0) {
-          this.selectionMenu?.show(rect, hostOffset);
-        } else {
-          const fallbackRect = new DOMRect(
-            window.innerWidth / 2 - 100,
-            window.innerHeight - 120,
-            200,
-            40
-          );
-          this.selectionMenu?.show(fallbackRect, hostOffset);
-        }
-      }, 180);
-    });
+    // 等待用户真正完成选词再弹菜单.
+    //
+    // 注意: 上面的 selectionDebounce + offSelect 在 setOnIframeKeydown 后面
+    // 提前绑, 这样 foliate 第一次 "load" 事件不会漏掉 (loadListener 借此把
+    // keydown listener 挂到 iframe.contentDocument — 详见该处注释).
+    // 这里不再重复绑定.
 
     // 加载 TOC
     if (this.session.tableOfContents) {
