@@ -27,6 +27,10 @@ Read local ebooks in Obsidian — progress tracking, highlights, research notes,
 
 **6 translation providers** — Youdao / DeepL / Google Cloud / MyMemory (free, no key) / OpenAI-compatible (DeepSeek, Zhipu, Qwen, OpenAI) / Anthropic-compatible (e.g. MiniMax). Pick one and translate selection in EPUB / TXT / MOBI as a side drawer, or in PDF as a small draggable popover.
 
+**Book details modal** — right-click any book on the shelf → **📖 Book details** → see publisher / publication date / language / ISBN / page count / format / size / file path, current reading progress, total reading time, last-30-days bar chart (per-day minutes with hover tooltip), reading streak 🔥, and the 10 most recent reading sessions. Copy the book's wiki-link with one click.
+
+**Real reading-time tracking** — counts only when you're actively reading (active leaf + tab visible + window focused + interacted within the last 30 s). Idle leaves after 30 s of no input — no more inflated totals when you walk away.
+
 **Keyboard shortcuts** — full keyboard navigation everywhere. TOC panel: `↑↓` to move, `←/→` to expand/collapse, `Enter` to jump, with visited/current/unvisited progress dots persisted across sessions.
 
 ## Format-specific notes
@@ -125,7 +129,27 @@ By design — we never silently send text to a default endpoint. Pick a provider
 <details>
 <summary><strong>Progress doesn't sync to my Android tablet?</strong></summary>
 
-Syncthing excludes `.obsidian/` by default — **including** `data.json`. Configure Syncthing to also sync `<Vault>/.obsidian/plugins/ez-reader/data.json`. Notes live in `notesDirectory` (a Vault-root folder by default) so they sync automatically.
+Syncthing excludes `.obsidian/` by default — **including** `data.json`. Configure Syncthing to also sync `<Vault>/.obsidian/plugins/ez-reader/data.json`. Notes + book info + reading-session logs live in `<Vault>/ezreader/` (a Vault-root folder) so they sync automatically.
+</details>
+
+<details>
+<summary><strong>Where do my old v0.2.x notes go?</strong></summary>
+
+v0.3.0 unifies everything under `<Vault>/ezreader/`:
+
+```
+ezreader/notes/<title>-<id>.md     ← excerpts + thoughts (was: ezreader-notes/阅读笔记/)
+ezreader/info/<title>-<id>.md      ← book metadata (YAML frontmatter)
+ezreader/sessions/<title>-<id>.jsonl ← per-session reading log
+```
+
+First launch auto-migrates your old `ezreader-notes/阅读笔记/*.md` into `ezreader/notes/<title>-<id>.md` and writes `migratedToV030: true` to `data.json`. To re-run, set `migratedToV030: false` manually and restart Obsidian.
+</details>
+
+<details>
+<summary><strong>Reading time looks lower than v0.2.x?</strong></summary>
+
+That's expected. v0.2.x counted *leaf-active* time, so leaving the reader open while you walked away would inflate the total. v0.3.0 stops counting after 30 s of no input (no mouse / key / scroll / touch / wheel) or when the tab is hidden or the window loses focus. The trade-off: numbers are honest, but you'll need to actually interact for it to count.
 </details>
 
 <details>
@@ -154,6 +178,8 @@ Delete `<Vault>/.obsidian/plugins/ez-reader/`. To preserve data, back up `data.j
 - AZW declared but no reader yet.
 - GBK / GB18030 TXT files need manual re-encoding to UTF-8.
 - Translation providers see whatever you select — keep sensitive content out of selections.
+- **Reading-time tracking** needs *active* interaction (mouse / keyboard / scroll / touch). It auto-pauses after 30 s of no input, when you switch tabs, or when Obsidian loses window focus. This is more accurate than v0.2.x (which only tracked leaf-active time and over-counted idle time) but means you have to actually interact for it to count.
+- **Reading-session log grows over time** — every flush appends one JSON object to `<Vault>/ezreader/sessions/<title>-<id>.jsonl`. At realistic reading rates (~50 sessions/day), the file is ~5 KB/day, ~2 MB/year. We currently read the whole file on every book-details modal open; if you have years of heavy reading and notice slowness, that's the cause. (P1: cache sessions in memory.)
 
 </details>
 
@@ -162,17 +188,17 @@ Delete `<Vault>/.obsidian/plugins/ez-reader/`. To preserve data, back up `data.j
 - **Source files are read-only** — never copied, moved, or deleted.
 - All state (bookmarks, excerpts, favorites, progress, settings, cover cache index) lives in `<Vault>/.obsidian/plugins/ez-reader/data.json`.
 - Cover images cache into `<Vault>/.obsidian/plugins/ez-reader/data/covers/`.
-- Per-book Markdown notes go to the configured `notesDirectory` (default `ezreader-notes/`, auto-created on first save — no `mkdir` needed).
+- Per-book annotations (notes), per-book metadata (info), and per-book reading-session logs go under `<Vault>/ezreader/` (auto-created on first save — no `mkdir` needed). Dataview / full-text search can read these directly. Reading-session logs are append-only JSONL — no personal content, only `{startedAt, endedAt, durationMs, progressStart, progressEnd, chapter}`.
 - Translation is the only outbound network action, and only on explicit user action.
 
 ## Architecture
 
-Strict core / adapters / ui port-and-adapter layers. `core/` is pure logic with no Obsidian imports; `adapters/` wraps Obsidian / foliate / mobi-parser / translation providers; `ui/` is DOM rendering. Tests cover only `core/` (`tests/core/*.test.ts`, 307 / 307 passing).
+Strict core / adapters / ui port-and-adapter layers. `core/` is pure logic with no Obsidian imports; `adapters/` wraps Obsidian / foliate / mobi-parser / translation providers; `ui/` is DOM rendering. Tests cover only `core/` (`tests/core/*.test.ts`, 388 / 388 passing).
 
 ## Development
 
 ```bash
-pnpm test           # 307 / 307 unit tests
+pnpm test           # 388 / 388 unit tests
 pnpm run build      # type-check + esbuild bundle
 pnpm run dev        # watch mode (Obsidian-side reload required)
 ```

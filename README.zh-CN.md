@@ -27,6 +27,10 @@
 
 **6 家翻译 provider** — 有道 / DeepL / Google Cloud / MyMemory (免费, 无需 key) / OpenAI 兼容 (DeepSeek / 智谱 / 通义 / OpenAI) / Anthropic 兼容 (e.g. MiniMax)。EPUB/TXT/MOBI 翻译结果走右侧抽屉,PDF 翻译结果走可拖拽浮动小弹窗。
 
+**书籍详情 modal** — 书架上任意书右键 → **📖 书籍详情** → 看出版社 / 出版日期 / 语言 / ISBN / 页数 / 格式 / 大小 / 文件路径 / 当前进度 / 总阅读时长 / 最近 30 天柱状图 (每天一根,hover 看 "MM/DD: N 分钟") / 连续天数 🔥 / 最近 10 条阅读 session。一键复制书名 wiki-link。
+
+**真阅读时长统计** — 只在你"真的在阅读"时计 (active leaf + tab 可见 + 窗口聚焦 + 30s 内有交互)。30s 无操作 / 切 tab / 切窗口都自动暂停。挂机刷时长?不会再算了。
+
 **全键盘操作** — 目录面板 `↑↓` 移动、`←/→` 折叠或跳父、`Enter` 跳转;已访问 / 当前 / 未访问章节进度点持久化跨 session。
 
 ## 各格式说明
@@ -125,7 +129,27 @@ cp main.js styles.css manifest.json /path/to/<Vault>/.obsidian/plugins/ez-reader
 <details>
 <summary><strong>进度在 Android 平板不同步?</strong></summary>
 
-Syncthing 默认排除 `.obsidian/` — 包括 `data.json`。配置 Syncthing 同步 `<Vault>/.obsidian/plugins/ez-reader/data.json`。笔记在 `notesDirectory` 里(默认 vault 根,不在 `.obsidian/` 下),自动同步。
+Syncthing 默认排除 `.obsidian/` — 包括 `data.json`。配置 Syncthing 同步 `<Vault>/.obsidian/plugins/ez-reader/data.json`。笔记 / 书籍信息 / 阅读时长 session 都在 `<Vault>/ezreader/` 里(默认 vault 根,不在 `.obsidian/` 下),自动同步。
+</details>
+
+<details>
+<summary><strong>我的 v0.2.x 老笔记去哪了?</strong></summary>
+
+v0.3.0 把所有 EzReader 文件统一到 `<Vault>/ezreader/` 下:
+
+```
+ezreader/notes/<title>-<id>.md      ← 摘录 + 想法 (原: ezreader-notes/阅读笔记/)
+ezreader/info/<title>-<id>.md       ← 书籍元信息 (YAML frontmatter)
+ezreader/sessions/<title>-<id>.jsonl ← 阅读 session 明细
+```
+
+首次启动会自动把 `ezreader-notes/阅读笔记/*.md` 搬到 `ezreader/notes/<title>-<id>.md`,完成后写 `migratedToV030: true` 到 `data.json`。想重跑?手动改 `migratedToV030: false` 然后重启 Obsidian。
+</details>
+
+<details>
+<summary><strong>阅读时长怎么比 v0.2.x 少了?</strong></summary>
+
+正常。v0.2.x 算的是 leaf-active 时长,你挂着 reader 离开 30 分钟也算 30 分钟阅读。v0.3.0 改成:30s 没交互 / 切 tab / 切窗口都自动暂停。数字诚实了,但你得真的动一动才算。
 </details>
 
 <details>
@@ -154,6 +178,8 @@ Syncthing 默认排除 `.obsidian/` — 包括 `data.json`。配置 Syncthing �
 - AZW 类型已声明但 reader 未实现
 - GBK / GB18030 TXT 需手动转 UTF-8
 - 翻译 provider 看得到你选的内容 — 敏感文本别选中翻译
+- **阅读时长需要真实交互**(鼠标 / 键盘 / 滚动 / 触屏)。30s 无操作 / 切 tab / 切窗口都自动暂停。比 v0.2.x 准(不再算挂机时间),但你得真的动一动才算。
+- **阅读 session 日志会随时间增长** — 每次 flush 追加一行 JSON 到 `<Vault>/ezreader/sessions/<title>-<id>.jsonl`。按 ~50 session/天算,~5 KB/天,~2 MB/年。打开书籍详情 modal 时全量读一次。重度用户用了几年感觉到慢就是这个原因(P1: 内存缓存 sessions)。
 
 </details>
 
@@ -162,17 +188,17 @@ Syncthing 默认排除 `.obsidian/` — 包括 `data.json`。配置 Syncthing �
 - **源文件只读** — 从不拷贝 / 移动 / 重命名 / 删除
 - 所有状态(书签、摘录、想法、收藏、进度、设置、封面缓存索引)都在 `<Vault>/.obsidian/plugins/ez-reader/data.json`
 - 封面图片缓存在 `<Vault>/.obsidian/plugins/ez-reader/data/covers/`
-- Per-book Markdown 笔记写到配置的 `notesDirectory`(默认 `ezreader-notes/`,首次保存时自动建,无需手动 `mkdir`)
+- Per-book 摘录笔记 / 书籍元信息 / 阅读 session 日志都在 `<Vault>/ezreader/` 下(首次保存时自动建,无需手动 `mkdir`)。Dataview / 全局搜索可以直接读这些文件。Session 日志是 append-only JSONL,内容只有 `{startedAt, endedAt, durationMs, progressStart, progressEnd, chapter}`,不含个人内容
 - 翻译是唯一出 vault 的网络动作,且只在用户主动触发时执行
 
 ## 架构
 
-严格 core / adapters / ui 分层,port-and-adapter。`core/` 是纯逻辑无 Obsidian 依赖;`adapters/` 包装 Obsidian / foliate / mobi-parser / 翻译 provider;`ui/` 是 DOM 渲染。测试只覆盖 `core/`(`tests/core/*.test.ts`,307 / 307 通过)。
+严格 core / adapters / ui 分层,port-and-adapter。`core/` 是纯逻辑无 Obsidian 依赖;`adapters/` 包装 Obsidian / foliate / mobi-parser / 翻译 provider;`ui/` 是 DOM 渲染。测试只覆盖 `core/`(`tests/core/*.test.ts`,388 / 388 通过)。
 
 ## 开发
 
 ```bash
-pnpm test           # 307 / 307 单元测试
+pnpm test           # 388 / 388 单元测试
 pnpm run build      # 类型检查 + esbuild 打包
 pnpm run dev        # watch 模式(需 Obsidian 端 reload)
 ```

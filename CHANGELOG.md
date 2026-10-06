@@ -4,6 +4,74 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-06
+
+### 新增 (Added)
+
+- **书架右键菜单 — 书籍详情 modal** — 任意书右键 → "📖 书籍详情" → 弹出 480px 详情面板。展示:
+  - 封面 + 标题 + 作者 + 4 个快捷动作 (📖打开 / 📄在 Obsidian 中查看 / 🔗复制 wiki-link / ×关闭)
+  - **元信息网格**: 出版社 / 出版日期 / 语言 / ISBN / 页数 / 格式 / 大小 / 文件路径 / 加入时间 / 最后打开
+  - **阅读进度卡片**: 状态 chip (在读 / 已读完 / 暂弃 / 未读 4 色) + 收藏 / 置顶 flag + 进度条 + 总阅读时长
+  - **阅读时长统计卡片**: 今天 / 最近 7 天 / 最近 30 天 三块 + 连续天数 chip 🔥 + 最近 30 天柱状图 (左旧右新, today 高亮, hover 显示 "MM/DD: N 分钟 (N sessions)")
+  - **最近 session 明细**: 最多 10 条, 起止时间 + 时长 + 进度起止
+  - **Footer 链接**: 📝 打开 notes.md / 📊 打开 info.md
+- **阅读时长"真阅读"检测** — 之前 0.2.x 只算"leaf active 时长", 用户挂着 reader 看手机 1 小时会被算成 1 小时阅读。0.3.0 改成 4 条件检测, 任一不满足立即暂停:
+  1. `activeLeaf === this.leaf` (切 leaf 暂停)
+  2. `document.visibilityState === "visible"` (切 tab 暂停)
+  3. `window has focus` (切窗口暂停)
+  4. `lastInteractionMs + 30s > now` (30s 无交互自动暂停)
+  - EPUB / TXT / MOBI 用 host 上的 `mousemove` / `keydown` / `scroll` / `pointerdown` / `touchstart` / `wheel` (5s 节流) 作为"还在看"信号
+  - PDF 用 PDFView 自带的 selection change / page change (无 host DOM, 全局 mousemove 会污染其他面板)
+- **vault 内统一目录 `ezreader/`** — 替代 0.2.x 的 `ezreader-notes/阅读笔记/`, 文件布局改成扁平三子目录:
+  - `<vault>/ezreader/notes/<title>-<id>.md` — 摘录与想法笔记 (block-id 可双向链接)
+  - `<vault>/ezreader/info/<title>-<id>.md` — 书籍基本信息 (YAML frontmatter, 用户可在 Obsidian 直接 grep / Dataview 查询)
+  - `<vault>/ezreader/sessions/<title>-<id>.jsonl` — 阅读时长 session 明细 (append-only JSONL)
+- **一次性迁移** — 0.2.x 用户首次启动自动把 `ezreader-notes/阅读笔记/*.md` 搬到 `ezreader/notes/<title>-<id>.md`, 完成后写 `migratedToV030` 标记。迁移失败不阻塞 library 启动, 用户可手动重置标记重跑
+- **Settings UI 简化** — 摘录笔记目录 / 主题研究目录 / 默认笔记模板 / 所有者名称 4 项配置删除, 改为只读说明文字 (文件路径固定, 不再可配置)
+
+### 改动 (Changed)
+
+- **`NoteWriter` port 重构为 `LibraryWriter`** — 接口扩展, 现在管 notes + info + sessions 三个文件, 而不只是 notes. ReaderView / PdfOverlay 注入类型从 `NoteWriter` 改成 `LibraryWriter`, 调用点 `ensureBookNote` 改名 `ensureBookDir`. 老 `NoteWriter.ts` + `ObsidianNoteWriter.ts` 文件删除
+- **`ReadingService` 新方法**:
+  - `recordSession(bookId, session)` — 把单次阅读 session 持久化到 `ezreader/sessions/*.jsonl`
+  - `getDailyReadingTime(bookId, days)` — 读最近 N 天每日阅读时长 (newest-first, gaps 用 0-bucket 填充)
+- **`LibraryService` 新方法**:
+  - `getRichEntry(bookId) → RichLibraryEntry` — 合并 `LibraryEntry` + info.md + 30 天 daily buckets + 最近 10 session + reading streak. BookInfoModal 用这个方法拿数据
+- **`RichLibraryEntry`** — 新 entity, BookInfoModal 的数据源
+- **`BookInfo`** — 新 entity, info.md 的 typed schema (YAML frontmatter round-trip 走 `frontmatter.ts` 纯函数)
+- **`ReadingSession` / `DailyReadingTime`** — 新 entity, sessions.jsonl 和 daily aggregator 的 typed schema
+- **`main.js` 大小** — 998 → ~1080 KB (+8%, 主要来自 BookInfoModal + frontmatter + daily aggregator)
+- **测试覆盖** — 308 → ~340+ 通过 (新增 frontmatter / aggregator / service / modal 测试)
+
+### 修复 (Fixed)
+
+- **阅读时长被严重高估** — 之前 0.2.x 算 active-leaf 时长, 用户挂着 reader 离开 30 分钟也算 30 分钟阅读。0.3.0 4 条件检测 (active leaf + visibility + focus + 30s 交互) 后, 真正"用户在读"才计
+- **PDF 阅读时长算法缺失** — 之前 PDF 走 Obsidian 内置 viewer, 完全没记录阅读时长。0.3.0 PdfOverlay 加同样的 4 条件检测 (用 selection change + page change 作为交互信号)
+
+### 弃用 (Deprecated)
+
+- **`notesDirectory` 配置项** — 0.2.x 的"摘录笔记目录"自定义设置删除, 改用固定的 `<vault>/ezreader/notes/`。字段保留在 data.json 里给迁移用, 但 SettingsTab 不再暴露
+
+### 移除 (Removed)
+
+- `src/core/ports/NoteWriter.ts` — 替换为 `LibraryWriter`
+- `src/adapters/obsidian/ObsidianNoteWriter.ts` — 替换为 `ObsidianLibraryWriter`
+- `SettingsTab` 4 个配置项 UI: 摘录笔记目录 / 主题研究目录 / 默认笔记模板 / 所有者名称
+
+## [0.2.11] - 2026-09-29
+
+### 新增 (Added)
+
+- **阅读器 ↑/↓ 翻页** — `ArrowUp` / `ArrowDown` 加入 fixed shortcuts, 跟 `PageUp` / `PageDown` 同样无视 `cfg.prev/cfg.next`, 匹配 Kindle / 微信读书 / Adobe / Calibre 肌肉记忆
+- **EPUB 第一页 ←/→ 键盘响应** — `ReaderView.openSession` 把 `session.on("selection-change")` 提前到 `resumeFromPosition` 之前, 让 foliate 第一次 iframe load 事件被 loadListener 接住, keydown listener 挂到第一页
+
+### 修复 (Fixed)
+
+- **密度按钮图标不显示** — DOMParser 解析 `<svg>` 无 `xmlns` 时 `namespaceURI=null` 导致被当 HTMLUnknownElement。改 `createElementNS("http://www.w3.org/2000/svg", "svg")` 构造
+- **↑/↓ 在 toolbar 按钮悬浮时不响应** — `isEditableTarget` 之前包含 `button`, 鼠标悬浮 toolbar 时 `event.target.closest("button")` 命中 → handler return。去掉 `button` (arrow keys 不激活 button)
+- **EPUB 满页 `<a>` 误伤键盘** — `isEditableTarget` 包含 `a`, tab/click 后 handler return。去掉 `a` (arrow keys 不激活 link)
+- **manifest description 纯英文** — 去掉中文双语, 符合 Obsidian community 规范 (虽然 community cache 暂时还在用老的双语版本, 需要等下一次入库)
+
 ## [0.2.10] - 2026-09-28
 
 ### 新增 (Added)
