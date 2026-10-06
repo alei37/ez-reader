@@ -177,14 +177,25 @@ export class ReadingService {
    *
    * 不触发 onChange (shelf 不需要每次 session 都重渲染 — ReadingState
    * 的 totalReadingMs 由 addReadingTime 单独维护).
+   *
+   * `titleHint` (P1 v0.3.0 fix): caller 传入真实书名. LibraryWriter
+   * 内部用 bookTitle 算 filename (`<safeTitle>-<id>`), 缺 titleHint
+   * 时 fallback 到 bookId 会 orphan 老 sessions.jsonl (因为后续
+   * appendExcerpt 传真 title 会创建另一个 file path). PDF / TXT 场景
+   * session.chapter 是 undefined, ReaderView 用 entry.book.metadata.title,
+   * PdfOverlay 用 file basename — 两者都比 bookId 稳定.
    */
-  async recordSession(bookId: BookId, session: ReadingSession): Promise<void> {
+  async recordSession(
+    bookId: BookId,
+    session: ReadingSession,
+    titleHint?: string
+  ): Promise<void> {
     if (session.durationMs <= 0) return;
     if (this.libraryWriter) {
       try {
         const ref = await this.libraryWriter.ensureBookDir({
           bookId,
-          bookTitle: session.chapter ?? bookId,
+          bookTitle: titleHint ?? session.chapter ?? bookId,
           bookPath: ""
         });
         await this.libraryWriter.appendReadingSession(ref, session);

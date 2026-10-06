@@ -252,14 +252,22 @@ export class ObsidianLibraryWriter implements LibraryWriter {
 
   async appendReadingSession(ref: BookDirRef, session: ReadingSession): Promise<void> {
     await this.enqueueWrite(ref.sessionsPath, async () => {
-      const file = this.app.vault.getAbstractFileByPath(ref.sessionsPath);
       const line = JSON.stringify(session) + "\n";
-      if (file instanceof TFile) {
-        await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}${line}`);
-      } else {
-        // First session — create the file with just this line.
+      // P0 v0.3.0 fix: 用 `vault.adapter.append` 替代 `vault.process`.
+      // 之前每次 append = read full file + modify + write back, O(N) per call
+      // → O(N²) cumulative. 重 reader 一周就积累几千 sessions, IO 风暴.
+      // adapter.append 是真正的文件追加 (kernel-level pwrite, no read).
+      //
+      // Obsidian 的 adapter.append 不自动创建缺失文件 — 文件不存在时
+      // 会抛 ENOENT. 先 exists 检查, 没有就用 vault.create 初始化空
+      // 文件再 append. enqueueWrite 串行化同 path, 避免两个 flush 并发
+      // 都看到 "不存在" 然后 create 覆盖.
+      const exists = await this.app.vault.adapter.exists(ref.sessionsPath);
+      if (!exists) {
         await this.app.vault.create(ref.sessionsPath, line);
+        return;
       }
+      await this.app.vault.adapter.append(ref.sessionsPath, line);
     });
   }
 

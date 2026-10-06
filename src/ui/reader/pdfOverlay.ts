@@ -190,6 +190,14 @@ export class PdfOverlay {
   private windowHasFocus = true;
   private lastReadingFlushAt = 0;
   private static readonly PDF_INACTIVITY_TIMEOUT_MS = 30_000;
+  /**
+   * P0 v0.3.0 fix: 当前 active session 的起始 page fraction. session
+   * 启动时 capture, flush 时用最新页码算 progressEnd. 跟 ReaderView
+   * 同 pattern, 让 sessions.jsonl 有真实数据可聚合.
+   *
+   * PDF 没有 chapter label, 传 undefined (ReadingSession.chapter 是可选).
+   */
+  private activeSessionProgressStart: number = 0;
 
   constructor(opts: PdfOverlayOptions) {
     this.opts = opts;
@@ -503,20 +511,64 @@ export class PdfOverlay {
     }
     this.restartPdfInactivityCheck();
     this.activeSinceMs = Date.now();
+    // Capture 当前页码作为 session 起始 fraction. flush 时用最新页码算 end.
+    this.activeSessionProgressStart = this.currentPageFraction();
   }
 
   /**
    * 把当前 PDF active session 的 ms 写回 store. 没在计费中则 no-op.
    * 跟 ReaderView.flushReadingTime 共享同一份 reading service — bookId
    * 不同但累加路径相同 (store 内部按 bookId 索引)。
+   *
+   * v0.3.0 fix: 同步调 recordSession 把这次 session 写到
+   * `ezreader/sessions/<title>-<id>.jsonl`, 让 BookInfoModal 阅读时长
+   * 统计对 PDF 也生效 (之前 totalReadingMs 有, 但 sessions.jsonl 没数据).
    */
   private flushPdfActiveSession(): void {
     if (this.activeSinceMs === null) return;
     if (!this.bookId) return;
-    const delta = Date.now() - this.activeSinceMs;
+    const startedAt = this.activeSinceMs;
+    const endedAt = Date.now();
+    const delta = endedAt - startedAt;
+    const progressStart = this.activeSessionProgressStart;
+    const progressEnd = this.currentPageFraction();
     this.activeSinceMs = null;
+    this.activeSessionProgressStart = 0;
     this.clearPdfInactivityCheck();
-    if (delta >= 1000) void this.flushPdfReadingTime(delta);
+    if (delta < 1000) return; // 太短的 session 不记录
+    void this.flushPdfReadingTime(delta);
+    // titleHint 从 entry.metadata.title 取 (fallback 到 filePath basename).
+    // 真实 title 比 session.chapter / bookId 都稳定 — 保证 sessions.jsonl
+    // 跟 notes.md 在同一目录下 (orphan 风险消除).
+    const entry = this.opts.library.list().find((e) => e.book.id === this.bookId);
+    const titleHint =
+      entry?.book.metadata?.title ??
+      this.opts.bookPath.split("/").pop()?.replace(/\.[^.]+$/, "") ??
+      this.bookId;
+    void this.opts.reading.recordSession(
+      this.bookId,
+      {
+        startedAt,
+        endedAt,
+        durationMs: delta,
+        progressStart,
+        progressEnd,
+        chapter: undefined
+      },
+      titleHint
+    );
+  }
+
+  /**
+   * 当前 PDF 页码转 0-1 fraction. pageNumber / totalPages, 跟
+   * `progressFraction` for "pdf" kind 的算法一致: `(page - 1) / totalPages`.
+   * 缺 totalPages 时 fallback 到 0.
+   */
+  private currentPageFraction(): number {
+    const page = findActivePageNumber(this.container);
+    const total = findPdfTotalPages(this.container);
+    if (page === null || total === null || total <= 0) return 0;
+    return Math.max(0, Math.min(1, (page - 1) / total));
   }
 
   private async flushPdfReadingTime(deltaMs: number): Promise<void> {

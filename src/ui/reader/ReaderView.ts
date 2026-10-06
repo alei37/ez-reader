@@ -302,6 +302,20 @@ export class ReaderView extends ItemView {
   private static readonly INACTIVITY_TIMEOUT_MS = 30_000;
   private static readonly INTERACTION_THROTTLE_MS = 5_000;
   /**
+   * P0 v0.3.0 fix: 当前 active session 的元数据. session 启动时 capture
+   * (chapter / progressStart), flush 时跟 progressEnd + durationMs 一起
+   * 写到 sessions.jsonl via ReadingService.recordSession. 之前 v0.3.0 prep
+   * 只更新了 totalReadingMs, sessions.jsonl 永远为空, BookInfoModal 的
+   * 阅读时长统计面板是死 UI.
+   *
+   * 为什么不直接用 `this.chapter` / `this.fraction` 作为 session 起止 —
+   * 因为它们是当前 (流动的) 状态, 可能已经被后续 relocate / 翻页改了.
+   * 这里 capture 的是 session **启动** 那一刻的快照, progressEnd 在
+   * flush 时用最新的 `this.fraction`.
+   */
+  private activeSessionChapter: string | undefined = undefined;
+  private activeSessionProgressStart: number = 0;
+  /**
    * Find-in-book 状态 — toolbar 拿这两个字段做 badge + active 视觉。
    * searchBarVisible 也控制 input 是否聚焦。
    */
@@ -867,18 +881,50 @@ export class ReaderView extends ItemView {
     }
     this.restartInactivityCheck();
     this.activeSinceMs = Date.now();
+    // Capture session 启动时的 chapter / progress. 后续翻页不动这些字段,
+    // 直到下次 flush + tryStart. progressEnd 在 flush 时读最新 this.fraction.
+    this.activeSessionChapter = this.chapter || undefined;
+    this.activeSessionProgressStart = this.fraction;
   }
 
   /**
    * 把当前 active session 的 ms 写回 store. 没在计费中则 no-op.
    * flushReadingTime 内部 30s 防抖 + 1min 阈值, 避免数据丢失。
+   *
+   * v0.3.0 fix: 同步调 recordSession 把这次 session 也写到
+   * `ezreader/sessions/<title>-<id>.jsonl`, 让 BookInfoModal 的
+   * "阅读时长统计" 面板能读到真实 session 数据 (之前永远是空).
    */
   private flushActiveSession(): void {
     if (this.activeSinceMs === null) return;
-    const delta = Date.now() - this.activeSinceMs;
+    const startedAt = this.activeSinceMs;
+    const endedAt = Date.now();
+    const delta = endedAt - startedAt;
+    const chapter = this.chapter || this.activeSessionChapter;
+    const progressStart = this.activeSessionProgressStart;
+    const progressEnd = this.fraction;
     this.activeSinceMs = null;
+    this.activeSessionChapter = undefined;
+    this.activeSessionProgressStart = 0;
     this.clearInactivityCheck();
-    if (delta >= 1000) void this.flushReadingTime(delta);
+    if (delta < 1000) return; // 太短的 session 不记录 (切 tab 等瞬态)
+    void this.flushReadingTime(delta);
+    if (this.entry) {
+      // 不 await — recordSession 内部会写 IO, 但不阻塞 UI.
+      const titleHint = this.entry.book.metadata?.title ?? this.entry.book.locator.path;
+      void this.deps.reading.recordSession(
+        this.entry.book.id,
+        {
+          startedAt,
+          endedAt,
+          durationMs: delta,
+          progressStart,
+          progressEnd,
+          chapter
+        },
+        titleHint
+      );
+    }
   }
 
   /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */
