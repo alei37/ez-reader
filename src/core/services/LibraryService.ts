@@ -1,7 +1,11 @@
 import { type Book, type BookId, type BookMetadata, READER_CAPABLE_FORMATS } from "../entities/Book";
 import type { ReadingState, ReadingStatus } from "../entities/ReadingState";
+import type { BookInfo } from "../entities/BookInfo";
+import { BOOK_INFO_SCHEMA_VERSION } from "../entities/BookInfo";
+import type { ReadingSession, DailyReadingTime } from "../entities/ReadingSession";
 import type { AnnotationStore } from "../ports/AnnotationStore";
 import type { BookSource } from "../ports/BookSource";
+import type { LibraryWriter } from "../ports/LibraryWriter";
 import {
   DEFAULT_SORT,
   emptyFilter,
@@ -21,6 +25,33 @@ import { progressFraction } from "../entities/ReadingState";
 export interface LibraryEntry {
   readonly book: Book;
   readonly reading: ReadingState;
+}
+
+/**
+ * v0.3.0: Rich view for the BookInfoModal. Joins `LibraryEntry` with
+ * per-book info.md metadata, daily reading-time buckets, and recent
+ * reading sessions. Everything is read-only — modal use only.
+ *
+ * Callers should treat this as a snapshot; subsequent mutations (status
+ * change, new excerpt, etc.) invalidate the snapshot. Modal re-opens
+ * should call `getRichEntry` again.
+ */
+export interface RichLibraryEntry {
+  readonly entry: LibraryEntry;
+  /** Per-book info.md (YAML frontmatter). null if no info.md yet. */
+  readonly bookInfo: BookInfo | null;
+  /** Daily reading-time buckets for the last 30 days (newest-first). */
+  readonly dailyReadingTime: ReadonlyArray<DailyReadingTime>;
+  /** Up to 10 most recent reading sessions, newest-first. */
+  readonly recentSessions: ReadonlyArray<ReadingSession>;
+  /** Current reading streak (consecutive days with activity). */
+  readonly readingStreakDays: number;
+  /** Today's reading-time ms (convenience — `dailyReadingTime[0]?.totalMs`). */
+  readonly todayReadingMs: number;
+  /** Last 7 days reading-time ms. */
+  readonly lastWeekReadingMs: number;
+  /** Last 30 days reading-time ms. */
+  readonly lastMonthReadingMs: number;
 }
 
 export interface ScanProgress {
@@ -66,7 +97,13 @@ export class LibraryService {
      * is set. Lives next to it on the constructor so tests can keep the
      * "filename-only" code path (no `metadataReader`, no loader).
      */
-    private readonly bookBytesLoader?: import("../ports/BookReader").BookBytesLoader
+    private readonly bookBytesLoader?: import("../ports/BookReader").BookBytesLoader,
+    /**
+     * v0.3.0: Used by `getRichEntry` for reading-time analytics. Optional
+     * so tests don't need to wire up the whole LibraryWriter. When omitted
+     * `getRichEntry` returns `null` for analytics fields.
+     */
+    private readonly libraryWriter?: LibraryWriter
   ) {}
 
   /** Initial load: scan the source and join against stored reading state. */
@@ -370,6 +407,79 @@ export class LibraryService {
     return this.entries.get(bookId);
   }
 
+  /**
+   * v0.3.0: Rich view for the BookInfoModal. Combines `LibraryEntry` with
+   * info.md metadata + recent reading sessions + daily aggregates. Returns
+   * `null` if the book is not in the library (e.g. file was deleted or
+   * user has not added it yet).
+   *
+   * The caller is expected to render the modal with these fields; the
+   * modal does not mutate anything. Re-call after edits to refresh.
+   */
+  async getRichEntry(bookId: BookId): Promise<RichLibraryEntry | null> {
+    const entry = this.entries.get(bookId);
+    if (!entry) return null;
+
+    // 1. info.md — try the LibraryWriter, fall back to a snapshot built
+    //    from the Book + ReadingState so the modal has something to show
+    //    even when info.md has never been written yet.
+    let bookInfo: BookInfo | null = null;
+    if (this.libraryWriter) {
+      try {
+        bookInfo = await this.libraryWriter.readBookInfo(bookId);
+      } catch (error) {
+        console.warn("[ez-reader] getRichEntry: readBookInfo failed", bookId, error);
+      }
+    }
+    if (!bookInfo) {
+      bookInfo = buildFallbackBookInfo(entry);
+    }
+
+    // 2. Reading sessions — load and aggregate.
+    let recentSessions: ReadonlyArray<ReadingSession> = [];
+    let daily: ReadonlyArray<DailyReadingTime> = [];
+    if (this.libraryWriter) {
+      try {
+        recentSessions = await this.libraryWriter.loadReadingSessions(bookId);
+      } catch (error) {
+        console.warn("[ez-reader] getRichEntry: loadReadingSessions failed", bookId, error);
+      }
+      // Lazy import to keep dep graph one-way.
+      try {
+        const { aggregateDailyReadingTime, readingStreakDays } = await import(
+          "../../adapters/obsidian/dailyReadingTime"
+        );
+        daily = aggregateDailyReadingTime(recentSessions, 30);
+        const streak = readingStreakDays(daily);
+        return {
+          entry,
+          bookInfo,
+          dailyReadingTime: daily,
+          recentSessions: recentSessions.slice(-10).reverse(),
+          readingStreakDays: streak,
+          todayReadingMs: daily[0]?.totalMs ?? 0,
+          lastWeekReadingMs: daily.slice(0, 7).reduce((acc, d) => acc + d.totalMs, 0),
+          lastMonthReadingMs: daily.reduce((acc, d) => acc + d.totalMs, 0)
+        };
+      } catch (error) {
+        console.warn("[ez-reader] getRichEntry: aggregate failed", bookId, error);
+      }
+    }
+
+    // LibraryWriter missing or aggregation failed — return entry with
+    // empty analytics. Modal should handle missing fields gracefully.
+    return {
+      entry,
+      bookInfo,
+      dailyReadingTime: [],
+      recentSessions: recentSessions.slice(-10).reverse(),
+      readingStreakDays: 0,
+      todayReadingMs: 0,
+      lastWeekReadingMs: 0,
+      lastMonthReadingMs: 0
+    };
+  }
+
   /** Add a book to the user's library. Idempotent. */
   async addToLibrary(bookId: string, now = Date.now()): Promise<void> {
     const entry = this.entries.get(bookId);
@@ -604,4 +714,44 @@ const compare = (a: LibraryEntry, b: LibraryEntry, sort: SortCriterion): number 
     case "progressDesc":
       return progressFraction(b.reading) - progressFraction(a.reading);
   }
+};
+/**
+ * v0.3.0: Synthesize a BookInfo snapshot from in-memory `LibraryEntry`
+ * data, used as a fallback when `info.md` hasn't been written yet (e.g.
+ * the book was added but the user never opened it). The modal uses this
+ * so first-open doesn't show an empty details panel.
+ *
+ * Pure function — easy to test, no IO.
+ */
+const buildFallbackBookInfo = (entry: LibraryEntry): BookInfo => {
+  const now = Date.now();
+  const fraction = progressFraction(entry.reading);
+  return {
+    schemaVersion: BOOK_INFO_SCHEMA_VERSION,
+    title: entry.book.metadata?.title ?? entry.book.locator.path.split("/").pop() ?? "未命名",
+    authors: entry.book.metadata?.authors ?? [],
+    publisher: entry.book.metadata?.publisher,
+    published: entry.book.metadata?.published,
+    language: entry.book.metadata?.languages?.[0],
+    isbn: entry.book.metadata?.identifier,
+    pageCount: undefined,
+    description: entry.book.metadata?.description,
+    bookId: entry.book.id,
+    format: entry.book.locator.format,
+    filePath: entry.book.locator.path,
+    fileSizeBytes: entry.book.locator.sizeBytes,
+    fileModifiedAt: entry.book.locator.modifiedAt,
+    addedToLibraryAt: entry.book.addedToLibraryAt ?? now,
+    lastOpenedAt: entry.reading.lastOpenedAt,
+    status: entry.reading.status,
+    progressFraction: fraction,
+    totalReadingMs: entry.reading.totalReadingMs ?? 0,
+    excerptCount: 0,
+    bookmarkCount: 0,
+    thoughtCount: 0,
+    favorite: entry.reading.favorite,
+    pinnedAt: entry.book.pinnedAt,
+    coverPath: entry.book.coverPath,
+    updatedAt: now
+  };
 };

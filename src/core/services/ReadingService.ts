@@ -2,7 +2,9 @@ import type { Bookmark } from "../entities/Bookmark";
 import type { BookId } from "../entities/Book";
 import type { Excerpt } from "../entities/Excerpt";
 import type { ReadingPosition, ReadingState } from "../entities/ReadingState";
+import type { ReadingSession, DailyReadingTime } from "../entities/ReadingSession";
 import type { AnnotationStore } from "../ports/AnnotationStore";
+import type { LibraryWriter } from "../ports/LibraryWriter";
 import { defaultReadingState, progressFraction } from "../entities/ReadingState";
 
 /**
@@ -17,11 +19,16 @@ import { defaultReadingState, progressFraction } from "../entities/ReadingState"
  * so the shelf refreshes and the next ReaderView.open reads the latest
  * position for resume. Bookmarks / excerpts don't fire it because they
  * don't change the reading state.
+ *
+ * Optional `libraryWriter` (v0.3.0) is used for reading-time analytics
+ * (recordSession / getDailyReadingTime). When omitted (tests, old callers)
+ * those methods become no-ops.
  */
 export class ReadingService {
   constructor(
     private readonly annotations: AnnotationStore,
-    private readonly onChange?: (state: ReadingState) => void | Promise<void>
+    private readonly onChange?: (state: ReadingState) => void | Promise<void>,
+    private readonly libraryWriter?: LibraryWriter
   ) {}
 
   /** Get current state, falling back to a default. */
@@ -161,6 +168,48 @@ export class ReadingService {
    */
   async saveVisitedTocIds(bookId: BookId, ids: ReadonlyArray<string>): Promise<void> {
     await this.annotations.saveVisitedTocIds(bookId, ids);
+  }
+
+  /**
+   * v0.3.0: 记录一次阅读 session. ReaderView 在 flushActiveSession 时调,
+   * 把 session 持久化到 `ezreader/sessions/<title>-<id>.jsonl`,
+   * 供后续 getDailyReadingTime 聚合用.
+   *
+   * 不触发 onChange (shelf 不需要每次 session 都重渲染 — ReadingState
+   * 的 totalReadingMs 由 addReadingTime 单独维护).
+   */
+  async recordSession(bookId: BookId, session: ReadingSession): Promise<void> {
+    if (session.durationMs <= 0) return;
+    if (this.libraryWriter) {
+      try {
+        const ref = await this.libraryWriter.ensureBookDir({
+          bookId,
+          bookTitle: session.chapter ?? bookId,
+          bookPath: ""
+        });
+        await this.libraryWriter.appendReadingSession(ref, session);
+      } catch (error) {
+        console.warn("[ez-reader] recordSession failed", bookId, error);
+      }
+    }
+  }
+
+  /**
+   * v0.3.0: 读最近 N 天每日阅读时长. 返回值按日期降序排列, gaps 用
+   * 0-bucket 填充, 始终有 `days` 个条目.
+   */
+  async getDailyReadingTime(bookId: BookId, days: number): Promise<ReadonlyArray<DailyReadingTime>> {
+    if (!this.libraryWriter) return [];
+    let sessions: ReadonlyArray<ReadingSession> = [];
+    try {
+      sessions = await this.libraryWriter.loadReadingSessions(bookId);
+    } catch (error) {
+      console.warn("[ez-reader] getDailyReadingTime: loadReadingSessions failed", bookId, error);
+      return [];
+    }
+    // Lazy import to keep the dep graph one-way (core/ → adapters/, never back).
+    const { aggregateDailyReadingTime } = await import("../../adapters/obsidian/dailyReadingTime");
+    return aggregateDailyReadingTime(sessions, days);
   }
 }
 

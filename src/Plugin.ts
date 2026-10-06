@@ -112,7 +112,10 @@ export default class EzReaderPlugin extends Plugin {
       // 同步 LibraryService.entries + emit shelf refresh, 否则 reader 翻页
       // 写完 data.json 后 shelf 仍然显示旧进度, 关闭 → 重开 reader 也不
       // resume (entry.reading 是 library.entries 的旧快照).
-      (state) => this.library.updateReading(state)
+      (state) => this.library.updateReading(state),
+      // v0.3.0: 透传 libraryWriter 让 ReadingService.recordSession /
+      // getDailyReadingTime 能写到 ezreader/sessions/*.jsonl
+      this.noteWriter
     );
     this.translation = new TranslationCoordinator(this.annotationStore, [
       new YoudaoTranslationProvider(),
