@@ -78,7 +78,10 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       // P2: 跟 pinnedAtByBookId / addedAtByBookId 同样的 fallback 模式 —
       // 旧 data.json 没这个字段就给空 map, 不会因为 undefined 让
       // loadVisitedTocIds 炸掉.
-      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId)
+      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId),
+      // v0.3.0: 一次性迁移完成标记. sanitize boolean — 老 data.json
+      // 没这个字段 → false → Plugin.runV030Migration 跑一次。
+      migratedToV030: raw?.migratedToV030 === true
     };
     return this.cache;
   }

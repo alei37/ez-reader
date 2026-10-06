@@ -3,7 +3,7 @@ import type { App, WorkspaceLeaf } from "obsidian";
 import { CoverCache } from "./adapters/obsidian/CoverCache";
 import { ObsidianAnnotationStore } from "./adapters/obsidian/ObsidianAnnotationStore";
 import { ObsidianBookSource } from "./adapters/obsidian/ObsidianBookSource";
-import { ObsidianNoteWriter } from "./adapters/obsidian/ObsidianNoteWriter";
+import { ObsidianLibraryWriter } from "./adapters/obsidian/ObsidianLibraryWriter";
 import { FoliateBookReader } from "./adapters/foliate/FoliateBookReader";
 import { TxtBookReader } from "./adapters/text/TxtBookReader";
 import { MobiBookReader } from "./adapters/text/MobiBookReader";
@@ -20,7 +20,7 @@ import { TranslationCoordinator } from "./core/services/TranslationService";
 import type { LibraryEntry } from "./core/services/LibraryService";
 import type { Excerpt } from "./core/entities/Excerpt";
 import type { BookBytesLoader, BookReader } from "./core/ports/BookReader";
-import type { NoteWriter } from "./core/ports/NoteWriter";
+import type { LibraryWriter } from "./core/ports/LibraryWriter";
 import type {
   KeyboardShortcuts,
   ReaderAppearance
@@ -52,7 +52,7 @@ export default class EzReaderPlugin extends Plugin {
   private mobiReader!: BookReader;
   private pdfCover!: PdfCoverExtractor;
   private covers!: CoverCache;
-  private noteWriter!: NoteWriter;
+  private noteWriter!: LibraryWriter;
   /**
    * Cached value of the user's original `showUnsupportedFiles` setting,
    * so onunload can restore it. Stored as a private field instead of
@@ -145,13 +145,18 @@ export default class EzReaderPlugin extends Plugin {
       },
       this.annotationStore
     );
-    this.noteWriter = new ObsidianNoteWriter(this.app, this, this.annotationStore);
+    this.noteWriter = new ObsidianLibraryWriter(this.app, this, this.annotationStore);
 
     // Obsidian loads files asynchronously. `vault.getFiles()` returns an
     // empty list until the layout is ready and the initial vault scan has
     // finished. Wait for that moment before doing the first library scan,
     // matching the upstream plugin's pattern.
     this.app.workspace.onLayoutReady(async () => {
+      // v0.3.0: 一次性老 `notesDirectory/` → 新 `ezreader/` 迁移。放在
+      // library.initialize 之前跑 — 万一迁移失败用户能看到 Notice,但
+      // 不影响 library 正常工作(新结构的 notes/ 还没文件,只是空)。
+      // 跑过一次后写 migratedToV030 = true,后续启动跳过。
+      await this.runV030Migration();
       await this.library.initialize();
       // Cover hydration must run after the library has populated its
       // entries — slug → bookId mapping needs them to exist.
@@ -580,6 +585,52 @@ export default class EzReaderPlugin extends Plugin {
   }
 
   /** Removed openPicker — 跟"打开个人图书馆"功能重叠, ribbon 上不需要第二个入口. */
+
+  /**
+   * v0.3.0: 一次性迁移老 `notesDirectory/` → 新 `<vault>/ezreader/notes/`
+   * 布局。跑过一次后写 `migratedToV030 = true`,后续启动跳过。
+   *
+   * 失败的 case 不会抛 — try/catch 包住,失败时只 console.warn,标记位
+   * 仍然写成 `true`(避免每次启动都重试失败的成本)。用户如果想重跑,
+   * 手动把 data.json 的 `migratedToV030` 改成 `false` 重启。
+   *
+   * 为什么不删老目录:留给用户 review。LibraryWriter.migrateLegacyNotes
+   * 只把 `.md` 文件搬走,空目录用户可以自己 `rm -r`。
+   */
+  private async runV030Migration(): Promise<void> {
+    try {
+      const snapshot = await this.annotationStore.load();
+      if (snapshot.migratedToV030 === true) return;
+      // 老 settings.notesDirectory 没值就 fallback 到 hardcoded 默认值
+      // (v0.2.x 的 `DEFAULT_PLUGIN_SETTINGS.notesDirectory`)。
+      const legacyDir = snapshot.settings.notesDirectory?.trim() || "ezreader-notes/阅读笔记";
+      const result = await this.noteWriter.migrateLegacyNotes({ legacyNotesDir: legacyDir });
+      if (result.migratedNotes > 0 || result.failedNotes > 0) {
+        new Notice(
+          `EzReader 0.3.0 迁移: ${result.migratedNotes} 个笔记搬到 ezreader/notes/,${
+            result.failedNotes > 0 ? ` ${result.failedNotes} 个失败` : ""
+          }`
+        );
+      }
+      // 清空老字段(避免用户后续调试时困惑),写标记
+      await this.annotationStore.patchSettings((s) => ({
+        ...s,
+        notesDirectory: "",
+        migratedToV030: true
+      }));
+      console.info(
+        `[ez-reader] v0.3.0 migration complete: ${result.migratedNotes} migrated, ${result.failedNotes} failed`
+      );
+    } catch (error) {
+      console.warn("[ez-reader] v0.3.0 migration failed", error);
+      // 即使失败也写标记位 — 避免每次启动都重试同样的失败 IO
+      try {
+        await this.annotationStore.patchSettings((s) => ({ ...s, migratedToV030: true }));
+      } catch (innerError) {
+        console.warn("[ez-reader] could not persist migratedToV030 flag", innerError);
+      }
+    }
+  }
 
   /**
    * Mirrors `enableAllBookFormatsInFileExplorer` from the upstream plugin:

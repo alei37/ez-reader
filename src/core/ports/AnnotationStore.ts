@@ -53,6 +53,12 @@ export interface AnnotationSnapshot {
    * includes 即可). 默认空对象 `{}`, 旧 data.json 没这字段也能 load.
    */
   readonly visitedTocIdsByBookId?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /**
+   * v0.3.0: 老 `notesDirectory/` → 新 `ezreader/` 一次性迁移完成标记.
+   * 顶层字段而不是 settings 里, 因为它不属于用户配置, 而是数据迁移状态.
+   * 老 data.json 没这字段 → false → Plugin.runV030Migration 跑一次.
+   */
+  readonly migratedToV030?: boolean;
 }
 
 /** Read/write access to annotation data, independent of how it's persisted. */

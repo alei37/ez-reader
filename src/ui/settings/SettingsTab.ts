@@ -301,44 +301,30 @@ export class SettingsTab extends PluginSettingTab {
   }
 
   // ---- 笔记与摘录 ----
+  //
+  // v0.3.0: 不再有可配置的"摘录笔记目录" / "主题研究目录" / "笔记模板"。
+  // 文件布局固定为 `<vault>/ezreader/{notes,info,sessions}/<title>-<id>.md`,
+  // header hardcoded (不再支持 `{{title}} {{author}}` 占位符)。
+  // 这里只展示一段说明文字,让用户知道结构。
   private renderNotesSection(containerEl: HTMLElement): void {
     new Setting(containerEl).setName("笔记与摘录").setHeading();
-    const saveNotesDir = this.debounceSave(async (value: string) => {
-      await this.annotations.patchSettings((s) => ({ ...s, notesDirectory: value.trim() }));
+    const desc = containerEl.createDiv({ cls: "ez-reader__settings-readonly" });
+    desc.createEl("p", {
+      text: "v0.3.0 起,所有 EzReader 文件统一放在 vault 根的 `ezreader/` 目录下:"
     });
-    const saveResearchDir = this.debounceSave(async (value: string) => {
-      await this.annotations.patchSettings((s) => ({ ...s, researchDirectory: value.trim() }));
+    const list = desc.createEl("ul");
+    list.createEl("li", {
+      text: "`ezreader/notes/<title>-<id>.md` — 摘录与想法笔记 (双链 + 块 ID)"
     });
-    const saveNoteTemplate = this.debounceSave(async (value: string) => {
-      await this.annotations.patchSettings((s) => ({ ...s, defaultNoteTemplate: value }));
+    list.createEl("li", {
+      text: "`ezreader/info/<title>-<id>.md` — 书籍基本信息 (YAML frontmatter)"
     });
-    new Setting(containerEl)
-      .setName("摘录笔记目录")
-      .setDesc("双链笔记文件保存位置,留空则不自动保存笔记。保存第一条摘录时会自动创建目录,无需手动 mkdir")
-      .addText((text) => {
-        void this.loadSettings().then((s) => {
-          text.setValue(s.notesDirectory);
-        });
-        text.onChange((value) => saveNotesDir(value));
-      });
-    new Setting(containerEl)
-      .setName("主题研究目录")
-      .setDesc("主题研究笔记保存位置,默认与摘录笔记共享 ezreader-notes 根目录。目录会在首次写入时自动创建")
-      .addText((text) => {
-        void this.loadSettings().then((s) => {
-          text.setValue(s.researchDirectory);
-        });
-        text.onChange((value) => saveResearchDir(value));
-      });
-    new Setting(containerEl)
-      .setName("默认笔记模板")
-      .setDesc("新建笔记时使用的标题模板,支持 {{title}} {{author}} 占位符")
-      .addText((text) => {
-        void this.loadSettings().then((s) => {
-          text.setValue(s.defaultNoteTemplate);
-        });
-        text.onChange((value) => saveNoteTemplate(value));
-      });
+    list.createEl("li", {
+      text: "`ezreader/sessions/<title>-<id>.jsonl` — 阅读时长 session 明细 (append-only)"
+    });
+    desc.createEl("p", {
+      text: "从 v0.2.x 升级的用户,首次启动会自动把 `ezreader-notes/阅读笔记/` 下的笔记搬过来。"
+    });
   }
 
   // ---- 翻译 ----
@@ -715,18 +701,6 @@ export class SettingsTab extends PluginSettingTab {
           // 重启让翻译生效. (Obsidian 本身没有 plugin 自刷新 API).
           new Notice("界面语言将在重启后生效");
         });
-      });
-    new Setting(containerEl)
-      .setName("所有者名称")
-      .setDesc("用于笔记署名(可选)")
-      .addText((text) => {
-        const saveOwner = this.debounceSave(async (value: string) => {
-          await this.annotations.patchSettings((s) => ({ ...s, libraryOwnerName: value }));
-        });
-        void this.loadSettings().then((s) => {
-          text.setValue(s.libraryOwnerName);
-        });
-        text.onChange((value) => saveOwner(value));
       });
     new Setting(containerEl)
       .setName("书架封面密度")

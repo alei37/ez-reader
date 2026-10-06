@@ -2,7 +2,7 @@ import { Notice } from "obsidian";
 import type { WorkspaceLeaf, App } from "obsidian";
 import type { ReadingService } from "../../core/services/ReadingService";
 import type { TranslationService } from "../../core/ports/TranslationProvider";
-import type { NoteWriter } from "../../core/ports/NoteWriter";
+import type { LibraryWriter } from "../../core/ports/LibraryWriter";
 import type { LibraryService } from "../../core/services/LibraryService";
 import type { Bookmark } from "../../core/entities/Bookmark";
 import type { Excerpt } from "../../core/entities/Excerpt";
@@ -36,7 +36,7 @@ interface PdfOverlayOptions {
   readonly reading: ReadingService;
   readonly translation: TranslationService;
   readonly library: LibraryService;
-  readonly noteWriter?: NoteWriter;
+  readonly noteWriter?: LibraryWriter;
 }
 
 interface PendingSelection {
@@ -171,6 +171,25 @@ export class PdfOverlay {
   private pdfFindMatchCount = 0;
   private readonly renderHighlightsDebounced: () => void;
   private readonly repositionHighlightsDebounced: () => void;
+  /**
+   * P2 polish: 阅读时长检测 (跟 ReaderView 4 条件算法一致) — 但 PDF 没有
+   * ReaderView 那种 "host DOM", 全局 mousemove 会污染其他面板, 所以 PDF
+   * 用 Obsidian PDFView 自带的 selection change / page change 作为 "用户
+   * 还在看" 信号. 配合 visibilitychange + window.blur/focus 处理切窗.
+   *
+   * 字段含义跟 ReaderView 完全对应:
+   * - `activeSinceMs`: 当前 active session 起始时间 (或 null)
+   * - `lastPdfInteractionMs`: 最近一次 PDF page change / selection 时间
+   * - `inactivityCheckTimer`: 30s setTimeout handle
+   * - `windowHasFocus`: 由 focus/blur 维护
+   * - `lastReadingFlushAt`: 30s 防抖 + 1min 阈值
+   */
+  private activeSinceMs: number | null = null;
+  private lastPdfInteractionMs: number | null = null;
+  private inactivityCheckTimer: number | undefined;
+  private windowHasFocus = true;
+  private lastReadingFlushAt = 0;
+  private static readonly PDF_INACTIVITY_TIMEOUT_MS = 30_000;
 
   constructor(opts: PdfOverlayOptions) {
     this.opts = opts;
@@ -231,6 +250,11 @@ export class PdfOverlay {
         this.unmount();
         return;
       }
+      // P2 polish: 用户在 PDF 里选词 = 还在阅读 → 重置 30s 静默 timer。
+      // 选词菜单触发 selectionchange 是高频事件 (debounce 80ms 后
+      // 仍然可能每帧触发), 但 notePdfInteraction 内部什么都不做,
+      // 只是更新时间戳 + 重启 setTimeout, 60Hz 也无成本。
+      this.notePdfInteraction();
       const sel = document.getSelection();
       if (!isSelectionInContainer(sel, this.container)) {
         this.hideMenu();
@@ -322,20 +346,62 @@ export class PdfOverlay {
       this.disposers.push(() => window.cancelAnimationFrame(rafHandle));
     }
 
-    // workspace 变化 — 检测 leaf 是否还在
+    // workspace 变化 — 检测 leaf 是否还在, 同时驱动 PDF 阅读时长 session
     const onLeafChange = () => {
-      if (!this.isLeafAlive()) this.unmount();
+      if (!this.isLeafAlive()) {
+        // leaf 死掉前先 flush 当前 session (避免 unmount 后还在跑 timer)
+        this.flushPdfActiveSession();
+        this.unmount();
+        return;
+      }
+      // leaf 仍活着 — 按 active 状态切换 session
+      if (this.opts.app.workspace.activeLeaf === this.opts.pdfLeaf) {
+        this.tryStartPdfActiveSession();
+      } else {
+        this.flushPdfActiveSession();
+      }
     };
     this.opts.app.workspace.on("active-leaf-change", onLeafChange);
     this.disposers.push(() => this.opts.app.workspace.off("active-leaf-change", onLeafChange));
+
+    // P2 polish: Page Visibility + Window focus/blur — 切 tab / 切窗口时
+    // 暂停 PDF 阅读时长计数 (跟 ReaderView 一致的 4 条件算法)。
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        this.flushPdfActiveSession();
+      } else {
+        this.tryStartPdfActiveSession();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    this.disposers.push(() =>
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+    );
+    const onWindowBlur = () => {
+      this.windowHasFocus = false;
+      this.flushPdfActiveSession();
+    };
+    const onWindowFocus = () => {
+      this.windowHasFocus = true;
+      this.tryStartPdfActiveSession();
+    };
+    window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("focus", onWindowFocus);
+    this.disposers.push(() => window.removeEventListener("blur", onWindowBlur));
+    this.disposers.push(() => window.removeEventListener("focus", onWindowFocus));
 
     // P0-3: PDF 阅读进度追踪 — 用户翻页时 (scrollIntoView 触发 active page
     // 切换) 调 reading.updatePosition 把 (page, totalPages) 写回 store.
     // 之前 PdfOverlay 完全不存 PDF 进度, reading.position 永远是 null,
     // progressFraction 一直返回 0, PDF 永远 "untouched". 现在 mutation
     // observer 监听 .pdf-page.active 变化触发更新.
+    //
+    // P2 polish: 同时 page change 也是 "用户还在看 PDF" 的最强信号 —
+    // 翻页必然伴随 active class 变化, 调 notePdfInteraction 重置 30s
+    // 静默 timer (避免长时间静态阅读 → 计时暂停)。
     let persistTimer: number | undefined;
     const schedulePositionPersist = (): void => {
+      this.notePdfInteraction();
       if (persistTimer !== undefined) window.clearTimeout(persistTimer);
       // 250ms debounce — 用户快速滚动时不会触发 10+ 次 IO
       persistTimer = window.setTimeout(() => void this.persistCurrentPosition(), 250);
@@ -362,6 +428,10 @@ export class PdfOverlay {
     // mount 后立即 persist 一次 — 用户第一次打开 PDF 时也要存 (status: unread → reading).
     void this.persistCurrentPosition();
     void this.renderHighlights();
+    // P2 polish: 如果挂载时本 leaf 已经是 active, 启动阅读时长 session
+    if (this.opts.app.workspace.activeLeaf === this.opts.pdfLeaf) {
+      this.tryStartPdfActiveSession();
+    }
   }
 
   /**
@@ -401,6 +471,82 @@ export class PdfOverlay {
     if (!view || view.getViewType() !== PDF_VIEW_TYPE) return false;
     const el = view.containerEl;
     return Boolean(el && document.contains(el));
+  }
+
+  /**
+   * P2 polish: PDF "用户还在看" 信号 — 由 schedulePositionPersist (page
+   * change) / onSelectionChange (选词) 触发. 更新 lastPdfInteractionMs
+   * 并重启 30s 静默 timer。
+   */
+  private notePdfInteraction(): void {
+    if (this.opts.app.workspace.activeLeaf !== this.opts.pdfLeaf) return;
+    this.lastPdfInteractionMs = Date.now();
+    this.restartPdfInactivityCheck();
+    // 之前可能因 inactivity 已 flush, 这里再启动 session
+    this.tryStartPdfActiveSession();
+  }
+
+  /**
+   * 启动 (或继续) PDF active session. 跟 ReaderView.tryStartActiveSession
+   * 同样的 4 条件判定: active leaf + visible + focus + 最近交互.
+   */
+  private tryStartPdfActiveSession(): void {
+    if (this.activeSinceMs !== null) return;
+    if (!this.bookId) return;
+    if (this.opts.app.workspace.activeLeaf !== this.opts.pdfLeaf) return;
+    if (document.hidden) return;
+    if (!this.windowHasFocus) return;
+    if (this.lastPdfInteractionMs === null) {
+      // 首次启动: 用当前时间占位, 让 30s 倒计时开始 (之后无 page
+      // change / selection 就会自动 flush)
+      this.lastPdfInteractionMs = Date.now();
+    }
+    this.restartPdfInactivityCheck();
+    this.activeSinceMs = Date.now();
+  }
+
+  /**
+   * 把当前 PDF active session 的 ms 写回 store. 没在计费中则 no-op.
+   * 跟 ReaderView.flushReadingTime 共享同一份 reading service — bookId
+   * 不同但累加路径相同 (store 内部按 bookId 索引)。
+   */
+  private flushPdfActiveSession(): void {
+    if (this.activeSinceMs === null) return;
+    if (!this.bookId) return;
+    const delta = Date.now() - this.activeSinceMs;
+    this.activeSinceMs = null;
+    this.clearPdfInactivityCheck();
+    if (delta >= 1000) void this.flushPdfReadingTime(delta);
+  }
+
+  private async flushPdfReadingTime(deltaMs: number): Promise<void> {
+    if (!this.bookId) return;
+    const now = Date.now();
+    // 30s 防抖 + 1min 阈值 — 跟 ReaderView.flushReadingTime 一致,
+    // 避免高频切窗 / 翻页造成 IO 风暴。
+    if (now - this.lastReadingFlushAt < 30000 && deltaMs < 60000) return;
+    this.lastReadingFlushAt = now;
+    try {
+      await this.opts.reading.addReadingTime(this.bookId, deltaMs);
+    } catch (error) {
+      console.warn("[ez-reader] flushPdfReadingTime failed", error);
+    }
+  }
+
+  /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */
+  private restartPdfInactivityCheck(): void {
+    this.clearPdfInactivityCheck();
+    this.inactivityCheckTimer = window.setTimeout(() => {
+      this.inactivityCheckTimer = undefined;
+      this.flushPdfActiveSession();
+    }, PdfOverlay.PDF_INACTIVITY_TIMEOUT_MS);
+  }
+
+  private clearPdfInactivityCheck(): void {
+    if (this.inactivityCheckTimer !== undefined) {
+      window.clearTimeout(this.inactivityCheckTimer);
+      this.inactivityCheckTimer = undefined;
+    }
   }
 
   /**
@@ -576,6 +722,10 @@ export class PdfOverlay {
   unmount(): void {
     if (!this.mounted) return;
     this.mounted = false;
+    // P2 polish: 关 viewer 前 flush 当前阅读时长 session — flushActiveSession
+    // 内部 idempotent (activeSinceMs === null 时 no-op), 即便 onLeafChange
+    // 已经 flush 过也无副作用。
+    this.flushPdfActiveSession();
     for (const d of this.disposers) {
       try {
         d();
@@ -875,7 +1025,7 @@ export class PdfOverlay {
     // 同步到 vault md
     if (this.opts.noteWriter) {
       try {
-        const ref = await this.opts.noteWriter.ensureBookNote({
+        const ref = await this.opts.noteWriter.ensureBookDir({
           bookId: this.bookId,
           bookTitle: this.bookTitle,
           bookPath: this.opts.bookPath
@@ -954,7 +1104,7 @@ export class PdfOverlay {
     }
     if (this.opts.noteWriter) {
       try {
-        const ref = await this.opts.noteWriter.ensureBookNote({
+        const ref = await this.opts.noteWriter.ensureBookDir({
           bookId: this.bookId,
           bookTitle: this.bookTitle,
           bookPath: this.opts.bookPath

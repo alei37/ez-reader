@@ -80,7 +80,13 @@ export interface PluginSettings {
   readonly uiLocale: Locale;
   readonly translation: TranslationSettings | null;
   readonly defaultAppearance: ReaderAppearance;
-  readonly notesDirectory: string;
+  /**
+   * P2 deprecated: v0.2.x 用 `notesDirectory` 配置摘录笔记路径。v0.3.0
+   * 改成统一目录 `<vault>/ezreader/{notes,info,sessions}/`,不再可配置。
+   * 字段保留是为了 v0.3.0 启动时一次性迁移能从老 data.json 读出老
+   * notesDirectory 值。迁移完成后由插件自己清空成 `""`。
+   */
+  readonly notesDirectory?: string;
   readonly researchDirectory: string;
   readonly libraryOwnerName: string;
   readonly defaultNoteTemplate: string;
@@ -95,6 +101,12 @@ export interface PluginSettings {
   readonly rememberProgress?: boolean;
   /** 书架封面密度(网格/列表共用)。默认 default */
   readonly shelfDensity?: ShelfDensity;
+  /**
+   * v0.3.0: 一次性老 `notesDirectory/` → 新 `ezreader/` 迁移完成标记。
+   * 未设置 / `false` 表示还没跑过迁移。跑成功后写 `true`,后续启动
+   * 跳过 migration。失败可手动重置为 `false` 重跑。
+   */
+  readonly migratedToV030?: boolean;
 }
 
 export type ReaderOpenMode = "tab" | "window";
@@ -153,10 +165,8 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = Object.freeze({
   uiLocale: "zh-CN",
   translation: null,
   defaultAppearance: DEFAULT_READER_APPEARANCE,
-  // 默认放在 vault 顶层一个统一目录 `ezreader-notes/` 下,两
-  // 个子目录分别存摘录笔记和主题研究。ObsidianNoteWriter
-  // 在第一次写笔记时会递归创建路径, 用户无需手动 mkdir.
-  notesDirectory: "ezreader-notes/阅读笔记",
+  // v0.3.0: 不再有 notesDirectory 配置项;默认 unset,迁移用 hardcoded
+  // 默认值兜底 (见 Plugin.runV030Migration)。
   researchDirectory: "ezreader-notes/主题研究",
   libraryOwnerName: "",
   defaultNoteTemplate: "# {{title}}\n",
@@ -165,5 +175,6 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = Object.freeze({
   immersiveOnTablet: false,
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   rememberProgress: true,
-  shelfDensity: "default"
+  shelfDensity: "default",
+  migratedToV030: false
 });

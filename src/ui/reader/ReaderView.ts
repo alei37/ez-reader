@@ -8,7 +8,7 @@ import { expandWithCap } from "./chineseSelectionExpansion";
 import type { BookReader, ReaderSession, TocItem } from "../../core/ports/BookReader";
 import type { LibraryEntry, LibraryService } from "../../core/services/LibraryService";
 import type { ReadingService } from "../../core/services/ReadingService";
-import type { NoteWriter } from "../../core/ports/NoteWriter";
+import type { LibraryWriter } from "../../core/ports/LibraryWriter";
 import { AppearanceModal } from "./AppearanceModal";
 import { BookmarksPanel } from "./BookmarksPanel";
 import { ExcerptsPanel } from "./ExcerptsPanel";
@@ -52,7 +52,7 @@ interface ReaderViewDeps {
    */
   readonly textReader: BookReader;
   readonly translation: TranslationService;
-  readonly noteWriter?: NoteWriter;
+  readonly noteWriter?: LibraryWriter;
   readonly bookBytesLoader: BookBytesLoader;
   readonly settingsProvider?: () => Promise<LoadedSettings>;
   readonly onBookOpened?: (entry: LibraryEntry) => void;
@@ -280,9 +280,27 @@ export class ReaderView extends ItemView {
    * P1: 阅读时长统计 — 每次 reader 成为 active leaf 时开始计时,
    * 离开时把 ms 累加并 30s 防抖写回 store. 字段 `totalReadingMs`
    * 已经在 ReadingState 里.
+   *
+   * P2: bindActiveReadingDetector 在此之上叠加 4 条件检测 — 真正
+   * "用户在阅读"才计阅读时长. 这两个状态字段被两个方法共享:
+   * - `activeSinceMs`: 当前 active session 的起始时间 (或 null)
+   * - `lastReadingFlushAt`: 上次写回 store 的时间 (30s 防抖用)
    */
   private activeSinceMs: number | null = null;
   private lastReadingFlushAt = 0;
+  /**
+   * P2: active-reading detector 状态.
+   * - `lastInteractionMs`: host 上最后一次用户交互时间. 30s 内无交互 →
+   *   inactivity timer 自动 flush session (避免"打开书不看也计数").
+   * - `inactivityCheckTimer`: 30s setTimeout handle. 每次 host 交互
+   *   5s 节流内重启一次, 触发时清掉 activeSinceMs.
+   * - `windowHasFocus`: 由 window focus/blur 事件维护, tryStart 时检查.
+   */
+  private lastInteractionMs: number | null = null;
+  private inactivityCheckTimer: number | undefined;
+  private windowHasFocus = true;
+  private static readonly INACTIVITY_TIMEOUT_MS = 30_000;
+  private static readonly INTERACTION_THROTTLE_MS = 5_000;
   /**
    * Find-in-book 状态 — toolbar 拿这两个字段做 badge + active 视觉。
    * searchBarVisible 也控制 input 是否聚焦。
@@ -501,6 +519,7 @@ export class ReaderView extends ItemView {
     this.bindKeyboardNavigation();
     this.bindImmersiveToolbarToggle();
     this.bindReadingTimeTracker();
+    this.bindActiveReadingDetector();
     if (this.entry) await this.openSession();
   }
 
@@ -729,31 +748,153 @@ export class ReaderView extends ItemView {
    * P1: 阅读时长统计 — 监听 workspace 'active-leaf-change'. 当本 leaf
    * 成为 active 时记录开始时间, 失去 focus 时把累加 ms 写回 store。
    * 30s 防抖避免高频切窗造成 IO 风暴。
+   *
+   * P2: 现在只负责切 leaf 这一种触发源 — 真正"是否在阅读"的判定 (visible
+   * + focus + 静默超时) 委托给 bindActiveReadingDetector。两个 listener
+   * 不冲突, 都通过 `tryStartActiveSession` / `flushActiveSession` 改
+   * activeSinceMs 状态。
    */
   private bindReadingTimeTracker(): void {
     const onLeafChange = () => {
-      const now = Date.now();
-      const isActive = this.deps.app.workspace.activeLeaf === this.leaf;
-      if (isActive && this.activeSinceMs === null) {
-        this.activeSinceMs = now;
-      } else if (!isActive && this.activeSinceMs !== null) {
-        const delta = now - this.activeSinceMs;
-        this.activeSinceMs = null;
-        if (delta >= 1000) void this.flushReadingTime(delta);
+      if (this.deps.app.workspace.activeLeaf === this.leaf) {
+        this.tryStartActiveSession();
+      } else {
+        this.flushActiveSession();
       }
     };
     this.deps.app.workspace.on("active-leaf-change", onLeafChange);
+    // 初始化: 如果本 view 已经是 active leaf, 启动 session
     if (this.deps.app.workspace.activeLeaf === this.leaf) {
-      this.activeSinceMs = Date.now();
+      this.tryStartActiveSession();
     }
     this.register(() => {
       this.deps.app.workspace.off("active-leaf-change", onLeafChange);
-      if (this.activeSinceMs !== null) {
-        const delta = Date.now() - this.activeSinceMs;
-        this.activeSinceMs = null;
-        if (delta >= 1000) void this.flushReadingTime(delta);
+      this.flushActiveSession();
+    });
+  }
+
+  /**
+   * P2 polish: 真正"用户在阅读"检测 — 叠加在 active-leaf-change 之上,
+   * 处理切 tab (visibilitychange) / 切窗口 (blur) / 30s 无交互 (host
+   * 事件). 4 个条件全部满足才计阅读时长:
+   *   1. activeLeaf === this.leaf
+   *   2. document.visibilityState === "visible"
+   *   3. window has focus
+   *   4. lastInteractionMs + 30s > now
+   * 满足 → 启动/继续 session; 任一不满足 → flush + 暂停.
+   *
+   * host 交互 listener 用 5s 节流: mousemove 60Hz, 直接 setTimeout/clear
+   * 太频繁; 5s 节流后平均一次状态变更, timer 30s 内只重启 6 次。
+   */
+  private bindActiveReadingDetector(): void {
+    // Page Visibility — 切 tab / 最小化时停止计数
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        this.flushActiveSession();
+      } else {
+        this.tryStartActiveSession();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    this.register(() =>
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+    );
+
+    // Window focus / blur — 切窗口时停止计数 (focus 事件触发恢复)
+    const onWindowBlur = () => {
+      this.windowHasFocus = false;
+      this.flushActiveSession();
+    };
+    const onWindowFocus = () => {
+      this.windowHasFocus = true;
+      this.tryStartActiveSession();
+    };
+    window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("focus", onWindowFocus);
+    this.register(() => window.removeEventListener("blur", onWindowBlur));
+    this.register(() => window.removeEventListener("focus", onWindowFocus));
+
+    // Host 交互 — 5s 节流更新 lastInteractionMs + 重启 30s inactivity
+    // timer. 不监听 host 的话, 即便 leaf 仍 active 但用户已切走 (其他
+    // app / 锁屏), 我们会一直计费。
+    const host = this.host;
+    if (!host) return;
+    let lastNotifiedAt = 0;
+    const onInteraction = () => {
+      // 安全检查: 即便 mousemove 在我们 leaf 触发, 也得是 active leaf
+      // (focus 切换瞬态、Obsidian 重排时序等)
+      if (this.deps.app.workspace.activeLeaf !== this.leaf) return;
+      const now = Date.now();
+      if (now - lastNotifiedAt < ReaderView.INTERACTION_THROTTLE_MS) return;
+      lastNotifiedAt = now;
+      this.lastInteractionMs = now;
+      this.restartInactivityCheck();
+      // 用户刚交互过 — 之前可能因 inactivity 已 flush, 这里再启动 session
+      this.tryStartActiveSession();
+    };
+    const interactionEvents: Array<keyof HTMLElementEventMap> = [
+      "mousemove",
+      "keydown",
+      "scroll",
+      "pointerdown",
+      "touchstart",
+      "wheel"
+    ];
+    for (const ev of interactionEvents) {
+      host.addEventListener(ev, onInteraction, { passive: true });
+    }
+    this.register(() => {
+      for (const ev of interactionEvents) {
+        host.removeEventListener(ev, onInteraction);
       }
     });
+  }
+
+  /**
+   * 启动 (或继续) active session. 已激活则 no-op.
+   * 4 条件全满足 (active leaf + visible + focus + recent interaction)
+   * 才启动. 没收到过交互时, lastInteractionMs 用当前时间占位 (启动 30s
+   * 静默窗口; 之后真的无操作就会自动 flush)。
+   */
+  private tryStartActiveSession(): void {
+    if (this.activeSinceMs !== null) return;
+    if (this.deps.app.workspace.activeLeaf !== this.leaf) return;
+    if (document.hidden) return;
+    if (!this.windowHasFocus) return;
+    if (this.lastInteractionMs === null) {
+      // 首次启动: 用当前时间作为 interaction baseline, 让 30s 倒计时开始
+      this.lastInteractionMs = Date.now();
+    }
+    this.restartInactivityCheck();
+    this.activeSinceMs = Date.now();
+  }
+
+  /**
+   * 把当前 active session 的 ms 写回 store. 没在计费中则 no-op.
+   * flushReadingTime 内部 30s 防抖 + 1min 阈值, 避免数据丢失。
+   */
+  private flushActiveSession(): void {
+    if (this.activeSinceMs === null) return;
+    const delta = Date.now() - this.activeSinceMs;
+    this.activeSinceMs = null;
+    this.clearInactivityCheck();
+    if (delta >= 1000) void this.flushReadingTime(delta);
+  }
+
+  /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */
+  private restartInactivityCheck(): void {
+    this.clearInactivityCheck();
+    this.inactivityCheckTimer = window.setTimeout(() => {
+      this.inactivityCheckTimer = undefined;
+      this.flushActiveSession();
+    }, ReaderView.INACTIVITY_TIMEOUT_MS);
+  }
+
+  private clearInactivityCheck(): void {
+    if (this.inactivityCheckTimer !== undefined) {
+      window.clearTimeout(this.inactivityCheckTimer);
+      this.inactivityCheckTimer = undefined;
+    }
   }
 
   private async flushReadingTime(deltaMs: number): Promise<void> {
@@ -1932,7 +2073,7 @@ private async showFontSettings(): Promise<void> {
     }
     if (this.deps.noteWriter) {
       try {
-        const ref = await this.deps.noteWriter.ensureBookNote({
+        const ref = await this.deps.noteWriter.ensureBookDir({
           bookId: this.entry.book.id,
           bookTitle: this.entry.book.metadata?.title ?? this.entry.book.locator.path,
           bookPath: this.entry.book.locator.path
@@ -2007,7 +2148,7 @@ private async showFontSettings(): Promise<void> {
     // 同步到 vault md
     if (this.deps.noteWriter) {
       try {
-        const ref = await this.deps.noteWriter.ensureBookNote({
+        const ref = await this.deps.noteWriter.ensureBookDir({
           bookId: this.entry.book.id,
           bookTitle: this.entry.book.metadata?.title ?? this.entry.book.locator.path,
           bookPath: this.entry.book.locator.path
