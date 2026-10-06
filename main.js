@@ -12598,7 +12598,7 @@ var init_pdfOverlay = __esm({
       const el = container.querySelector(sel);
       return el instanceof HTMLElement ? el : null;
     };
-    PdfOverlay = class {
+    PdfOverlay = class _PdfOverlay {
       opts;
       container;
       menuEl;
@@ -12624,6 +12624,25 @@ var init_pdfOverlay = __esm({
       pdfFindMatchCount = 0;
       renderHighlightsDebounced;
       repositionHighlightsDebounced;
+      /**
+       * P2 polish: 阅读时长检测 (跟 ReaderView 4 条件算法一致) — 但 PDF 没有
+       * ReaderView 那种 "host DOM", 全局 mousemove 会污染其他面板, 所以 PDF
+       * 用 Obsidian PDFView 自带的 selection change / page change 作为 "用户
+       * 还在看" 信号. 配合 visibilitychange + window.blur/focus 处理切窗.
+       *
+       * 字段含义跟 ReaderView 完全对应:
+       * - `activeSinceMs`: 当前 active session 起始时间 (或 null)
+       * - `lastPdfInteractionMs`: 最近一次 PDF page change / selection 时间
+       * - `inactivityCheckTimer`: 30s setTimeout handle
+       * - `windowHasFocus`: 由 focus/blur 维护
+       * - `lastReadingFlushAt`: 30s 防抖 + 1min 阈值
+       */
+      activeSinceMs = null;
+      lastPdfInteractionMs = null;
+      inactivityCheckTimer;
+      windowHasFocus = true;
+      lastReadingFlushAt = 0;
+      static PDF_INACTIVITY_TIMEOUT_MS = 3e4;
       constructor(opts) {
         this.opts = opts;
         this.container = opts.pdfLeaf.view.containerEl;
@@ -12676,6 +12695,7 @@ var init_pdfOverlay = __esm({
             this.unmount();
             return;
           }
+          this.notePdfInteraction();
           const sel = document.getSelection();
           if (!isSelectionInContainer(sel, this.container)) {
             this.hideMenu();
@@ -12742,12 +12762,45 @@ var init_pdfOverlay = __esm({
           this.disposers.push(() => window.cancelAnimationFrame(rafHandle));
         }
         const onLeafChange = () => {
-          if (!this.isLeafAlive()) this.unmount();
+          if (!this.isLeafAlive()) {
+            this.flushPdfActiveSession();
+            this.unmount();
+            return;
+          }
+          if (this.opts.app.workspace.activeLeaf === this.opts.pdfLeaf) {
+            this.tryStartPdfActiveSession();
+          } else {
+            this.flushPdfActiveSession();
+          }
         };
         this.opts.app.workspace.on("active-leaf-change", onLeafChange);
         this.disposers.push(() => this.opts.app.workspace.off("active-leaf-change", onLeafChange));
+        const onVisibilityChange = () => {
+          if (document.hidden) {
+            this.flushPdfActiveSession();
+          } else {
+            this.tryStartPdfActiveSession();
+          }
+        };
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        this.disposers.push(
+          () => document.removeEventListener("visibilitychange", onVisibilityChange)
+        );
+        const onWindowBlur = () => {
+          this.windowHasFocus = false;
+          this.flushPdfActiveSession();
+        };
+        const onWindowFocus = () => {
+          this.windowHasFocus = true;
+          this.tryStartPdfActiveSession();
+        };
+        window.addEventListener("blur", onWindowBlur);
+        window.addEventListener("focus", onWindowFocus);
+        this.disposers.push(() => window.removeEventListener("blur", onWindowBlur));
+        this.disposers.push(() => window.removeEventListener("focus", onWindowFocus));
         let persistTimer;
         const schedulePositionPersist = () => {
+          this.notePdfInteraction();
           if (persistTimer !== void 0) window.clearTimeout(persistTimer);
           persistTimer = window.setTimeout(() => void this.persistCurrentPosition(), 250);
         };
@@ -12768,6 +12821,9 @@ var init_pdfOverlay = __esm({
         this.mounted = true;
         void this.persistCurrentPosition();
         void this.renderHighlights();
+        if (this.opts.app.workspace.activeLeaf === this.opts.pdfLeaf) {
+          this.tryStartPdfActiveSession();
+        }
       }
       /**
        * P0-3: 把当前 PDF 进度 (page + totalPages) 写到 reading store.
@@ -12805,6 +12861,71 @@ var init_pdfOverlay = __esm({
         if (!view || view.getViewType() !== PDF_VIEW_TYPE) return false;
         const el = view.containerEl;
         return Boolean(el && document.contains(el));
+      }
+      /**
+       * P2 polish: PDF "用户还在看" 信号 — 由 schedulePositionPersist (page
+       * change) / onSelectionChange (选词) 触发. 更新 lastPdfInteractionMs
+       * 并重启 30s 静默 timer。
+       */
+      notePdfInteraction() {
+        if (this.opts.app.workspace.activeLeaf !== this.opts.pdfLeaf) return;
+        this.lastPdfInteractionMs = Date.now();
+        this.restartPdfInactivityCheck();
+        this.tryStartPdfActiveSession();
+      }
+      /**
+       * 启动 (或继续) PDF active session. 跟 ReaderView.tryStartActiveSession
+       * 同样的 4 条件判定: active leaf + visible + focus + 最近交互.
+       */
+      tryStartPdfActiveSession() {
+        if (this.activeSinceMs !== null) return;
+        if (!this.bookId) return;
+        if (this.opts.app.workspace.activeLeaf !== this.opts.pdfLeaf) return;
+        if (document.hidden) return;
+        if (!this.windowHasFocus) return;
+        if (this.lastPdfInteractionMs === null) {
+          this.lastPdfInteractionMs = Date.now();
+        }
+        this.restartPdfInactivityCheck();
+        this.activeSinceMs = Date.now();
+      }
+      /**
+       * 把当前 PDF active session 的 ms 写回 store. 没在计费中则 no-op.
+       * 跟 ReaderView.flushReadingTime 共享同一份 reading service — bookId
+       * 不同但累加路径相同 (store 内部按 bookId 索引)。
+       */
+      flushPdfActiveSession() {
+        if (this.activeSinceMs === null) return;
+        if (!this.bookId) return;
+        const delta = Date.now() - this.activeSinceMs;
+        this.activeSinceMs = null;
+        this.clearPdfInactivityCheck();
+        if (delta >= 1e3) void this.flushPdfReadingTime(delta);
+      }
+      async flushPdfReadingTime(deltaMs) {
+        if (!this.bookId) return;
+        const now = Date.now();
+        if (now - this.lastReadingFlushAt < 3e4 && deltaMs < 6e4) return;
+        this.lastReadingFlushAt = now;
+        try {
+          await this.opts.reading.addReadingTime(this.bookId, deltaMs);
+        } catch (error) {
+          console.warn("[ez-reader] flushPdfReadingTime failed", error);
+        }
+      }
+      /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */
+      restartPdfInactivityCheck() {
+        this.clearPdfInactivityCheck();
+        this.inactivityCheckTimer = window.setTimeout(() => {
+          this.inactivityCheckTimer = void 0;
+          this.flushPdfActiveSession();
+        }, _PdfOverlay.PDF_INACTIVITY_TIMEOUT_MS);
+      }
+      clearPdfInactivityCheck() {
+        if (this.inactivityCheckTimer !== void 0) {
+          window.clearTimeout(this.inactivityCheckTimer);
+          this.inactivityCheckTimer = void 0;
+        }
       }
       /**
        * 读出当前书的所有 excerpt, 在 PDFView DOM 里找对应文本,
@@ -12955,6 +13076,7 @@ var init_pdfOverlay = __esm({
       unmount() {
         if (!this.mounted) return;
         this.mounted = false;
+        this.flushPdfActiveSession();
         for (const d2 of this.disposers) {
           try {
             d2();
@@ -13216,7 +13338,7 @@ var init_pdfOverlay = __esm({
         }
         if (this.opts.noteWriter) {
           try {
-            const ref = await this.opts.noteWriter.ensureBookNote({
+            const ref = await this.opts.noteWriter.ensureBookDir({
               bookId: this.bookId,
               bookTitle: this.bookTitle,
               bookPath: this.opts.bookPath
@@ -13293,7 +13415,7 @@ var init_pdfOverlay = __esm({
         }
         if (this.opts.noteWriter) {
           try {
-            const ref = await this.opts.noteWriter.ensureBookNote({
+            const ref = await this.opts.noteWriter.ensureBookDir({
               bookId: this.bookId,
               bookTitle: this.bookTitle,
               bookPath: this.opts.bookPath
@@ -14329,10 +14451,8 @@ var DEFAULT_PLUGIN_SETTINGS = Object.freeze({
   uiLocale: "zh-CN",
   translation: null,
   defaultAppearance: DEFAULT_READER_APPEARANCE,
-  // 默认放在 vault 顶层一个统一目录 `ezreader-notes/` 下,两
-  // 个子目录分别存摘录笔记和主题研究。ObsidianNoteWriter
-  // 在第一次写笔记时会递归创建路径, 用户无需手动 mkdir.
-  notesDirectory: "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0",
+  // v0.3.0: 不再有 notesDirectory 配置项;默认 unset,迁移用 hardcoded
+  // 默认值兜底 (见 Plugin.runV030Migration)。
   researchDirectory: "ezreader-notes/\u4E3B\u9898\u7814\u7A76",
   libraryOwnerName: "",
   defaultNoteTemplate: "# {{title}}\n",
@@ -14341,7 +14461,8 @@ var DEFAULT_PLUGIN_SETTINGS = Object.freeze({
   immersiveOnTablet: false,
   keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
   rememberProgress: true,
-  shelfDensity: "default"
+  shelfDensity: "default",
+  migratedToV030: false
 });
 
 // src/adapters/obsidian/ObsidianAnnotationStore.ts
@@ -14405,7 +14526,10 @@ var ObsidianAnnotationStore = class {
       // P2: 跟 pinnedAtByBookId / addedAtByBookId 同样的 fallback 模式 —
       // 旧 data.json 没这个字段就给空 map, 不会因为 undefined 让
       // loadVisitedTocIds 炸掉.
-      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId)
+      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId),
+      // v0.3.0: 一次性迁移完成标记. sanitize boolean — 老 data.json
+      // 没这个字段 → false → Plugin.runV030Migration 跑一次。
+      migratedToV030: raw?.migratedToV030 === true
     };
     return this.cache;
   }
@@ -14989,49 +15113,323 @@ var extractAuthorFromName = (basename) => {
   return [];
 };
 
-// src/adapters/obsidian/ObsidianNoteWriter.ts
+// src/adapters/obsidian/ObsidianLibraryWriter.ts
 var import_obsidian3 = require("obsidian");
+
+// src/core/entities/BookInfo.ts
+var BOOK_INFO_SCHEMA_VERSION = 1;
+var defaultBookInfo = (partial) => ({
+  schemaVersion: BOOK_INFO_SCHEMA_VERSION,
+  title: partial.title,
+  authors: [],
+  bookId: partial.bookId,
+  format: partial.format,
+  filePath: partial.filePath,
+  fileSizeBytes: partial.fileSizeBytes,
+  fileModifiedAt: partial.fileModifiedAt,
+  addedToLibraryAt: partial.addedToLibraryAt,
+  lastOpenedAt: null,
+  status: "unread",
+  progressFraction: 0,
+  totalReadingMs: 0,
+  excerptCount: 0,
+  bookmarkCount: 0,
+  thoughtCount: 0,
+  favorite: false,
+  pinnedAt: null,
+  coverPath: null,
+  updatedAt: Date.now()
+});
+
+// src/adapters/obsidian/frontmatter.ts
+var needsQuoting = (s3) => {
+  if (s3.length === 0) return true;
+  const first = s3.charAt(0);
+  if (first === "-" || first === "?" || first === ":" || first === "," || first === "[" || first === "]" || first === "{" || first === "}" || first === "&" || first === "*" || first === "!" || first === "|" || first === ">" || first === "'" || first === '"' || first === "%" || first === "@" || first === "`" || first === "#") {
+    return true;
+  }
+  if (/^-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/.test(s3)) return true;
+  if (/^(?:true|false|yes|no|on|off|null|~)$/i.test(s3)) return true;
+  if (/(?:^|\s):\s/.test(s3)) return true;
+  if (s3.includes("#")) return true;
+  if (s3 !== s3.trim()) return true;
+  return false;
+};
+var quoteString = (s3) => {
+  const escaped = s3.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+  return `"${escaped}"`;
+};
+var unquoteString = (s3) => {
+  const trimmed = s3.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\").replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "	");
+  }
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1).replace(/''/g, "'");
+  }
+  return trimmed;
+};
+var formatValue = (value, indent) => {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "null";
+  if (typeof value === "string") return needsQuoting(value) ? quoteString(value) : value;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    return value.map((item) => `${indent}- ${typeof item === "string" && needsQuoting(item) ? quoteString(item) : String(item)}`).join("\n");
+  }
+  return "null";
+};
+var serializeBookInfo = (info, body) => {
+  const lines = ["---"];
+  lines.push(`schemaVersion: ${info.schemaVersion}`);
+  lines.push(`title: ${formatValue(info.title, "")}`);
+  lines.push("authors:");
+  if (info.authors.length === 0) {
+    lines.push("  []");
+  } else {
+    for (const author of info.authors) {
+      lines.push(`  ${formatValue(author, "  ")}`);
+    }
+  }
+  if (info.publisher !== void 0) lines.push(`publisher: ${formatValue(info.publisher, "")}`);
+  if (info.published !== void 0) lines.push(`published: ${formatValue(info.published, "")}`);
+  if (info.language !== void 0) lines.push(`language: ${formatValue(info.language, "")}`);
+  if (info.isbn !== void 0) lines.push(`isbn: ${formatValue(info.isbn, "")}`);
+  if (info.pageCount !== void 0) lines.push(`pageCount: ${info.pageCount}`);
+  if (info.description !== void 0) lines.push(`description: ${formatValue(info.description, "")}`);
+  lines.push(`bookId: ${formatValue(info.bookId, "")}`);
+  lines.push(`format: ${formatValue(info.format, "")}`);
+  lines.push(`filePath: ${formatValue(info.filePath, "")}`);
+  lines.push(`fileSizeBytes: ${info.fileSizeBytes}`);
+  lines.push(`fileModifiedAt: ${info.fileModifiedAt}`);
+  lines.push(`addedToLibraryAt: ${info.addedToLibraryAt}`);
+  lines.push(`lastOpenedAt: ${info.lastOpenedAt === null ? "null" : String(info.lastOpenedAt)}`);
+  lines.push(`status: ${formatValue(info.status, "")}`);
+  lines.push(`progressFraction: ${info.progressFraction}`);
+  lines.push(`totalReadingMs: ${info.totalReadingMs}`);
+  lines.push(`excerptCount: ${info.excerptCount}`);
+  lines.push(`bookmarkCount: ${info.bookmarkCount}`);
+  lines.push(`thoughtCount: ${info.thoughtCount}`);
+  lines.push(`favorite: ${info.favorite ? "true" : "false"}`);
+  lines.push(`pinnedAt: ${info.pinnedAt === null ? "null" : String(info.pinnedAt)}`);
+  lines.push(`coverPath: ${info.coverPath === null ? "null" : formatValue(info.coverPath, "")}`);
+  lines.push(`updatedAt: ${info.updatedAt}`);
+  lines.push("---");
+  const finalBody = body ?? defaultBody(info);
+  if (finalBody.length > 0) {
+    lines.push("");
+    lines.push(finalBody);
+  }
+  return lines.join("\n") + "\n";
+};
+var defaultBody = (info) => {
+  const lines = [];
+  lines.push(`# ${info.title}`);
+  lines.push("");
+  lines.push("> \u7531 EzReader \u81EA\u52A8\u7EF4\u62A4\u3002\u524D\u7F6E\u5143\u6570\u636E\u7531\u63D2\u4EF6\u5199\u5165;");
+  lines.push("> \u8BE6\u7EC6\u9605\u8BFB\u65F6\u957F session \u660E\u7EC6\u89C1\u540C\u76EE\u5F55\u7684 `sessions.jsonl`,");
+  lines.push("> \u6458\u5F55 / \u60F3\u6CD5\u89C1\u540C\u76EE\u5F55\u7684 `notes.md`\u3002");
+  if (info.totalReadingMs > 0) {
+    lines.push("");
+    lines.push(`## \u5F53\u524D\u7D2F\u8BA1\u9605\u8BFB\u65F6\u957F: ${formatReadingTime(info.totalReadingMs)}`);
+  }
+  return lines.join("\n");
+};
+var formatReadingTime = (totalMs) => {
+  const totalSeconds = Math.floor(totalMs / 1e3);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds % 3600 / 60);
+  if (hours > 0 && minutes > 0) return `${hours} \u5C0F\u65F6 ${minutes} \u5206\u949F`;
+  if (hours > 0) return `${hours} \u5C0F\u65F6`;
+  if (minutes > 0) return `${minutes} \u5206\u949F`;
+  return "0 \u5206\u949F";
+};
+var parseFrontmatter = (raw) => {
+  const text = raw.replace(/\r\n?/g, "\n");
+  if (!text.startsWith("---")) return null;
+  const rest = text.slice(3);
+  const afterOpen = rest.startsWith("\n") ? rest.slice(1) : rest;
+  const closeIdx = afterOpen.indexOf("\n---");
+  if (closeIdx === -1) return null;
+  const frontmatterText = afterOpen.slice(0, closeIdx);
+  let bodyStart = closeIdx + 4;
+  if (afterOpen.charAt(bodyStart) === "\n") bodyStart += 1;
+  const body = afterOpen.slice(bodyStart);
+  const keys = [];
+  const values = /* @__PURE__ */ new Map();
+  const lines = frontmatterText.split("\n");
+  let i3 = 0;
+  while (i3 < lines.length) {
+    const line = lines[i3];
+    if (line.trim().length === 0) {
+      i3 += 1;
+      continue;
+    }
+    if (line.trim().startsWith("#")) {
+      i3 += 1;
+      continue;
+    }
+    const colonMatch = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:(.*)$/.exec(line);
+    if (!colonMatch) {
+      i3 += 1;
+      continue;
+    }
+    const key = colonMatch[1];
+    const rawValue = colonMatch[2];
+    if (rawValue.trim().length === 0) {
+      const arr = [];
+      i3 += 1;
+      while (i3 < lines.length) {
+        const next = lines[i3];
+        const itemMatch = /^\s+-\s+(.*)$/.exec(next);
+        if (!itemMatch) break;
+        const item = unquoteString(itemMatch[1].trim());
+        if (item !== "[]" && item !== "") arr.push(item);
+        i3 += 1;
+      }
+      keys.push(key);
+      values.set(key, arr);
+      continue;
+    }
+    keys.push(key);
+    values.set(key, parseScalar(rawValue));
+    i3 += 1;
+  }
+  return { keys, values, body };
+};
+var parseScalar = (raw) => {
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed === "~" || trimmed === "null") return null;
+  if (trimmed === "true" || trimmed === "True" || trimmed === "TRUE") return true;
+  if (trimmed === "false" || trimmed === "False" || trimmed === "FALSE") return false;
+  if (/^-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/.test(trimmed)) {
+    const n3 = Number(trimmed);
+    if (Number.isFinite(n3)) return n3;
+  }
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const inner = trimmed.slice(1, -1).trim();
+    if (inner.length === 0) return [];
+    return inner.split(",").map((s3) => unquoteString(s3.trim()));
+  }
+  return unquoteString(trimmed);
+};
+var bookInfoFromFrontmatter = (fm, defaults2) => {
+  const v3 = (key) => fm.values.get(key);
+  const stringOrUndef = (key) => {
+    const x3 = v3(key);
+    return typeof x3 === "string" ? x3 : void 0;
+  };
+  const numberOrUndef = (key) => {
+    const x3 = v3(key);
+    return typeof x3 === "number" && Number.isFinite(x3) ? x3 : void 0;
+  };
+  const numberOrDefault = (key, fallback) => numberOrUndef(key) ?? fallback;
+  const stringArrayOrDefault = (key, fallback) => {
+    const x3 = v3(key);
+    return Array.isArray(x3) ? x3.filter((s3) => typeof s3 === "string") : fallback;
+  };
+  const booleanOrDefault = (key, fallback) => {
+    const x3 = v3(key);
+    return typeof x3 === "boolean" ? x3 : fallback;
+  };
+  const numberOrNull = (key) => {
+    const x3 = v3(key);
+    if (x3 === null || x3 === void 0) return null;
+    return typeof x3 === "number" && Number.isFinite(x3) ? x3 : null;
+  };
+  const statusValue = v3("status");
+  const validStatus = ["unread", "reading", "finished", "abandoned"];
+  const status = typeof statusValue === "string" && validStatus.includes(statusValue) ? statusValue : defaults2.status;
+  return {
+    schemaVersion: 1,
+    title: stringOrUndef("title") ?? defaults2.title,
+    authors: stringArrayOrDefault("authors", defaults2.authors),
+    publisher: stringOrUndef("publisher"),
+    published: stringOrUndef("published"),
+    language: stringOrUndef("language"),
+    isbn: stringOrUndef("isbn"),
+    pageCount: numberOrUndef("pageCount"),
+    description: stringOrUndef("description"),
+    bookId: stringOrUndef("bookId") ?? defaults2.bookId,
+    format: stringOrUndef("format") ?? defaults2.format,
+    filePath: stringOrUndef("filePath") ?? defaults2.filePath,
+    fileSizeBytes: numberOrDefault("fileSizeBytes", defaults2.fileSizeBytes),
+    fileModifiedAt: numberOrDefault("fileModifiedAt", defaults2.fileModifiedAt),
+    addedToLibraryAt: numberOrDefault("addedToLibraryAt", defaults2.addedToLibraryAt),
+    lastOpenedAt: numberOrNull("lastOpenedAt"),
+    status,
+    progressFraction: numberOrDefault("progressFraction", defaults2.progressFraction),
+    totalReadingMs: numberOrDefault("totalReadingMs", defaults2.totalReadingMs),
+    excerptCount: numberOrDefault("excerptCount", defaults2.excerptCount),
+    bookmarkCount: numberOrDefault("bookmarkCount", defaults2.bookmarkCount),
+    thoughtCount: numberOrDefault("thoughtCount", defaults2.thoughtCount),
+    favorite: booleanOrDefault("favorite", defaults2.favorite),
+    pinnedAt: numberOrNull("pinnedAt"),
+    coverPath: stringOrUndef("coverPath") ?? null,
+    updatedAt: numberOrDefault("updatedAt", defaults2.updatedAt)
+  };
+};
+
+// src/adapters/obsidian/ObsidianLibraryWriter.ts
 var PROTOCOL = "ez-reader";
-var ObsidianNoteWriter = class {
+var LIBRARY_BASE_DIR = "ezreader";
+var NOTES_SUBDIR = "notes";
+var INFO_SUBDIR = "info";
+var SESSIONS_SUBDIR = "sessions";
+var ObsidianLibraryWriter = class {
   constructor(app, plugin, annotations) {
     this.app = app;
     this.plugin = plugin;
     this.annotations = annotations;
   }
-  cacheByPath = /* @__PURE__ */ new Map();
-  // Serialize concurrent appends to the same note file. vault.process
-  // is not atomic across calls — if two excerpts land at the same time,
-  // the second read() might see the pre-first content and the second
-  // process() would clobber the first. We chain writes per-file via a
-  // tail promise so two saves settle one after the other.
+  cacheByBookId = /* @__PURE__ */ new Map();
+  // Serialize concurrent writes to the same path. vault.process is not
+  // atomic across calls — two saves landing in the same tick would
+  // race the read() and the second process() would clobber the first.
   writeQueues = /* @__PURE__ */ new Map();
-  async ensureBookNote(input) {
-    const cached = this.cacheByPath.get(input.bookId);
+  // -----------------------------------------------------------------------
+  // ensureBookDir
+  // -----------------------------------------------------------------------
+  async ensureBookDir(input) {
+    const cached = this.cacheByBookId.get(input.bookId);
     if (cached) return cached;
-    const settings = await this.annotations.listSettings();
-    const baseDir = sanitizeDir(settings.notesDirectory || "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0");
-    await this.ensureDirectory(baseDir);
+    await this.ensureDirectory(LIBRARY_BASE_DIR);
+    await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}`);
+    await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}`);
+    await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
     const safeTitle = sanitizeFileBase(input.bookTitle || input.bookPath.split("/").pop() || input.bookId);
     const idTag = input.bookId.slice(0, 8);
-    const fileName = `${safeTitle}-${idTag}.md`;
-    const notePath = (0, import_obsidian3.normalizePath)(`${baseDir}/${fileName}`);
-    const abstract = this.app.vault.getAbstractFileByPath(notePath);
-    if (!(abstract instanceof import_obsidian3.TFile)) {
-      const header = renderBookHeader(input, settings);
-      await this.app.vault.create(notePath, header);
+    const fileBase = `${safeTitle}-${idTag}`;
+    const notesPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
+    const infoPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}/${fileBase}.md`);
+    const sessionsPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`);
+    if (!(this.app.vault.getAbstractFileByPath(notesPath) instanceof import_obsidian3.TFile)) {
+      const header = renderNotesHeader(input);
+      await this.app.vault.create(notesPath, header);
     }
-    const ref = { path: notePath, bookId: input.bookId, title: input.bookTitle };
-    this.cacheByPath.set(input.bookId, ref);
+    const ref = {
+      notesPath,
+      infoPath,
+      sessionsPath,
+      bookId: input.bookId,
+      title: input.bookTitle,
+      bookPath: input.bookPath
+    };
+    this.cacheByBookId.set(input.bookId, ref);
     return ref;
   }
+  // -----------------------------------------------------------------------
+  // Excerpt / Thought
+  // -----------------------------------------------------------------------
   async appendExcerpt(ref, input) {
-    return this.enqueueWrite(ref.path, async () => {
-      const file = this.app.vault.getAbstractFileByPath(ref.path);
+    return this.enqueueWrite(ref.notesPath, async () => {
+      const file = this.app.vault.getAbstractFileByPath(ref.notesPath);
       if (!(file instanceof import_obsidian3.TFile)) return;
       const blockIdRegex = new RegExp(`(^|\\n)\\^${escapeRegExp(input.excerptId)}\\s*$`, "m");
       const existing = await this.app.vault.read(file);
       if (blockIdRegex.test(existing)) return;
-      const noteBase = ref.path.split("/").pop()?.replace(/\.md$/i, "") ?? ref.title;
+      const noteBase = ref.notesPath.split("/").pop()?.replace(/\.md$/i, "") ?? ref.title;
       const block = renderExcerptBlock(input, ref.title, ref.bookId, PROTOCOL, noteBase);
       await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}
 
@@ -15039,8 +15437,8 @@ ${block}`);
     });
   }
   async appendThought(ref, input) {
-    return this.enqueueWrite(ref.path, async () => {
-      const file = this.app.vault.getAbstractFileByPath(ref.path);
+    return this.enqueueWrite(ref.notesPath, async () => {
+      const file = this.app.vault.getAbstractFileByPath(ref.notesPath);
       if (!(file instanceof import_obsidian3.TFile)) return;
       const blockId = `thought-${input.thoughtId}`;
       const blockIdRegex = new RegExp(`(^|\\n)\\^${escapeRegExp(blockId)}\\s*$`, "m");
@@ -15052,17 +15450,162 @@ ${block}`);
 ${block}`);
     });
   }
-  /**
-   * Serialize concurrent writes to the same path. Each call queues its
-   * async fn on the tail of the path's promise chain so two saves
-   * settle one after the other — no clobber, no lost block.
-   */
-  enqueueWrite(path, fn) {
-    const prev = this.writeQueues.get(path) ?? Promise.resolve();
-    const next = prev.then(fn, fn);
-    this.writeQueues.set(path, next.catch(() => void 0));
-    return next;
+  // -----------------------------------------------------------------------
+  // Book info (info.md)
+  // -----------------------------------------------------------------------
+  async writeBookInfo(ref, info) {
+    await this.enqueueWrite(ref.infoPath, async () => {
+      const existing = this.app.vault.getAbstractFileByPath(ref.infoPath);
+      let preservedBody;
+      if (existing instanceof import_obsidian3.TFile) {
+        try {
+          const raw = await this.app.vault.read(existing);
+          const parsed = parseFrontmatter(raw);
+          if (parsed && parsed.body.trim().length > 0) {
+            const stub = `# ${info.title}`;
+            if (!parsed.body.trimStart().startsWith(stub)) {
+              preservedBody = parsed.body;
+            }
+          }
+        } catch (error) {
+          console.warn("[ez-reader] writeBookInfo: failed to preserve body", error);
+        }
+      }
+      const body = preservedBody ?? void 0;
+      const serialized = serializeBookInfo(info, body);
+      if (existing instanceof import_obsidian3.TFile) {
+        await this.app.vault.modify(existing, serialized);
+      } else {
+        await this.app.vault.create(ref.infoPath, serialized);
+      }
+    });
   }
+  async readBookInfo(bookId) {
+    const cached = this.cacheByBookId.get(bookId);
+    if (cached) return this.readBookInfoFromPath(cached.infoPath, bookId);
+    return this.findAndReadBookInfo(bookId);
+  }
+  async readBookInfoFromPath(path, bookId) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian3.TFile)) return null;
+    try {
+      const raw = await this.app.vault.read(file);
+      const parsed = parseFrontmatter(raw);
+      if (!parsed) return null;
+      const defaults2 = defaultBookInfo({
+        bookId,
+        format: "epub",
+        filePath: "",
+        fileSizeBytes: 0,
+        fileModifiedAt: 0,
+        addedToLibraryAt: Date.now(),
+        title: bookId
+      });
+      return bookInfoFromFrontmatter(parsed, defaults2);
+    } catch (error) {
+      console.warn("[ez-reader] readBookInfo failed", path, error);
+      return null;
+    }
+  }
+  async findAndReadBookInfo(bookId) {
+    const dirPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}`);
+    try {
+      const listed = await this.app.vault.adapter.list(dirPath);
+      for (const filePath of listed.files) {
+        if (!filePath.endsWith(".md")) continue;
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (!(file instanceof import_obsidian3.TFile)) continue;
+        try {
+          const raw = await this.app.vault.read(file);
+          const parsed = parseFrontmatter(raw);
+          if (!parsed) continue;
+          if (parsed.values.get("bookId") === bookId) {
+            const defaults2 = defaultBookInfo({
+              bookId,
+              format: "epub",
+              filePath: "",
+              fileSizeBytes: 0,
+              fileModifiedAt: 0,
+              addedToLibraryAt: Date.now(),
+              title: bookId
+            });
+            const info = bookInfoFromFrontmatter(parsed, defaults2);
+            const safeTitle = info.title;
+            const idTag = bookId.slice(0, 8);
+            const fileBase = `${sanitizeFileBase(safeTitle)}-${idTag}`;
+            this.cacheByBookId.set(bookId, {
+              notesPath: (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`),
+              infoPath: filePath,
+              sessionsPath: (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`),
+              bookId,
+              title: safeTitle,
+              bookPath: info.filePath
+            });
+            return info;
+          }
+        } catch {
+        }
+      }
+    } catch (error) {
+      console.warn("[ez-reader] findAndReadBookInfo failed", dirPath, error);
+    }
+    return null;
+  }
+  // -----------------------------------------------------------------------
+  // Reading sessions (sessions.jsonl)
+  // -----------------------------------------------------------------------
+  async appendReadingSession(ref, session) {
+    await this.enqueueWrite(ref.sessionsPath, async () => {
+      const file = this.app.vault.getAbstractFileByPath(ref.sessionsPath);
+      const line = JSON.stringify(session) + "\n";
+      if (file instanceof import_obsidian3.TFile) {
+        await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}${line}`);
+      } else {
+        await this.app.vault.create(ref.sessionsPath, line);
+      }
+    });
+  }
+  async loadReadingSessions(bookId) {
+    const cached = this.cacheByBookId.get(bookId);
+    let sessionsPath = cached?.sessionsPath;
+    if (!sessionsPath) {
+      const info = await this.findAndReadBookInfo(bookId);
+      sessionsPath = info ? this.cacheByBookId.get(bookId)?.sessionsPath : void 0;
+    }
+    if (!sessionsPath) return [];
+    const file = this.app.vault.getAbstractFileByPath(sessionsPath);
+    if (!(file instanceof import_obsidian3.TFile)) return [];
+    let raw;
+    try {
+      raw = await this.app.vault.read(file);
+    } catch (error) {
+      console.warn("[ez-reader] loadReadingSessions failed", sessionsPath, error);
+      return [];
+    }
+    const sessions = [];
+    let skipped = 0;
+    for (const line of raw.split(/\n/)) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed.startedAt === "number" && typeof parsed.endedAt === "number" && typeof parsed.durationMs === "number" && typeof parsed.progressStart === "number" && typeof parsed.progressEnd === "number") {
+          sessions.push(parsed);
+        } else {
+          skipped += 1;
+        }
+      } catch {
+        skipped += 1;
+      }
+    }
+    if (skipped > 0) {
+      console.warn(`[ez-reader] loadReadingSessions: skipped ${skipped} corrupted lines in ${sessionsPath}`);
+    }
+    return sessions;
+  }
+  // -----------------------------------------------------------------------
+  // Locator resolution (protocol handler support)
+  // -----------------------------------------------------------------------
   async resolveExcerptLink(excerptId) {
     const snapshot = await this.annotations.load();
     const excerpt = snapshot.excerpts.find((e3) => e3.id === excerptId);
@@ -15081,6 +15624,77 @@ ${block}`);
       locator: excerpt.locator
     };
   }
+  // -----------------------------------------------------------------------
+  // Migration: legacy notesDirectory/ → ezreader/notes/
+  // -----------------------------------------------------------------------
+  async migrateLegacyNotes(input) {
+    const legacyDir = sanitizeDir(input.legacyNotesDir);
+    if (!legacyDir || legacyDir === LIBRARY_BASE_DIR) {
+      return { migratedNotes: 0, failedNotes: 0, migratedBookIds: [] };
+    }
+    let listed;
+    try {
+      listed = await this.app.vault.adapter.list(legacyDir);
+    } catch {
+      return { migratedNotes: 0, failedNotes: 0, migratedBookIds: [] };
+    }
+    await this.ensureDirectory(LIBRARY_BASE_DIR);
+    await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}`);
+    let migrated = 0;
+    let failed = 0;
+    const migratedBookIds = [];
+    for (const filePath of listed.files) {
+      if (!filePath.endsWith(".md")) continue;
+      const file = this.app.vault.getAbstractFileByPath(filePath);
+      if (!(file instanceof import_obsidian3.TFile)) continue;
+      let bookId;
+      try {
+        const raw = await this.app.vault.read(file);
+        const parsed = parseFrontmatter(raw);
+        const candidate = parsed?.values.get("bookId");
+        if (typeof candidate === "string" && candidate.length > 0) {
+          bookId = candidate;
+        }
+      } catch (error) {
+        console.warn("[ez-reader] migrateLegacyNotes: failed to read", filePath, error);
+      }
+      if (!bookId) {
+        failed += 1;
+        continue;
+      }
+      const safeTitle = file.basename.split("-").slice(0, -1).join("-") || file.basename;
+      const fileBase = `${sanitizeFileBase(safeTitle)}-${bookId.slice(0, 8)}`;
+      const newPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
+      try {
+        const raw = await this.app.vault.read(file);
+        const existing = this.app.vault.getAbstractFileByPath(newPath);
+        if (existing instanceof import_obsidian3.TFile) {
+          console.warn(`[ez-reader] migrateLegacyNotes: ${newPath} already exists, skipping ${filePath}`);
+          continue;
+        }
+        await this.app.vault.create(newPath, raw);
+        await this.app.vault.delete(file);
+        migrated += 1;
+        migratedBookIds.push(bookId);
+      } catch (error) {
+        console.warn("[ez-reader] migrateLegacyNotes: failed to move", filePath, error);
+        failed += 1;
+      }
+    }
+    return { migratedNotes: migrated, failedNotes: failed, migratedBookIds };
+  }
+  // -----------------------------------------------------------------------
+  // Write queue (per-path serialization)
+  // -----------------------------------------------------------------------
+  enqueueWrite(path, fn) {
+    const prev = this.writeQueues.get(path) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    this.writeQueues.set(path, next.catch(() => void 0));
+    return next;
+  }
+  // -----------------------------------------------------------------------
+  // ensureDirectory
+  // -----------------------------------------------------------------------
   async ensureDirectory(path) {
     if (await this.app.vault.adapter.exists(path)) return;
     const parts = path.split("/").filter(Boolean);
@@ -15100,25 +15714,17 @@ ${block}`);
     }
   }
 };
-var sanitizeDir = (raw) => {
-  return (0, import_obsidian3.normalizePath)(raw.trim().replace(/^\/+/, ""));
-};
-var sanitizeFileBase = (raw) => {
-  const cleaned = raw.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}\-_]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-  return cleaned || "untitled";
-};
-var renderBookHeader = (input, settings) => {
+var renderNotesHeader = (input) => {
   const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  const title = settings.defaultNoteTemplate.replace(/\{\{title\}\}/g, input.bookTitle || "\u672A\u547D\u540D").replace(/\{\{author\}\}/g, settings.libraryOwnerName || "").replace(/\{\{date\}\}/g, date);
   return [
     "---",
     `title: "${(input.bookTitle || "\u672A\u547D\u540D").replace(/"/g, '\\"')}"`,
-    `ez-reader: ${input.bookId}`,
+    `bookId: ${input.bookId}`,
     `source: ${input.bookPath}`,
     `created: ${date}`,
     "---",
     "",
-    title,
+    input.bookTitle || "\u672A\u547D\u540D",
     "",
     "> \u7531 EzReader \u81EA\u52A8\u751F\u6210\u3002\u5212\u8BCD\u6458\u5F55\u4E0E\u60F3\u6CD5\u4F1A\u51FA\u73B0\u5728\u6B64\u7B14\u8BB0\u4E2D,\u5E26 Obsidian \u5757 ID \u53EF\u88AB\u53CC\u5411\u94FE\u63A5\u3002",
     ""
@@ -15139,13 +15745,7 @@ var renderExcerptBlock = (input, bookTitle, bookId, protocol, noteBase) => {
     "> [!quote] \u6458\u5F55",
     `> **${safeBookTitle}** \xB7 ${sourceParts.join(" \xB7 ")}`,
     `> Created: ${new Date(input.createdAt).toISOString().slice(0, 16).replace("T", " ")}`,
-    // P0 修复: 之前只渲染纯文本书名, Obsidian 无法识别为 wiki-link, 反向链接
-    // 面板也看不到这条引用 — 用户体验"摘录没形成双链". 现在加 `[[noteBase]]`
-    // 让 vault 里任何位置用 `[[noteBase]]` 或点击反向链接都能跳到这本书的笔记.
-    // 摘录 blockquote 自己也在这个 note 里, 所以反向链接面板会显示从其他笔记
-    // 引用本笔记的次数. 用户点反向链接 → 看到所有引用本笔记的摘录块.
     `> \u6765\u6E90: [[${safeNoteLink}|${safeBookTitle}]]`,
-    // 双向链接: 协议 URL 用于外部跳转, wiki link 用于 vault 内跳转 (光标在块上即可)
     `> \u8FD4\u56DE\u539F\u6587: [\u6253\u5F00\u9605\u8BFB\u5668](obsidian://${protocol}?book=${encodeURIComponent(bookId)}&annotation=${encodeURIComponent(input.excerptId)}) \xB7 [[#^${input.excerptId}|\u56DE\u5230\u6B64\u6458\u5F55]]`,
     safeTagLine,
     ">",
@@ -15171,6 +15771,11 @@ var renderThoughtBlock = (input, blockId, protocol) => {
     ""
   ];
   return lines.join("\n");
+};
+var sanitizeDir = (raw) => (0, import_obsidian3.normalizePath)(raw.trim().replace(/^\/+/, ""));
+var sanitizeFileBase = (raw) => {
+  const cleaned = raw.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}\-_]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return cleaned || "untitled";
 };
 var escapeRegExp = (s3) => s3.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 var escapeWikiLink = (s3) => s3.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
@@ -20736,7 +21341,7 @@ var ReaderToolbar = class {
     const totalMs = state.totalReadingMs ?? 0;
     if (totalMs >= 6e4) {
       this.readingTimeLabel.removeClass("is-hidden");
-      this.readingTimeLabel.setText(formatReadingTime(totalMs));
+      this.readingTimeLabel.setText(formatReadingTime2(totalMs));
     } else {
       this.readingTimeLabel.addClass("is-hidden");
     }
@@ -20801,7 +21406,7 @@ var ReaderToolbar = class {
   }
 };
 var clampFraction = (value) => Math.max(0, Math.min(1, value));
-var formatReadingTime = (ms) => {
+var formatReadingTime2 = (ms) => {
   const minutes = Math.floor(ms / 6e4);
   if (minutes < 60) return `${minutes} \u5206\u949F`;
   const hours = Math.floor(minutes / 60);
@@ -22350,7 +22955,7 @@ var composeQuickBookmarkLabel = (chapter, fraction) => {
   }
   return pct;
 };
-var ReaderView = class extends import_obsidian16.ItemView {
+var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
   deps;
   entry;
   session;
@@ -22382,9 +22987,27 @@ var ReaderView = class extends import_obsidian16.ItemView {
    * P1: 阅读时长统计 — 每次 reader 成为 active leaf 时开始计时,
    * 离开时把 ms 累加并 30s 防抖写回 store. 字段 `totalReadingMs`
    * 已经在 ReadingState 里.
+   *
+   * P2: bindActiveReadingDetector 在此之上叠加 4 条件检测 — 真正
+   * "用户在阅读"才计阅读时长. 这两个状态字段被两个方法共享:
+   * - `activeSinceMs`: 当前 active session 的起始时间 (或 null)
+   * - `lastReadingFlushAt`: 上次写回 store 的时间 (30s 防抖用)
    */
   activeSinceMs = null;
   lastReadingFlushAt = 0;
+  /**
+   * P2: active-reading detector 状态.
+   * - `lastInteractionMs`: host 上最后一次用户交互时间. 30s 内无交互 →
+   *   inactivity timer 自动 flush session (避免"打开书不看也计数").
+   * - `inactivityCheckTimer`: 30s setTimeout handle. 每次 host 交互
+   *   5s 节流内重启一次, 触发时清掉 activeSinceMs.
+   * - `windowHasFocus`: 由 window focus/blur 事件维护, tryStart 时检查.
+   */
+  lastInteractionMs = null;
+  inactivityCheckTimer;
+  windowHasFocus = true;
+  static INACTIVITY_TIMEOUT_MS = 3e4;
+  static INTERACTION_THROTTLE_MS = 5e3;
   /**
    * Find-in-book 状态 — toolbar 拿这两个字段做 badge + active 视觉。
    * searchBarVisible 也控制 input 是否聚焦。
@@ -22572,6 +23195,7 @@ var ReaderView = class extends import_obsidian16.ItemView {
     this.bindKeyboardNavigation();
     this.bindImmersiveToolbarToggle();
     this.bindReadingTimeTracker();
+    this.bindActiveReadingDetector();
     if (this.entry) await this.openSession();
   }
   async onClose() {
@@ -22744,31 +23368,136 @@ var ReaderView = class extends import_obsidian16.ItemView {
    * P1: 阅读时长统计 — 监听 workspace 'active-leaf-change'. 当本 leaf
    * 成为 active 时记录开始时间, 失去 focus 时把累加 ms 写回 store。
    * 30s 防抖避免高频切窗造成 IO 风暴。
+   *
+   * P2: 现在只负责切 leaf 这一种触发源 — 真正"是否在阅读"的判定 (visible
+   * + focus + 静默超时) 委托给 bindActiveReadingDetector。两个 listener
+   * 不冲突, 都通过 `tryStartActiveSession` / `flushActiveSession` 改
+   * activeSinceMs 状态。
    */
   bindReadingTimeTracker() {
     const onLeafChange = () => {
-      const now = Date.now();
-      const isActive = this.deps.app.workspace.activeLeaf === this.leaf;
-      if (isActive && this.activeSinceMs === null) {
-        this.activeSinceMs = now;
-      } else if (!isActive && this.activeSinceMs !== null) {
-        const delta = now - this.activeSinceMs;
-        this.activeSinceMs = null;
-        if (delta >= 1e3) void this.flushReadingTime(delta);
+      if (this.deps.app.workspace.activeLeaf === this.leaf) {
+        this.tryStartActiveSession();
+      } else {
+        this.flushActiveSession();
       }
     };
     this.deps.app.workspace.on("active-leaf-change", onLeafChange);
     if (this.deps.app.workspace.activeLeaf === this.leaf) {
-      this.activeSinceMs = Date.now();
+      this.tryStartActiveSession();
     }
     this.register(() => {
       this.deps.app.workspace.off("active-leaf-change", onLeafChange);
-      if (this.activeSinceMs !== null) {
-        const delta = Date.now() - this.activeSinceMs;
-        this.activeSinceMs = null;
-        if (delta >= 1e3) void this.flushReadingTime(delta);
+      this.flushActiveSession();
+    });
+  }
+  /**
+   * P2 polish: 真正"用户在阅读"检测 — 叠加在 active-leaf-change 之上,
+   * 处理切 tab (visibilitychange) / 切窗口 (blur) / 30s 无交互 (host
+   * 事件). 4 个条件全部满足才计阅读时长:
+   *   1. activeLeaf === this.leaf
+   *   2. document.visibilityState === "visible"
+   *   3. window has focus
+   *   4. lastInteractionMs + 30s > now
+   * 满足 → 启动/继续 session; 任一不满足 → flush + 暂停.
+   *
+   * host 交互 listener 用 5s 节流: mousemove 60Hz, 直接 setTimeout/clear
+   * 太频繁; 5s 节流后平均一次状态变更, timer 30s 内只重启 6 次。
+   */
+  bindActiveReadingDetector() {
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        this.flushActiveSession();
+      } else {
+        this.tryStartActiveSession();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    this.register(
+      () => document.removeEventListener("visibilitychange", onVisibilityChange)
+    );
+    const onWindowBlur = () => {
+      this.windowHasFocus = false;
+      this.flushActiveSession();
+    };
+    const onWindowFocus = () => {
+      this.windowHasFocus = true;
+      this.tryStartActiveSession();
+    };
+    window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("focus", onWindowFocus);
+    this.register(() => window.removeEventListener("blur", onWindowBlur));
+    this.register(() => window.removeEventListener("focus", onWindowFocus));
+    const host = this.host;
+    if (!host) return;
+    let lastNotifiedAt = 0;
+    const onInteraction = () => {
+      if (this.deps.app.workspace.activeLeaf !== this.leaf) return;
+      const now = Date.now();
+      if (now - lastNotifiedAt < _ReaderView.INTERACTION_THROTTLE_MS) return;
+      lastNotifiedAt = now;
+      this.lastInteractionMs = now;
+      this.restartInactivityCheck();
+      this.tryStartActiveSession();
+    };
+    const interactionEvents = [
+      "mousemove",
+      "keydown",
+      "scroll",
+      "pointerdown",
+      "touchstart",
+      "wheel"
+    ];
+    for (const ev of interactionEvents) {
+      host.addEventListener(ev, onInteraction, { passive: true });
+    }
+    this.register(() => {
+      for (const ev of interactionEvents) {
+        host.removeEventListener(ev, onInteraction);
       }
     });
+  }
+  /**
+   * 启动 (或继续) active session. 已激活则 no-op.
+   * 4 条件全满足 (active leaf + visible + focus + recent interaction)
+   * 才启动. 没收到过交互时, lastInteractionMs 用当前时间占位 (启动 30s
+   * 静默窗口; 之后真的无操作就会自动 flush)。
+   */
+  tryStartActiveSession() {
+    if (this.activeSinceMs !== null) return;
+    if (this.deps.app.workspace.activeLeaf !== this.leaf) return;
+    if (document.hidden) return;
+    if (!this.windowHasFocus) return;
+    if (this.lastInteractionMs === null) {
+      this.lastInteractionMs = Date.now();
+    }
+    this.restartInactivityCheck();
+    this.activeSinceMs = Date.now();
+  }
+  /**
+   * 把当前 active session 的 ms 写回 store. 没在计费中则 no-op.
+   * flushReadingTime 内部 30s 防抖 + 1min 阈值, 避免数据丢失。
+   */
+  flushActiveSession() {
+    if (this.activeSinceMs === null) return;
+    const delta = Date.now() - this.activeSinceMs;
+    this.activeSinceMs = null;
+    this.clearInactivityCheck();
+    if (delta >= 1e3) void this.flushReadingTime(delta);
+  }
+  /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */
+  restartInactivityCheck() {
+    this.clearInactivityCheck();
+    this.inactivityCheckTimer = window.setTimeout(() => {
+      this.inactivityCheckTimer = void 0;
+      this.flushActiveSession();
+    }, _ReaderView.INACTIVITY_TIMEOUT_MS);
+  }
+  clearInactivityCheck() {
+    if (this.inactivityCheckTimer !== void 0) {
+      window.clearTimeout(this.inactivityCheckTimer);
+      this.inactivityCheckTimer = void 0;
+    }
   }
   async flushReadingTime(deltaMs) {
     if (!this.entry) return;
@@ -23733,7 +24462,7 @@ var ReaderView = class extends import_obsidian16.ItemView {
     }
     if (this.deps.noteWriter) {
       try {
-        const ref = await this.deps.noteWriter.ensureBookNote({
+        const ref = await this.deps.noteWriter.ensureBookDir({
           bookId: this.entry.book.id,
           bookTitle: this.entry.book.metadata?.title ?? this.entry.book.locator.path,
           bookPath: this.entry.book.locator.path
@@ -23799,7 +24528,7 @@ var ReaderView = class extends import_obsidian16.ItemView {
     }
     if (this.deps.noteWriter) {
       try {
-        const ref = await this.deps.noteWriter.ensureBookNote({
+        const ref = await this.deps.noteWriter.ensureBookDir({
           bookId: this.entry.book.id,
           bookTitle: this.entry.book.metadata?.title ?? this.entry.book.locator.path,
           bookPath: this.entry.book.locator.path
@@ -24119,34 +24848,29 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
     });
   }
   // ---- 笔记与摘录 ----
+  //
+  // v0.3.0: 不再有可配置的"摘录笔记目录" / "主题研究目录" / "笔记模板"。
+  // 文件布局固定为 `<vault>/ezreader/{notes,info,sessions}/<title>-<id>.md`,
+  // header hardcoded (不再支持 `{{title}} {{author}}` 占位符)。
+  // 这里只展示一段说明文字,让用户知道结构。
   renderNotesSection(containerEl) {
     new import_obsidian17.Setting(containerEl).setName("\u7B14\u8BB0\u4E0E\u6458\u5F55").setHeading();
-    const saveNotesDir = this.debounceSave(async (value) => {
-      await this.annotations.patchSettings((s3) => ({ ...s3, notesDirectory: value.trim() }));
+    const desc = containerEl.createDiv({ cls: "ez-reader__settings-readonly" });
+    desc.createEl("p", {
+      text: "v0.3.0 \u8D77,\u6240\u6709 EzReader \u6587\u4EF6\u7EDF\u4E00\u653E\u5728 vault \u6839\u7684 `ezreader/` \u76EE\u5F55\u4E0B:"
     });
-    const saveResearchDir = this.debounceSave(async (value) => {
-      await this.annotations.patchSettings((s3) => ({ ...s3, researchDirectory: value.trim() }));
+    const list = desc.createEl("ul");
+    list.createEl("li", {
+      text: "`ezreader/notes/<title>-<id>.md` \u2014 \u6458\u5F55\u4E0E\u60F3\u6CD5\u7B14\u8BB0 (\u53CC\u94FE + \u5757 ID)"
     });
-    const saveNoteTemplate = this.debounceSave(async (value) => {
-      await this.annotations.patchSettings((s3) => ({ ...s3, defaultNoteTemplate: value }));
+    list.createEl("li", {
+      text: "`ezreader/info/<title>-<id>.md` \u2014 \u4E66\u7C4D\u57FA\u672C\u4FE1\u606F (YAML frontmatter)"
     });
-    new import_obsidian17.Setting(containerEl).setName("\u6458\u5F55\u7B14\u8BB0\u76EE\u5F55").setDesc("\u53CC\u94FE\u7B14\u8BB0\u6587\u4EF6\u4FDD\u5B58\u4F4D\u7F6E,\u7559\u7A7A\u5219\u4E0D\u81EA\u52A8\u4FDD\u5B58\u7B14\u8BB0\u3002\u4FDD\u5B58\u7B2C\u4E00\u6761\u6458\u5F55\u65F6\u4F1A\u81EA\u52A8\u521B\u5EFA\u76EE\u5F55,\u65E0\u9700\u624B\u52A8 mkdir").addText((text) => {
-      void this.loadSettings().then((s3) => {
-        text.setValue(s3.notesDirectory);
-      });
-      text.onChange((value) => saveNotesDir(value));
+    list.createEl("li", {
+      text: "`ezreader/sessions/<title>-<id>.jsonl` \u2014 \u9605\u8BFB\u65F6\u957F session \u660E\u7EC6 (append-only)"
     });
-    new import_obsidian17.Setting(containerEl).setName("\u4E3B\u9898\u7814\u7A76\u76EE\u5F55").setDesc("\u4E3B\u9898\u7814\u7A76\u7B14\u8BB0\u4FDD\u5B58\u4F4D\u7F6E,\u9ED8\u8BA4\u4E0E\u6458\u5F55\u7B14\u8BB0\u5171\u4EAB ezreader-notes \u6839\u76EE\u5F55\u3002\u76EE\u5F55\u4F1A\u5728\u9996\u6B21\u5199\u5165\u65F6\u81EA\u52A8\u521B\u5EFA").addText((text) => {
-      void this.loadSettings().then((s3) => {
-        text.setValue(s3.researchDirectory);
-      });
-      text.onChange((value) => saveResearchDir(value));
-    });
-    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u7B14\u8BB0\u6A21\u677F").setDesc("\u65B0\u5EFA\u7B14\u8BB0\u65F6\u4F7F\u7528\u7684\u6807\u9898\u6A21\u677F,\u652F\u6301 {{title}} {{author}} \u5360\u4F4D\u7B26").addText((text) => {
-      void this.loadSettings().then((s3) => {
-        text.setValue(s3.defaultNoteTemplate);
-      });
-      text.onChange((value) => saveNoteTemplate(value));
+    desc.createEl("p", {
+      text: "\u4ECE v0.2.x \u5347\u7EA7\u7684\u7528\u6237,\u9996\u6B21\u542F\u52A8\u4F1A\u81EA\u52A8\u628A `ezreader-notes/\u9605\u8BFB\u7B14\u8BB0/` \u4E0B\u7684\u7B14\u8BB0\u642C\u8FC7\u6765\u3002"
     });
   }
   // ---- 翻译 ----
@@ -24460,15 +25184,6 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         new import_obsidian17.Notice("\u754C\u9762\u8BED\u8A00\u5C06\u5728\u91CD\u542F\u540E\u751F\u6548");
       });
     });
-    new import_obsidian17.Setting(containerEl).setName("\u6240\u6709\u8005\u540D\u79F0").setDesc("\u7528\u4E8E\u7B14\u8BB0\u7F72\u540D(\u53EF\u9009)").addText((text) => {
-      const saveOwner = this.debounceSave(async (value) => {
-        await this.annotations.patchSettings((s3) => ({ ...s3, libraryOwnerName: value }));
-      });
-      void this.loadSettings().then((s3) => {
-        text.setValue(s3.libraryOwnerName);
-      });
-      text.onChange((value) => saveOwner(value));
-    });
     new import_obsidian17.Setting(containerEl).setName("\u4E66\u67B6\u5C01\u9762\u5BC6\u5EA6").setDesc("\u5F71\u54CD\u7F51\u683C\u5217\u6570\u548C\u5217\u8868\u5C01\u9762\u5C3A\u5BF8\u3002\u7D27\u51D1=\u6BCF\u884C\u591A\u672C,\u8D85\u5927=\u6BCF\u884C\u4E00\u672C\u5927\u5C01\u9762\u3002").addDropdown((dropdown) => {
       for (const density of SHELF_DENSITIES) {
         dropdown.addOption(density, SHELF_DENSITY_LABELS[density]);
@@ -24635,8 +25350,9 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
       },
       this.annotationStore
     );
-    this.noteWriter = new ObsidianNoteWriter(this.app, this, this.annotationStore);
+    this.noteWriter = new ObsidianLibraryWriter(this.app, this, this.annotationStore);
     this.app.workspace.onLayoutReady(async () => {
+      await this.runV030Migration();
       await this.library.initialize();
       await this.covers.hydrateCovers();
       await this.attachOverlaysToOpenLibraryPdfs();
@@ -24986,6 +25702,45 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
     }
   }
   /** Removed openPicker — 跟"打开个人图书馆"功能重叠, ribbon 上不需要第二个入口. */
+  /**
+   * v0.3.0: 一次性迁移老 `notesDirectory/` → 新 `<vault>/ezreader/notes/`
+   * 布局。跑过一次后写 `migratedToV030 = true`,后续启动跳过。
+   *
+   * 失败的 case 不会抛 — try/catch 包住,失败时只 console.warn,标记位
+   * 仍然写成 `true`(避免每次启动都重试失败的成本)。用户如果想重跑,
+   * 手动把 data.json 的 `migratedToV030` 改成 `false` 重启。
+   *
+   * 为什么不删老目录:留给用户 review。LibraryWriter.migrateLegacyNotes
+   * 只把 `.md` 文件搬走,空目录用户可以自己 `rm -r`。
+   */
+  async runV030Migration() {
+    try {
+      const snapshot = await this.annotationStore.load();
+      if (snapshot.migratedToV030 === true) return;
+      const legacyDir = snapshot.settings.notesDirectory?.trim() || "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0";
+      const result = await this.noteWriter.migrateLegacyNotes({ legacyNotesDir: legacyDir });
+      if (result.migratedNotes > 0 || result.failedNotes > 0) {
+        new import_obsidian19.Notice(
+          `EzReader 0.3.0 \u8FC1\u79FB: ${result.migratedNotes} \u4E2A\u7B14\u8BB0\u642C\u5230 ezreader/notes/,${result.failedNotes > 0 ? ` ${result.failedNotes} \u4E2A\u5931\u8D25` : ""}`
+        );
+      }
+      await this.annotationStore.patchSettings((s3) => ({
+        ...s3,
+        notesDirectory: "",
+        migratedToV030: true
+      }));
+      console.info(
+        `[ez-reader] v0.3.0 migration complete: ${result.migratedNotes} migrated, ${result.failedNotes} failed`
+      );
+    } catch (error) {
+      console.warn("[ez-reader] v0.3.0 migration failed", error);
+      try {
+        await this.annotationStore.patchSettings((s3) => ({ ...s3, migratedToV030: true }));
+      } catch (innerError) {
+        console.warn("[ez-reader] could not persist migratedToV030 flag", innerError);
+      }
+    }
+  }
   /**
    * Mirrors `enableAllBookFormatsInFileExplorer` from the upstream plugin:
    * turns on Obsidian's "Detect all file extensions" so `vault.getFiles()`
