@@ -1,4 +1,4 @@
-import { setIcon } from "obsidian";
+import { setIcon, setTooltip } from "obsidian";
 import type { ReadingState } from "../../core/entities/ReadingState";
 import { statusLabel } from "../shelf/shelfFormatters";
 
@@ -314,6 +314,9 @@ export class ReaderToolbar {
     if (totalMs >= 60_000) {
       this.readingTimeLabel.removeClass("is-hidden");
       this.readingTimeLabel.setText(formatReadingTime(totalMs));
+      // v0.3.0: tooltip 区分"真阅读时长"(用户实际交互时间, 30s 无活动自动暂停)
+      // 跟 v0.2.x 的 active-leaf 时长, 防止混淆.
+      setTooltip(this.readingTimeLabel, "累计阅读时长 (用户实际阅读,30s 无交互自动暂停)");
     } else {
       this.readingTimeLabel.addClass("is-hidden");
     }

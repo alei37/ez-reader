@@ -3652,3 +3652,302 @@
   padding-top: 8px;
   border-top: 1px solid var(--background-modifier-border);
 }
+
+/* ============================================================================
+ * v0.3.0: BookInfoModal — 书籍详情弹窗 (个人图书馆右键菜单 → 📖 书籍详情)
+ * 命名空间: `.ez-reader__book-info-*`
+ * ============================================================================ */
+
+.ez-reader__book-info-modal {
+  padding: 0;
+  max-width: 480px;
+}
+
+.ez-reader__book-info-modal .modal-content {
+  padding: 0;
+}
+
+/* --- Header --- */
+.ez-reader__book-info-header {
+  display: flex;
+  gap: 16px;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.ez-reader__book-info-header__cover-wrap {
+  flex-shrink: 0;
+  width: 96px;
+  height: 144px;
+  border-radius: 4px;
+  background: var(--background-secondary);
+  overflow: hidden;
+}
+.ez-reader__book-info-header__cover {
+  width: 96px;
+  height: 144px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+.ez-reader__book-info-header__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ez-reader__book-info-header__title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.ez-reader__book-info-header__authors {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ez-reader__book-info-header__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.ez-reader__book-info-header__action {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  cursor: pointer;
+  color: var(--text-normal);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.ez-reader__book-info-header__action:hover {
+  background: var(--background-modifier-hover);
+}
+.ez-reader__book-info-header__action.is-copied {
+  color: var(--text-success);
+  border-color: var(--text-success);
+}
+
+/* --- Sections (cards) --- */
+.ez-reader__book-info-section {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.ez-reader__book-info-section:last-of-type {
+  border-bottom: none;
+}
+.ez-reader__book-info-section__title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+
+/* --- Meta grid --- */
+.ez-reader__book-info-meta-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+  margin: 0;
+}
+.ez-reader__book-info-meta-grid dt {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.ez-reader__book-info-meta-grid dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+/* --- Progress --- */
+.ez-reader__book-info-progress__status-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ez-reader__book-info-progress__status-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.ez-reader__book-info-progress__status-chip.is-reading {
+  background: var(--background-modifier-hover);
+  color: var(--interactive-accent);
+}
+.ez-reader__book-info-progress__status-chip.is-finished {
+  background: var(--background-modifier-hover);
+  color: var(--text-success);
+}
+.ez-reader__book-info-progress__status-chip.is-abandoned,
+.ez-reader__book-info-progress__status-chip.is-unread {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+.ez-reader__book-info-progress__flag {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.ez-reader__book-info-progress__bar {
+  height: 8px;
+  background: var(--background-modifier-border);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 8px 0 4px;
+}
+.ez-reader__book-info-progress__fill {
+  height: 100%;
+  background: var(--interactive-accent);
+  transition: width 0.3s ease;
+  border-radius: 4px;
+}
+.ez-reader__book-info-progress__label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.ez-reader__book-info-progress__total {
+  font-size: 13px;
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Time stats --- */
+.ez-reader__book-info-time-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.ez-reader__book-info-time-stat {
+  text-align: center;
+  padding: 8px;
+  background: var(--background-secondary);
+  border-radius: 6px;
+}
+.ez-reader__book-info-time-stat__value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+.ez-reader__book-info-time-stat__label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.ez-reader__book-info-streak {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--background-modifier-hover);
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--text-accent);
+  margin-bottom: 4px;
+}
+
+/* --- Bar chart (30 daily buckets, left=oldest to right=newest) --- */
+.ez-reader__book-info-bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 64px;
+  padding: 8px 0 4px;
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 12px;
+}
+.ez-reader__book-info-bar-chart.is-empty {
+  border-top: none;
+  margin-top: 8px;
+  justify-content: center;
+}
+.ez-reader__book-info-bar-chart__bar {
+  flex: 1;
+  background: var(--interactive-accent);
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  transition: background 0.2s, opacity 0.2s;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.ez-reader__book-info-bar-chart__bar:hover {
+  opacity: 1;
+}
+.ez-reader__book-info-bar-chart__bar.is-today {
+  background: var(--text-accent);
+  opacity: 1;
+}
+
+/* --- Sessions list --- */
+.ez-reader__book-info-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.ez-reader__book-info-sessions.is-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.ez-reader__book-info-session-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--background-secondary);
+  border-radius: 4px;
+}
+.ez-reader__book-info-session-row__time {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ez-reader__book-info-session-row__duration {
+  color: var(--text-accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --- Footer --- */
+.ez-reader__book-info-footer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--background-modifier-border);
+  justify-content: flex-end;
+}
+.ez-reader__book-info-footer button {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.ez-reader__book-info-footer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- Loading state --- */
+.ez-reader__book-info-loading {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 32px 0;
+}

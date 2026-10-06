@@ -7,6 +7,7 @@ import type { CoverCache } from "../../adapters/obsidian/CoverCache";
 import { DEFAULT_SORT, emptyFilter, type ShelfFilter, type SortCriterion } from "../../core/types/ShelfFilter";
 import { SHELF_DENSITIES, type PluginSettings, type ShelfDensity } from "../../core/types/ReaderSettings";
 import { AddToLibraryModal } from "./AddToLibraryModal";
+import { BookInfoModal } from "./BookInfoModal";
 import { OnboardingModal } from "./OnboardingModal";
 import { ShelfFiltersModal } from "./ShelfFilters";
 import { nextShelfDensity, ShelfToolbar, type ViewMode } from "./ShelfToolbar";
@@ -392,6 +393,17 @@ export class ShelfView extends ItemView {
       item.setTitle("在 Obsidian 中查看").setIcon("file-text").onClick(() => {
         const file = this.deps.app.vault.getAbstractFileByPath(entry.book.locator.path);
         if (file instanceof TFile) void this.deps.app.workspace.openLinkText(file.path, "", true);
+      })
+    );
+    // v0.3.0: 书籍详情 modal — 跟"在 Obsidian 中查看"类似但不同: 查看打开的是
+    // 原始文件(PDF 用 Obsidian 内置 PDFView), 详情弹 modal 显示元信息 + 阅读时长.
+    menu.addItem((item) =>
+      item.setTitle("📖 书籍详情").setIcon("info").onClick(() => {
+        new BookInfoModal(this.deps.app, entry.book.id, {
+          app: this.deps.app,
+          library: this.deps.library,
+          openReader: (e) => this.openBook(e)
+        }).open();
       })
     );
     menu.addSeparator();
