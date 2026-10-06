@@ -485,12 +485,8 @@ export class BookInfoModal extends Modal {
         cls: "ez-reader__book-info-bar-chart__placeholder",
         text: "暂无阅读记录 — 在阅读器里读一会儿就会出现在这里"
       });
-      // Stretch placeholder to fill chart area.
-      placeholder.style.flex = "1";
-      placeholder.style.color = "var(--text-muted)";
-      placeholder.style.fontSize = "12px";
-      placeholder.style.textAlign = "center";
-      placeholder.style.lineHeight = "64px";
+      // Styles live in styles.css (`.ez-reader__book-info-bar-chart__placeholder`)
+      // — Obsidian lint `no-static-styles-assignment` forbids inline style.X = Y.
     } else {
       // We want newest on the RIGHT (chronological left→right). The API
       // returns newest-first, so reverse for display.

@@ -3892,6 +3892,13 @@
   background: var(--text-accent);
   opacity: 1;
 }
+.ez-reader__book-info-bar-chart__placeholder {
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  line-height: 64px;
+}
 
 /* --- Sessions list --- */
 .ez-reader__book-info-sessions {
