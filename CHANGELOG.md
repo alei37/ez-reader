@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-06
+
+### 修复 (Fixed)
+
+- **BookInfoModal bar chart placeholder inline style** — 之前 5 处 `placeholder.style.X = Y` 触发 Obsidian community review `obsidianmd/no-static-styles-assignment` Error. 改成 CSS class `.ez-reader__book-info-bar-chart__placeholder` 走 `styles.css`,符合 Obsidian 官方 API 规范
+
 ## [0.3.0] - 2026-10-06
 
 ### 新增 (Added)

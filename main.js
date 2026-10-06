@@ -20070,11 +20070,6 @@ var BookInfoModal = class extends import_obsidian6.Modal {
         cls: "ez-reader__book-info-bar-chart__placeholder",
         text: "\u6682\u65E0\u9605\u8BFB\u8BB0\u5F55 \u2014 \u5728\u9605\u8BFB\u5668\u91CC\u8BFB\u4E00\u4F1A\u513F\u5C31\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC"
       });
-      placeholder.style.flex = "1";
-      placeholder.style.color = "var(--text-muted)";
-      placeholder.style.fontSize = "12px";
-      placeholder.style.textAlign = "center";
-      placeholder.style.lineHeight = "64px";
     } else {
       const ordered = [...buckets].reverse();
       const lastIndex = ordered.length - 1;
