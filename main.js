@@ -12712,6 +12712,14 @@ var init_pdfOverlay = __esm({
       windowHasFocus = true;
       lastReadingFlushAt = 0;
       static PDF_INACTIVITY_TIMEOUT_MS = 3e4;
+      /**
+       * P0 v0.3.0 fix: 当前 active session 的起始 page fraction. session
+       * 启动时 capture, flush 时用最新页码算 progressEnd. 跟 ReaderView
+       * 同 pattern, 让 sessions.jsonl 有真实数据可聚合.
+       *
+       * PDF 没有 chapter label, 传 undefined (ReadingSession.chapter 是可选).
+       */
+      activeSessionProgressStart = 0;
       constructor(opts) {
         this.opts = opts;
         this.container = opts.pdfLeaf.view.containerEl;
@@ -12957,19 +12965,55 @@ var init_pdfOverlay = __esm({
         }
         this.restartPdfInactivityCheck();
         this.activeSinceMs = Date.now();
+        this.activeSessionProgressStart = this.currentPageFraction();
       }
       /**
        * 把当前 PDF active session 的 ms 写回 store. 没在计费中则 no-op.
        * 跟 ReaderView.flushReadingTime 共享同一份 reading service — bookId
        * 不同但累加路径相同 (store 内部按 bookId 索引)。
+       *
+       * v0.3.0 fix: 同步调 recordSession 把这次 session 写到
+       * `ezreader/sessions/<title>-<id>.jsonl`, 让 BookInfoModal 阅读时长
+       * 统计对 PDF 也生效 (之前 totalReadingMs 有, 但 sessions.jsonl 没数据).
        */
       flushPdfActiveSession() {
         if (this.activeSinceMs === null) return;
         if (!this.bookId) return;
-        const delta = Date.now() - this.activeSinceMs;
+        const startedAt = this.activeSinceMs;
+        const endedAt = Date.now();
+        const delta = endedAt - startedAt;
+        const progressStart = this.activeSessionProgressStart;
+        const progressEnd = this.currentPageFraction();
         this.activeSinceMs = null;
+        this.activeSessionProgressStart = 0;
         this.clearPdfInactivityCheck();
-        if (delta >= 1e3) void this.flushPdfReadingTime(delta);
+        if (delta < 1e3) return;
+        void this.flushPdfReadingTime(delta);
+        const entry = this.opts.library.list().find((e3) => e3.book.id === this.bookId);
+        const titleHint = entry?.book.metadata?.title ?? this.opts.bookPath.split("/").pop()?.replace(/\.[^.]+$/, "") ?? this.bookId;
+        void this.opts.reading.recordSession(
+          this.bookId,
+          {
+            startedAt,
+            endedAt,
+            durationMs: delta,
+            progressStart,
+            progressEnd,
+            chapter: void 0
+          },
+          titleHint
+        );
+      }
+      /**
+       * 当前 PDF 页码转 0-1 fraction. pageNumber / totalPages, 跟
+       * `progressFraction` for "pdf" kind 的算法一致: `(page - 1) / totalPages`.
+       * 缺 totalPages 时 fallback 到 0.
+       */
+      currentPageFraction() {
+        const page = findActivePageNumber(this.container);
+        const total = findPdfTotalPages(this.container);
+        if (page === null || total === null || total <= 0) return 0;
+        return Math.max(0, Math.min(1, (page - 1) / total));
       }
       async flushPdfReadingTime(deltaMs) {
         if (!this.bookId) return;
@@ -15626,13 +15670,13 @@ ${block}`);
   // -----------------------------------------------------------------------
   async appendReadingSession(ref, session) {
     await this.enqueueWrite(ref.sessionsPath, async () => {
-      const file = this.app.vault.getAbstractFileByPath(ref.sessionsPath);
       const line = JSON.stringify(session) + "\n";
-      if (file instanceof import_obsidian3.TFile) {
-        await this.app.vault.process(file, (current) => `${current.replace(/\s*$/, "")}${line}`);
-      } else {
+      const exists = await this.app.vault.adapter.exists(ref.sessionsPath);
+      if (!exists) {
         await this.app.vault.create(ref.sessionsPath, line);
+        return;
       }
+      await this.app.vault.adapter.append(ref.sessionsPath, line);
     });
   }
   async loadReadingSessions(bookId) {
@@ -19261,14 +19305,21 @@ var ReadingService = class {
    *
    * 不触发 onChange (shelf 不需要每次 session 都重渲染 — ReadingState
    * 的 totalReadingMs 由 addReadingTime 单独维护).
+   *
+   * `titleHint` (P1 v0.3.0 fix): caller 传入真实书名. LibraryWriter
+   * 内部用 bookTitle 算 filename (`<safeTitle>-<id>`), 缺 titleHint
+   * 时 fallback 到 bookId 会 orphan 老 sessions.jsonl (因为后续
+   * appendExcerpt 传真 title 会创建另一个 file path). PDF / TXT 场景
+   * session.chapter 是 undefined, ReaderView 用 entry.book.metadata.title,
+   * PdfOverlay 用 file basename — 两者都比 bookId 稳定.
    */
-  async recordSession(bookId, session) {
+  async recordSession(bookId, session, titleHint) {
     if (session.durationMs <= 0) return;
     if (this.libraryWriter) {
       try {
         const ref = await this.libraryWriter.ensureBookDir({
           bookId,
-          bookTitle: session.chapter ?? bookId,
+          bookTitle: titleHint ?? session.chapter ?? bookId,
           bookPath: ""
         });
         await this.libraryWriter.appendReadingSession(ref, session);
@@ -23692,6 +23743,20 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
   static INACTIVITY_TIMEOUT_MS = 3e4;
   static INTERACTION_THROTTLE_MS = 5e3;
   /**
+   * P0 v0.3.0 fix: 当前 active session 的元数据. session 启动时 capture
+   * (chapter / progressStart), flush 时跟 progressEnd + durationMs 一起
+   * 写到 sessions.jsonl via ReadingService.recordSession. 之前 v0.3.0 prep
+   * 只更新了 totalReadingMs, sessions.jsonl 永远为空, BookInfoModal 的
+   * 阅读时长统计面板是死 UI.
+   *
+   * 为什么不直接用 `this.chapter` / `this.fraction` 作为 session 起止 —
+   * 因为它们是当前 (流动的) 状态, 可能已经被后续 relocate / 翻页改了.
+   * 这里 capture 的是 session **启动** 那一刻的快照, progressEnd 在
+   * flush 时用最新的 `this.fraction`.
+   */
+  activeSessionChapter = void 0;
+  activeSessionProgressStart = 0;
+  /**
    * Find-in-book 状态 — toolbar 拿这两个字段做 badge + active 视觉。
    * searchBarVisible 也控制 input 是否聚焦。
    */
@@ -24156,17 +24221,46 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     }
     this.restartInactivityCheck();
     this.activeSinceMs = Date.now();
+    this.activeSessionChapter = this.chapter || void 0;
+    this.activeSessionProgressStart = this.fraction;
   }
   /**
    * 把当前 active session 的 ms 写回 store. 没在计费中则 no-op.
    * flushReadingTime 内部 30s 防抖 + 1min 阈值, 避免数据丢失。
+   *
+   * v0.3.0 fix: 同步调 recordSession 把这次 session 也写到
+   * `ezreader/sessions/<title>-<id>.jsonl`, 让 BookInfoModal 的
+   * "阅读时长统计" 面板能读到真实 session 数据 (之前永远是空).
    */
   flushActiveSession() {
     if (this.activeSinceMs === null) return;
-    const delta = Date.now() - this.activeSinceMs;
+    const startedAt = this.activeSinceMs;
+    const endedAt = Date.now();
+    const delta = endedAt - startedAt;
+    const chapter = this.chapter || this.activeSessionChapter;
+    const progressStart = this.activeSessionProgressStart;
+    const progressEnd = this.fraction;
     this.activeSinceMs = null;
+    this.activeSessionChapter = void 0;
+    this.activeSessionProgressStart = 0;
     this.clearInactivityCheck();
-    if (delta >= 1e3) void this.flushReadingTime(delta);
+    if (delta < 1e3) return;
+    void this.flushReadingTime(delta);
+    if (this.entry) {
+      const titleHint = this.entry.book.metadata?.title ?? this.entry.book.locator.path;
+      void this.deps.reading.recordSession(
+        this.entry.book.id,
+        {
+          startedAt,
+          endedAt,
+          durationMs: delta,
+          progressStart,
+          progressEnd,
+          chapter
+        },
+        titleHint
+      );
+    }
   }
   /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */
   restartInactivityCheck() {
