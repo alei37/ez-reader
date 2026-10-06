@@ -12139,6 +12139,75 @@ var init_index_browser2 = __esm({
   }
 });
 
+// src/adapters/obsidian/dailyReadingTime.ts
+var dailyReadingTime_exports = {};
+__export(dailyReadingTime_exports, {
+  aggregateDailyReadingTime: () => aggregateDailyReadingTime,
+  readingStreakDays: () => readingStreakDays,
+  totalReadingMsInDays: () => totalReadingMsInDays
+});
+var aggregateDailyReadingTime, totalReadingMsInDays, readingStreakDays, localDateString;
+var init_dailyReadingTime = __esm({
+  "src/adapters/obsidian/dailyReadingTime.ts"() {
+    "use strict";
+    aggregateDailyReadingTime = (sessions, days, now = Date.now()) => {
+      if (days <= 0) return [];
+      const buckets = /* @__PURE__ */ new Map();
+      for (const session of sessions) {
+        const date = localDateString(session.startedAt);
+        const current = buckets.get(date) ?? { totalMs: 0, count: 0 };
+        current.totalMs += Math.max(0, session.durationMs);
+        current.count += 1;
+        buckets.set(date, current);
+      }
+      const result = [];
+      const today = new Date(now);
+      today.setHours(0, 0, 0, 0);
+      const todayMs = today.getTime();
+      const oneDayMs = 24 * 60 * 60 * 1e3;
+      for (let i3 = 0; i3 < days; i3 += 1) {
+        const dayMs = todayMs - i3 * oneDayMs;
+        const date = localDateString(dayMs);
+        const bucket = buckets.get(date);
+        result.push({
+          date,
+          totalMs: bucket?.totalMs ?? 0,
+          sessionCount: bucket?.count ?? 0
+        });
+      }
+      return result;
+    };
+    totalReadingMsInDays = (daily) => daily.reduce((acc, day) => acc + day.totalMs, 0);
+    readingStreakDays = (daily, now = Date.now()) => {
+      let streak = 0;
+      for (let i3 = 0; i3 < daily.length; i3 += 1) {
+        const day = daily[i3];
+        if (day.totalMs <= 0 && day.sessionCount <= 0) {
+          if (i3 === 0) {
+            const hasAny = daily.some((d2, idx) => idx > 0 && (d2.totalMs > 0 || d2.sessionCount > 0));
+            if (hasAny) continue;
+          }
+          break;
+        }
+        streak += 1;
+      }
+      void now;
+      return streak;
+    };
+    localDateString = (ms) => {
+      const date = new Date(ms);
+      try {
+        return date.toLocaleDateString("en-CA");
+      } catch {
+        const y3 = date.getFullYear();
+        const m3 = String(date.getMonth() + 1).padStart(2, "0");
+        const d2 = String(date.getDate()).padStart(2, "0");
+        return `${y3}-${m3}-${d2}`;
+      }
+    };
+  }
+});
+
 // src/ui/reader/selectionMenuPosition.ts
 var computeSelectionMenuPosition;
 var init_selectionMenuPosition = __esm({
@@ -12177,12 +12246,12 @@ var ShortcutHelpModal_exports = {};
 __export(ShortcutHelpModal_exports, {
   ShortcutHelpModal: () => ShortcutHelpModal
 });
-var import_obsidian13, ShortcutHelpModal;
+var import_obsidian14, ShortcutHelpModal;
 var init_ShortcutHelpModal = __esm({
   "src/ui/reader/ShortcutHelpModal.ts"() {
     "use strict";
-    import_obsidian13 = require("obsidian");
-    ShortcutHelpModal = class extends import_obsidian13.Modal {
+    import_obsidian14 = require("obsidian");
+    ShortcutHelpModal = class extends import_obsidian14.Modal {
       constructor(app, shortcuts) {
         super(app);
         this.shortcuts = shortcuts;
@@ -12276,12 +12345,12 @@ var BookmarkModal_exports = {};
 __export(BookmarkModal_exports, {
   BookmarkModal: () => BookmarkModal
 });
-var import_obsidian14, BookmarkModal;
+var import_obsidian15, BookmarkModal;
 var init_BookmarkModal = __esm({
   "src/ui/reader/BookmarkModal.ts"() {
     "use strict";
-    import_obsidian14 = require("obsidian");
-    BookmarkModal = class extends import_obsidian14.Modal {
+    import_obsidian15 = require("obsidian");
+    BookmarkModal = class extends import_obsidian15.Modal {
       resolver = null;
       context;
       fallbackLabel;
@@ -12367,12 +12436,12 @@ var ExcerptModal_exports = {};
 __export(ExcerptModal_exports, {
   ExcerptModal: () => ExcerptModal
 });
-var import_obsidian15, ExcerptModal, parseTags2;
+var import_obsidian16, ExcerptModal, parseTags2;
 var init_ExcerptModal = __esm({
   "src/ui/reader/ExcerptModal.ts"() {
     "use strict";
-    import_obsidian15 = require("obsidian");
-    ExcerptModal = class extends import_obsidian15.Modal {
+    import_obsidian16 = require("obsidian");
+    ExcerptModal = class extends import_obsidian16.Modal {
       input;
       resolver = null;
       constructor(app, input) {
@@ -12538,11 +12607,11 @@ __export(pdfOverlay_exports, {
   PdfOverlay: () => PdfOverlay,
   findPdfOverlayForLeaf: () => findPdfOverlayForLeaf
 });
-var import_obsidian18, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, attachInlineNoteEditor, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable, NOTES_BTN_POS_KEY, NOTES_BTN_SIZE, readNotesBtnPos, writeNotesBtnPos;
+var import_obsidian19, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, attachInlineNoteEditor, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable, NOTES_BTN_POS_KEY, NOTES_BTN_SIZE, readNotesBtnPos, writeNotesBtnPos;
 var init_pdfOverlay = __esm({
   "src/ui/reader/pdfOverlay.ts"() {
     "use strict";
-    import_obsidian18 = require("obsidian");
+    import_obsidian19 = require("obsidian");
     init_highlight();
     init_selectionMenuPosition();
     PDF_VIEW_TYPE = "pdf";
@@ -13118,7 +13187,7 @@ var init_pdfOverlay = __esm({
             onRemoveBookmark: async (id) => {
               await this.opts.reading.removeBookmark(this.bookId, id);
               await this.refreshNotesPanel();
-              new import_obsidian18.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664");
+              new import_obsidian19.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664");
             },
             onRemoveExcerpt: async (id) => {
               await this.opts.reading.removeExcerpt(this.bookId, id);
@@ -13129,7 +13198,7 @@ var init_pdfOverlay = __esm({
                 this.highlightsByExcerpt.delete(id);
               }
               await this.refreshNotesPanel();
-              new import_obsidian18.Notice("\u6458\u5F55\u5DF2\u5220\u9664");
+              new import_obsidian19.Notice("\u6458\u5F55\u5DF2\u5220\u9664");
             },
             // P2: 让面板里的 note 字段可内联编辑 — 用户点黄线 → 跳到这条摘录 →
             // 自动进编辑模式; blur 保存走 reading.updateExcerptNote (不动 highlight /
@@ -13333,7 +13402,7 @@ var init_pdfOverlay = __esm({
           await this.opts.reading.addExcerpt(excerpt);
         } catch (error) {
           console.warn("[ez-reader] handleExcerpt addExcerpt failed", error);
-          new import_obsidian18.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
+          new import_obsidian19.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
           return;
         }
         if (this.opts.noteWriter) {
@@ -13355,7 +13424,7 @@ var init_pdfOverlay = __esm({
             });
           } catch (error) {
             console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-            new import_obsidian18.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
+            new import_obsidian19.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
           }
         }
         const result = findHighlightRect(this.container, sel.pageNumber, sel.text);
@@ -13376,7 +13445,7 @@ var init_pdfOverlay = __esm({
         if (this.notesPanel.classList.contains("is-open")) {
           await this.refreshNotesPanel();
         }
-        new import_obsidian18.Notice("\u6458\u5F55\u5DF2\u4FDD\u5B58");
+        new import_obsidian19.Notice("\u6458\u5F55\u5DF2\u4FDD\u5B58");
       }
       /**
        * P0 修复: 之前 PDF selection menu 只有 "翻译/摘录/复制", 没有 "想法".
@@ -13410,7 +13479,7 @@ var init_pdfOverlay = __esm({
           await this.opts.reading.addExcerpt(excerpt);
         } catch (error) {
           console.warn("[ez-reader] handleThought addExcerpt failed", error);
-          new import_obsidian18.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
+          new import_obsidian19.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
           return;
         }
         if (this.opts.noteWriter) {
@@ -13432,7 +13501,7 @@ var init_pdfOverlay = __esm({
             });
           } catch (error) {
             console.warn("[ez-reader] handleThought noteWriter.appendExcerpt failed", error);
-            new import_obsidian18.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
+            new import_obsidian19.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
           }
         }
         const result = findHighlightRect(this.container, sel.pageNumber, sel.text);
@@ -13452,18 +13521,18 @@ var init_pdfOverlay = __esm({
         if (this.notesPanel.classList.contains("is-open")) {
           await this.refreshNotesPanel();
         }
-        new import_obsidian18.Notice(noteText.trim().length > 0 ? "\u60F3\u6CD5\u5DF2\u4FDD\u5B58" : "\u60F3\u6CD5 (\u7A7A) \u5DF2\u4FDD\u5B58");
+        new import_obsidian19.Notice(noteText.trim().length > 0 ? "\u60F3\u6CD5\u5DF2\u4FDD\u5B58" : "\u60F3\u6CD5 (\u7A7A) \u5DF2\u4FDD\u5B58");
       }
       async handleCopy() {
         if (!this.pendingSelection) return;
         const text = this.pendingSelection.text;
         try {
           await navigator.clipboard.writeText(text);
-          new import_obsidian18.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
+          new import_obsidian19.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
         } catch (error) {
           console.warn("[ez-reader] clipboard write failed", error);
           const message = error instanceof Error ? error.message : String(error);
-          new import_obsidian18.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
+          new import_obsidian19.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
         }
         this.hideMenu();
       }
@@ -13487,7 +13556,7 @@ var init_pdfOverlay = __esm({
         if (nextPage === null) {
           this.pdfFindMatchCount = 0;
           updatePdfSearchStatus(this.searchBar, 0);
-          new import_obsidian18.Notice(`PDF \u672A\u627E\u5230 "${trimmed}"`);
+          new import_obsidian19.Notice(`PDF \u672A\u627E\u5230 "${trimmed}"`);
           return;
         }
         this.pdfFindCurrentPage = nextPage;
@@ -14206,7 +14275,7 @@ var collectPolyfillReport = () => {
 };
 
 // src/Plugin.ts
-var import_obsidian19 = require("obsidian");
+var import_obsidian20 = require("obsidian");
 
 // src/adapters/obsidian/CoverCache.ts
 var import_obsidian = require("obsidian");
@@ -15152,6 +15221,7 @@ var needsQuoting = (s3) => {
   if (/^(?:true|false|yes|no|on|off|null|~)$/i.test(s3)) return true;
   if (/(?:^|\s):\s/.test(s3)) return true;
   if (s3.includes("#")) return true;
+  if (s3.includes("\n") || s3.includes("	") || s3.includes("\r")) return true;
   if (s3 !== s3.trim()) return true;
   return false;
 };
@@ -15189,7 +15259,7 @@ var serializeBookInfo = (info, body) => {
     lines.push("  []");
   } else {
     for (const author of info.authors) {
-      lines.push(`  ${formatValue(author, "  ")}`);
+      lines.push(`  - ${formatValue(author, "")}`);
     }
   }
   if (info.publisher !== void 0) lines.push(`publisher: ${formatValue(info.publisher, "")}`);
@@ -18515,11 +18585,12 @@ var clamp = (value) => Math.max(0, Math.min(1, value));
 
 // src/core/services/LibraryService.ts
 var LibraryService = class {
-  constructor(source, annotations, metadataReader, bookBytesLoader) {
+  constructor(source, annotations, metadataReader, bookBytesLoader, libraryWriter) {
     this.source = source;
     this.annotations = annotations;
     this.metadataReader = metadataReader;
     this.bookBytesLoader = bookBytesLoader;
+    this.libraryWriter = libraryWriter;
   }
   entries = /* @__PURE__ */ new Map();
   listeners = /* @__PURE__ */ new Set();
@@ -18763,6 +18834,66 @@ var LibraryService = class {
   get(bookId) {
     return this.entries.get(bookId);
   }
+  /**
+   * v0.3.0: Rich view for the BookInfoModal. Combines `LibraryEntry` with
+   * info.md metadata + recent reading sessions + daily aggregates. Returns
+   * `null` if the book is not in the library (e.g. file was deleted or
+   * user has not added it yet).
+   *
+   * The caller is expected to render the modal with these fields; the
+   * modal does not mutate anything. Re-call after edits to refresh.
+   */
+  async getRichEntry(bookId) {
+    const entry = this.entries.get(bookId);
+    if (!entry) return null;
+    let bookInfo = null;
+    if (this.libraryWriter) {
+      try {
+        bookInfo = await this.libraryWriter.readBookInfo(bookId);
+      } catch (error) {
+        console.warn("[ez-reader] getRichEntry: readBookInfo failed", bookId, error);
+      }
+    }
+    if (!bookInfo) {
+      bookInfo = buildFallbackBookInfo(entry);
+    }
+    let recentSessions = [];
+    let daily = [];
+    if (this.libraryWriter) {
+      try {
+        recentSessions = await this.libraryWriter.loadReadingSessions(bookId);
+      } catch (error) {
+        console.warn("[ez-reader] getRichEntry: loadReadingSessions failed", bookId, error);
+      }
+      try {
+        const { aggregateDailyReadingTime: aggregateDailyReadingTime2, readingStreakDays: readingStreakDays2 } = await Promise.resolve().then(() => (init_dailyReadingTime(), dailyReadingTime_exports));
+        daily = aggregateDailyReadingTime2(recentSessions, 30);
+        const streak = readingStreakDays2(daily);
+        return {
+          entry,
+          bookInfo,
+          dailyReadingTime: daily,
+          recentSessions: recentSessions.slice(-10).reverse(),
+          readingStreakDays: streak,
+          todayReadingMs: daily[0]?.totalMs ?? 0,
+          lastWeekReadingMs: daily.slice(0, 7).reduce((acc, d2) => acc + d2.totalMs, 0),
+          lastMonthReadingMs: daily.reduce((acc, d2) => acc + d2.totalMs, 0)
+        };
+      } catch (error) {
+        console.warn("[ez-reader] getRichEntry: aggregate failed", bookId, error);
+      }
+    }
+    return {
+      entry,
+      bookInfo,
+      dailyReadingTime: [],
+      recentSessions: recentSessions.slice(-10).reverse(),
+      readingStreakDays: 0,
+      todayReadingMs: 0,
+      lastWeekReadingMs: 0,
+      lastMonthReadingMs: 0
+    };
+  }
   /** Add a book to the user's library. Idempotent. */
   async addToLibrary(bookId, now = Date.now()) {
     const entry = this.entries.get(bookId);
@@ -18965,12 +19096,45 @@ var compare = (a3, b3, sort) => {
       return progressFraction(b3.reading) - progressFraction(a3.reading);
   }
 };
+var buildFallbackBookInfo = (entry) => {
+  const now = Date.now();
+  const fraction = progressFraction(entry.reading);
+  return {
+    schemaVersion: BOOK_INFO_SCHEMA_VERSION,
+    title: entry.book.metadata?.title ?? entry.book.locator.path.split("/").pop() ?? "\u672A\u547D\u540D",
+    authors: entry.book.metadata?.authors ?? [],
+    publisher: entry.book.metadata?.publisher,
+    published: entry.book.metadata?.published,
+    language: entry.book.metadata?.languages?.[0],
+    isbn: entry.book.metadata?.identifier,
+    pageCount: void 0,
+    description: entry.book.metadata?.description,
+    bookId: entry.book.id,
+    format: entry.book.locator.format,
+    filePath: entry.book.locator.path,
+    fileSizeBytes: entry.book.locator.sizeBytes,
+    fileModifiedAt: entry.book.locator.modifiedAt,
+    addedToLibraryAt: entry.book.addedToLibraryAt ?? now,
+    lastOpenedAt: entry.reading.lastOpenedAt,
+    status: entry.reading.status,
+    progressFraction: fraction,
+    totalReadingMs: entry.reading.totalReadingMs ?? 0,
+    excerptCount: 0,
+    bookmarkCount: 0,
+    thoughtCount: 0,
+    favorite: entry.reading.favorite,
+    pinnedAt: entry.book.pinnedAt,
+    coverPath: entry.book.coverPath,
+    updatedAt: now
+  };
+};
 
 // src/core/services/ReadingService.ts
 var ReadingService = class {
-  constructor(annotations, onChange) {
+  constructor(annotations, onChange, libraryWriter) {
     this.annotations = annotations;
     this.onChange = onChange;
+    this.libraryWriter = libraryWriter;
   }
   /** Get current state, falling back to a default. */
   async getState(bookId) {
@@ -19090,6 +19254,45 @@ var ReadingService = class {
   async saveVisitedTocIds(bookId, ids) {
     await this.annotations.saveVisitedTocIds(bookId, ids);
   }
+  /**
+   * v0.3.0: 记录一次阅读 session. ReaderView 在 flushActiveSession 时调,
+   * 把 session 持久化到 `ezreader/sessions/<title>-<id>.jsonl`,
+   * 供后续 getDailyReadingTime 聚合用.
+   *
+   * 不触发 onChange (shelf 不需要每次 session 都重渲染 — ReadingState
+   * 的 totalReadingMs 由 addReadingTime 单独维护).
+   */
+  async recordSession(bookId, session) {
+    if (session.durationMs <= 0) return;
+    if (this.libraryWriter) {
+      try {
+        const ref = await this.libraryWriter.ensureBookDir({
+          bookId,
+          bookTitle: session.chapter ?? bookId,
+          bookPath: ""
+        });
+        await this.libraryWriter.appendReadingSession(ref, session);
+      } catch (error) {
+        console.warn("[ez-reader] recordSession failed", bookId, error);
+      }
+    }
+  }
+  /**
+   * v0.3.0: 读最近 N 天每日阅读时长. 返回值按日期降序排列, gaps 用
+   * 0-bucket 填充, 始终有 `days` 个条目.
+   */
+  async getDailyReadingTime(bookId, days) {
+    if (!this.libraryWriter) return [];
+    let sessions = [];
+    try {
+      sessions = await this.libraryWriter.loadReadingSessions(bookId);
+    } catch (error) {
+      console.warn("[ez-reader] getDailyReadingTime: loadReadingSessions failed", bookId, error);
+      return [];
+    }
+    const { aggregateDailyReadingTime: aggregateDailyReadingTime2 } = await Promise.resolve().then(() => (init_dailyReadingTime(), dailyReadingTime_exports));
+    return aggregateDailyReadingTime2(sessions, days);
+  }
 };
 var computeFraction = (position) => {
   if (position.kind === "reflow" || position.kind === "text" || position.kind === "pdf") {
@@ -19162,7 +19365,7 @@ var TranslationCoordinator = class _TranslationCoordinator {
 };
 
 // src/ui/shelf/ShelfView.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/ui/shelf/AddToLibraryModal.ts
 var import_obsidian5 = require("obsidian");
@@ -19447,9 +19650,498 @@ var totalRejectedMessage = (rejected, total) => {
   return `\u90E8\u5206\u52A0\u5165\u5931\u8D25 (${rejected} / ${total} \u672C\u5931\u8D25, \u5176\u4F59\u5DF2\u52A0\u5165)`;
 };
 
-// src/ui/shelf/OnboardingModal.ts
+// src/ui/shelf/BookInfoModal.ts
 var import_obsidian6 = require("obsidian");
-var OnboardingModal = class extends import_obsidian6.Modal {
+
+// src/ui/shelf/shelfFormatters.ts
+var statusLabel = (status) => {
+  switch (status) {
+    case "reading":
+      return "\u5728\u8BFB";
+    case "finished":
+      return "\u5DF2\u8BFB\u5B8C";
+    case "abandoned":
+      return "\u6682\u5F03";
+    default:
+      return "\u672A\u5F00\u59CB";
+  }
+};
+var extractAuthorFallback = (path) => {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length >= 2) return parts.slice(0, -1).join(" / ");
+  return "\u672A\u77E5\u4F5C\u8005";
+};
+
+// src/ui/shelf/BookInfoModal.ts
+var DASH = "\u2014";
+var formatDate = (ms) => {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return DASH;
+  const d2 = new Date(ms);
+  const yyyy = d2.getFullYear();
+  const mm = String(d2.getMonth() + 1).padStart(2, "0");
+  const dd = String(d2.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+var formatDateTime = (ms) => {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return DASH;
+  const d2 = new Date(ms);
+  const date = formatDate(ms);
+  const hh = String(d2.getHours()).padStart(2, "0");
+  const mm = String(d2.getMinutes()).padStart(2, "0");
+  return `${date} ${hh}:${mm}`;
+};
+var formatBytes = (bytes) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return DASH;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rounded = value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value).toString();
+  return `${rounded} ${units[unit]}`;
+};
+var formatReadingShort = (ms) => {
+  if (!Number.isFinite(ms) || ms <= 0) return DASH;
+  const minutes = Math.floor(ms / 6e4);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes - hours * 60;
+  if (rem === 0) return `${hours}h`;
+  return `${hours}h ${rem}m`;
+};
+var formatReadingLong = (ms) => {
+  if (!Number.isFinite(ms) || ms <= 0) return DASH;
+  const minutes = Math.floor(ms / 6e4);
+  if (minutes < 60) return `${minutes} \u5206\u949F`;
+  const hours = Math.floor(minutes / 60);
+  const rem = minutes - hours * 60;
+  if (rem === 0) return `${hours} \u5C0F\u65F6`;
+  return `${hours} \u5C0F\u65F6 ${rem} \u5206\u949F`;
+};
+var sanitizeWikiTitle = (raw) => {
+  const cleaned = raw.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}\-_]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return cleaned || "untitled";
+};
+var statusBadge = (status) => {
+  switch (status) {
+    case "reading":
+      return { label: "\u5728\u8BFB", cls: "is-reading" };
+    case "finished":
+      return { label: "\u5DF2\u8BFB\u5B8C", cls: "is-finished" };
+    case "abandoned":
+      return { label: "\u6682\u5F03", cls: "is-abandoned" };
+    default:
+      return { label: statusLabel(status), cls: "is-unread" };
+  }
+};
+var BookInfoModal = class extends import_obsidian6.Modal {
+  deps;
+  bookId;
+  /** Loading state — `null` while `getRichEntry` is in-flight. */
+  rich = null;
+  /** True when getRichEntry returned null (book removed mid-flight). */
+  missing = false;
+  /** Active load promise so re-opening the modal re-fetches. */
+  loadPromise;
+  /** Set of copy-feedback timers so onClose can cancel them. */
+  copyTimers = /* @__PURE__ */ new Set();
+  constructor(app, bookId, deps) {
+    super(app);
+    this.deps = deps;
+    this.bookId = bookId;
+    this.loadPromise = this.load();
+  }
+  async load() {
+    try {
+      const result = await this.deps.library.getRichEntry(this.bookId);
+      if (result === null) {
+        this.missing = true;
+      } else {
+        this.rich = result;
+      }
+      if (this.contentEl.children.length > 0) {
+        this.render();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new import_obsidian6.Notice(`\u52A0\u8F7D\u4E66\u7C4D\u8BE6\u60C5\u5931\u8D25: ${message}`);
+      this.missing = true;
+      if (this.contentEl.children.length > 0) this.render();
+    }
+  }
+  onOpen() {
+    this.modalEl.addClass("ez-reader__modal");
+    this.contentEl.addClass("ez-reader__book-info-modal");
+    this.render();
+  }
+  onClose() {
+    for (const id of this.copyTimers) {
+      window.clearTimeout(id);
+    }
+    this.copyTimers.clear();
+  }
+  /** Top-level render dispatch. */
+  render() {
+    const { contentEl } = this;
+    contentEl.empty();
+    if (this.missing) {
+      this.renderMissing();
+      return;
+    }
+    if (this.rich === null) {
+      this.renderLoading();
+      return;
+    }
+    const rich = this.rich;
+    const entry = rich.entry;
+    if (rich.bookInfo === null) {
+      this.renderLoading();
+      return;
+    }
+    const info = rich.bookInfo;
+    this.titleEl.setText(info.title);
+    this.renderHeader(contentEl, rich, entry);
+    this.renderMeta(contentEl, info);
+    this.renderProgress(contentEl, rich, info);
+    this.renderTimeStats(contentEl, rich);
+    this.renderSessions(contentEl, rich);
+    this.renderFooter(contentEl, info);
+  }
+  // ---------------------------------------------------------------------------
+  // Header
+  // ---------------------------------------------------------------------------
+  renderHeader(root, rich, entry) {
+    const header = root.createDiv({ cls: "ez-reader__book-info-header" });
+    const coverPath = rich.bookInfo?.coverPath ?? entry.book.coverPath;
+    const filePath = rich.bookInfo?.filePath ?? entry.book.locator.path;
+    const cover = header.createDiv({ cls: "ez-reader__book-info-header__cover-wrap" });
+    if (coverPath) {
+      cover.createEl("img", {
+        cls: "ez-reader__book-info-header__cover",
+        attr: { src: coverPath, alt: rich.bookInfo?.title ?? "" }
+      });
+    } else {
+      try {
+        const resourcePath = this.deps.app.vault.adapter.getResourcePath(filePath);
+        cover.createEl("img", {
+          cls: "ez-reader__book-info-header__cover",
+          attr: { src: resourcePath, alt: rich.bookInfo?.title ?? "" }
+        });
+      } catch {
+      }
+    }
+    const text = header.createDiv({ cls: "ez-reader__book-info-header__text" });
+    text.createEl("h2", {
+      cls: "ez-reader__book-info-header__title",
+      text: rich.bookInfo?.title ?? entry.book.metadata?.title ?? entry.book.locator.path
+    });
+    const authors = rich.bookInfo?.authors ?? entry.book.metadata?.authors ?? [];
+    const authorsLine = authors.length > 0 ? authors.join(" \xB7 ") : "\u4F5C\u8005\u672A\u77E5";
+    text.createEl("div", {
+      cls: "ez-reader__book-info-header__authors",
+      text: authorsLine
+    });
+    const actions = text.createDiv({ cls: "ez-reader__book-info-header__actions" });
+    const openBtn = actions.createEl("button", {
+      text: "\u{1F4D6} \u6253\u5F00",
+      attr: { type: "button" }
+    });
+    openBtn.addClass("ez-reader__book-info-header__action");
+    openBtn.onclick = () => {
+      void this.deps.openReader(entry);
+      this.close();
+    };
+    const viewBtn = actions.createEl("button", {
+      text: "\u{1F4C4} \u67E5\u770B",
+      attr: { type: "button" }
+    });
+    viewBtn.addClass("ez-reader__book-info-header__action");
+    viewBtn.onclick = () => {
+      void this.deps.app.workspace.openLinkText(filePath, "", true);
+      this.close();
+    };
+    const copyBtn = actions.createEl("button", {
+      text: "\u{1F517} \u590D\u5236",
+      attr: { type: "button" }
+    });
+    copyBtn.addClass("ez-reader__book-info-header__action");
+    (0, import_obsidian6.setTooltip)(copyBtn, "\u590D\u5236 Obsidian wiki-link");
+    copyBtn.onclick = () => {
+      void this.copyWikiLink(rich, copyBtn);
+    };
+  }
+  /**
+   * Build the wiki link the plugin uses for notes / info files and copy it
+   * to the clipboard. Falls back to a Notice on copy failure (clipboard API
+   * rejects in insecure contexts).
+   */
+  async copyWikiLink(rich, btn) {
+    const title = rich.bookInfo?.title ?? rich.entry.book.metadata?.title ?? rich.entry.book.locator.path;
+    const safeTitle = sanitizeWikiTitle(title);
+    const idTag = rich.entry.book.id.slice(0, 8);
+    const link = `[[${safeTitle}-${idTag}]]`;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        throw new Error("clipboard unavailable");
+      }
+      this.setCopiedFeedback(btn, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new import_obsidian6.Notice(`\u590D\u5236\u5931\u8D25: ${message}`);
+      this.setCopiedFeedback(btn, false);
+    }
+  }
+  /** Briefly show "✓ 已复制" on the copy button, then revert to "🔗 复制". */
+  setCopiedFeedback(btn, ok) {
+    btn.addClass("is-copied");
+    btn.setText(ok ? "\u2713 \u5DF2\u590D\u5236" : "\u2717 \u5931\u8D25");
+    const id = window.setTimeout(() => {
+      this.copyTimers.delete(id);
+      btn.removeClass("is-copied");
+      btn.setText("\u{1F517} \u590D\u5236");
+    }, 1500);
+    this.copyTimers.add(id);
+  }
+  // ---------------------------------------------------------------------------
+  // Meta
+  // ---------------------------------------------------------------------------
+  renderMeta(root, info) {
+    const section = root.createDiv({ cls: "ez-reader__book-info-section" });
+    section.createEl("h4", {
+      cls: "ez-reader__book-info-section__title",
+      text: "\u5143\u4FE1\u606F"
+    });
+    const dl = section.createEl("dl", { cls: "ez-reader__book-info-meta-grid" });
+    this.metaRow(dl, "\u51FA\u7248\u793E", info?.publisher);
+    this.metaRow(dl, "\u51FA\u7248\u65E5\u671F", info?.published);
+    const lang = info?.language;
+    this.metaRow(
+      dl,
+      "\u8BED\u8A00",
+      lang ? lang : DASH
+    );
+    this.metaRow(dl, "ISBN", info?.isbn);
+    this.metaRow(
+      dl,
+      "\u9875\u6570",
+      typeof info?.pageCount === "number" && info.pageCount > 0 ? String(info.pageCount) : DASH
+    );
+    const format = info?.format ?? "";
+    const sizeStr = info ? formatBytes(info.fileSizeBytes) : DASH;
+    this.metaRow(dl, "\u683C\u5F0F \xB7 \u5927\u5C0F", `${format.toUpperCase() || DASH} \xB7 ${sizeStr}`);
+    this.metaRow(dl, "\u8DEF\u5F84", info?.filePath);
+    const added = info ? formatDate(info.addedToLibraryAt) : DASH;
+    const lastOpened = info ? formatDate(info.lastOpenedAt) : "\u4ECE\u672A\u6253\u5F00";
+    this.metaRow(dl, "\u52A0\u5165 \xB7 \u6700\u540E\u6253\u5F00", `${added} \xB7 ${lastOpened}`);
+  }
+  /** Render one `<dt>label</dt><dd>value</dd>` pair, handling missing values. */
+  metaRow(dl, label, value) {
+    dl.createEl("dt", { text: label });
+    dl.createEl("dd", { text: value ?? DASH });
+  }
+  // ---------------------------------------------------------------------------
+  // Progress
+  // ---------------------------------------------------------------------------
+  renderProgress(root, rich, info) {
+    const section = root.createDiv({ cls: "ez-reader__book-info-section" });
+    section.createEl("h4", {
+      cls: "ez-reader__book-info-section__title",
+      text: "\u9605\u8BFB\u8FDB\u5EA6"
+    });
+    const status = info?.status ?? rich.entry.reading.status;
+    const badge = statusBadge(status);
+    const statusRow = section.createDiv({ cls: "ez-reader__book-info-progress__status-row" });
+    const chip = statusRow.createSpan({ cls: "ez-reader__book-info-progress__status-chip" });
+    chip.addClass(badge.cls);
+    chip.setText(`\u72B6\u6001: ${badge.label}`);
+    if (info?.favorite) {
+      statusRow.createSpan({
+        cls: "ez-reader__book-info-progress__flag",
+        text: "\u2B50 \u6536\u85CF"
+      });
+    }
+    if (info?.pinnedAt) {
+      statusRow.createSpan({
+        cls: "ez-reader__book-info-progress__flag",
+        text: "\u{1F4CC} \u7F6E\u9876"
+      });
+    }
+    const frac = clampFraction(info?.progressFraction ?? 0);
+    const pageCount = info?.pageCount;
+    const currentPage = pageCount && pageCount > 0 ? Math.round(frac * pageCount) : null;
+    const totalPageLabel = typeof pageCount === "number" && pageCount > 0 ? String(pageCount) : DASH;
+    const barWrap = section.createDiv({ cls: "ez-reader__book-info-progress__bar" });
+    const fill = barWrap.createDiv({ cls: "ez-reader__book-info-progress__fill" });
+    fill.style.width = `${(frac * 100).toFixed(1)}%`;
+    const pct = Math.round(frac * 100);
+    const progressLabel = currentPage !== null ? `${pct}% (${currentPage} / ${totalPageLabel} \u9875)` : `${pct}%`;
+    section.createDiv({
+      cls: "ez-reader__book-info-progress__label",
+      text: progressLabel
+    });
+    section.createDiv({
+      cls: "ez-reader__book-info-progress__total",
+      text: `\u603B\u9605\u8BFB\u65F6\u957F: ${formatReadingLong(info?.totalReadingMs ?? 0)}`
+    });
+  }
+  // ---------------------------------------------------------------------------
+  // Time stats
+  // ---------------------------------------------------------------------------
+  renderTimeStats(root, rich) {
+    const section = root.createDiv({ cls: "ez-reader__book-info-section" });
+    section.createEl("h4", {
+      cls: "ez-reader__book-info-section__title",
+      text: "\u9605\u8BFB\u65F6\u957F\u7EDF\u8BA1"
+    });
+    const tiles = section.createDiv({ cls: "ez-reader__book-info-time-stats" });
+    this.statTile(tiles, "\u4ECA\u5929", formatReadingShort(rich.todayReadingMs));
+    this.statTile(tiles, "\u6700\u8FD1 7 \u5929", formatReadingShort(rich.lastWeekReadingMs));
+    this.statTile(tiles, "\u6700\u8FD1 30 \u5929", formatReadingShort(rich.lastMonthReadingMs));
+    if (rich.readingStreakDays > 0) {
+      const streak = section.createSpan({
+        cls: "ez-reader__book-info-streak",
+        text: `\u8FDE\u7EED ${rich.readingStreakDays} \u5929 \u{1F525}`
+      });
+      (0, import_obsidian6.setTooltip)(streak, "\u8FDE\u7EED\u9605\u8BFB\u5929\u6570(\u6309 local-time \u5207\u65E5)");
+    }
+    const buckets = rich.dailyReadingTime;
+    const maxMs = buckets.reduce((acc, b3) => b3.totalMs > acc ? b3.totalMs : acc, 0);
+    const chart = section.createDiv({ cls: "ez-reader__book-info-bar-chart" });
+    const hasAnyActivity = buckets.some((b3) => b3.totalMs > 0 || b3.sessionCount > 0);
+    if (buckets.length === 0 || !hasAnyActivity) {
+      chart.addClass("is-empty");
+      const placeholder = chart.createDiv({
+        cls: "ez-reader__book-info-bar-chart__placeholder",
+        text: "\u6682\u65E0\u9605\u8BFB\u8BB0\u5F55 \u2014 \u5728\u9605\u8BFB\u5668\u91CC\u8BFB\u4E00\u4F1A\u513F\u5C31\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC"
+      });
+      placeholder.style.flex = "1";
+      placeholder.style.color = "var(--text-muted)";
+      placeholder.style.fontSize = "12px";
+      placeholder.style.textAlign = "center";
+      placeholder.style.lineHeight = "64px";
+    } else {
+      const ordered = [...buckets].reverse();
+      const lastIndex = ordered.length - 1;
+      for (let i3 = 0; i3 < ordered.length; i3 += 1) {
+        const bucket = ordered[i3];
+        const bar = chart.createDiv({
+          cls: "ez-reader__book-info-bar-chart__bar"
+        });
+        const heightPx = maxMs === 0 ? 2 : Math.max(2, Math.round(bucket.totalMs / maxMs * 56));
+        bar.style.height = `${heightPx}px`;
+        if (i3 === lastIndex) bar.addClass("is-today");
+        this.attachBarTooltip(bar, bucket);
+      }
+    }
+  }
+  statTile(parent, label, value) {
+    const tile = parent.createDiv({ cls: "ez-reader__book-info-time-stat" });
+    tile.createDiv({ cls: "ez-reader__book-info-time-stat__value", text: value });
+    tile.createDiv({ cls: "ez-reader__book-info-time-stat__label", text: label });
+  }
+  /** Wire hover + click tooltips onto a single bucket bar. */
+  attachBarTooltip(bar, bucket) {
+    const minutes = Math.round(bucket.totalMs / 6e4);
+    const summary = bucket.totalMs <= 0 ? `${bucket.date}: \u65E0\u9605\u8BFB\u8BB0\u5F55` : `${bucket.date}: ${minutes} \u5206\u949F (${bucket.sessionCount} sessions)`;
+    (0, import_obsidian6.setTooltip)(bar, summary);
+    bar.setAttribute("aria-label", summary);
+  }
+  // ---------------------------------------------------------------------------
+  // Recent sessions
+  // ---------------------------------------------------------------------------
+  renderSessions(root, rich) {
+    const section = root.createDiv({ cls: "ez-reader__book-info-section" });
+    section.createEl("h4", {
+      cls: "ez-reader__book-info-section__title",
+      text: "\u6700\u8FD1 session \u660E\u7EC6"
+    });
+    const list = section.createDiv({ cls: "ez-reader__book-info-sessions" });
+    if (rich.recentSessions.length === 0) {
+      list.addClass("is-empty");
+      list.createDiv({
+        cls: "ez-reader__book-info-sessions__placeholder",
+        text: "\u6682\u65E0 session \u8BB0\u5F55 \u2014 sessions.jsonl \u5728\u7B2C\u4E00\u6B21\u5173\u95ED\u9605\u8BFB\u5668\u65F6\u521B\u5EFA"
+      });
+      return;
+    }
+    for (const session of rich.recentSessions) {
+      list.append(this.renderSessionRow(session));
+    }
+  }
+  renderSessionRow(session) {
+    const row = createDiv({ cls: "ez-reader__book-info-session-row" });
+    const start = formatDateTime(session.startedAt);
+    const end = formatDateTime(session.endedAt);
+    const duration = formatReadingShort(session.durationMs);
+    const pctStart = Math.round(session.progressStart * 100);
+    const pctEnd = Math.round(session.progressEnd * 100);
+    row.createSpan({
+      cls: "ez-reader__book-info-session-row__time",
+      text: `${start} \u2192 ${end}`
+    });
+    row.createSpan({
+      cls: "ez-reader__book-info-session-row__duration",
+      text: `(${duration}, ${pctStart}%\u2192${pctEnd}%)`
+    });
+    return row;
+  }
+  // ---------------------------------------------------------------------------
+  // Footer
+  // ---------------------------------------------------------------------------
+  renderFooter(root, info) {
+    const footer = root.createDiv({ cls: "ez-reader__book-info-footer" });
+    const basePath = `ezreader/notes/${sanitizeWikiTitle(info.title)}-${info.bookId.slice(0, 8)}.md`;
+    const notesBtn = footer.createEl("button", {
+      text: "\u{1F4DD} \u6253\u5F00 notes.md",
+      attr: { type: "button" }
+    });
+    notesBtn.onclick = () => {
+      void this.deps.app.workspace.openLinkText(basePath, "", true);
+      this.close();
+    };
+    const infoPath = `ezreader/info/${sanitizeWikiTitle(info.title)}-${info.bookId.slice(0, 8)}.md`;
+    const infoBtn = footer.createEl("button", {
+      text: "\u{1F4CA} \u6253\u5F00 info.md",
+      attr: { type: "button" }
+    });
+    infoBtn.onclick = () => {
+      void this.deps.app.workspace.openLinkText(infoPath, "", true);
+      this.close();
+    };
+  }
+  // ---------------------------------------------------------------------------
+  // Loading / missing
+  // ---------------------------------------------------------------------------
+  renderLoading() {
+    const { contentEl } = this;
+    contentEl.empty();
+    const section = contentEl.createDiv({ cls: "ez-reader__book-info-section" });
+    section.createDiv({
+      cls: "ez-reader__book-info-loading",
+      text: "\u52A0\u8F7D\u4E2D\u2026"
+    });
+    this.titleEl.setText("\u4E66\u7C4D\u8BE6\u60C5");
+  }
+  renderMissing() {
+    const { contentEl } = this;
+    contentEl.empty();
+    const section = contentEl.createDiv({ cls: "ez-reader__book-info-section" });
+    section.createEl("p", {
+      text: "\u627E\u4E0D\u5230\u8FD9\u672C\u4E66 \u2014 \u53EF\u80FD\u5DF2\u88AB\u79FB\u9664\u6216\u5237\u65B0\u8FC7\u5E93\u3002"
+    });
+    this.titleEl.setText("\u4E66\u7C4D\u8BE6\u60C5");
+  }
+};
+var clampFraction = (value) => Math.max(0, Math.min(1, value));
+
+// src/ui/shelf/OnboardingModal.ts
+var import_obsidian7 = require("obsidian");
+var OnboardingModal = class extends import_obsidian7.Modal {
   resolver = null;
   constructor(app) {
     super(app);
@@ -19515,7 +20207,7 @@ var OnboardingModal = class extends import_obsidian6.Modal {
 };
 
 // src/ui/shelf/ShelfFilters.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var STATUS_LABELS = {
   unread: "\u672A\u5F00\u59CB",
   reading: "\u5728\u8BFB",
@@ -19546,7 +20238,7 @@ var FORMAT_LABELS = {
   txt: "TXT"
 };
 var COMMON_LANGUAGES = ["zh-CN", "zh-TW", "en", "ja", "ko", "fr", "de"];
-var ShelfFiltersModal = class extends import_obsidian7.Modal {
+var ShelfFiltersModal = class extends import_obsidian8.Modal {
   result;
   resolver = null;
   constructor(app, initial) {
@@ -19703,7 +20395,7 @@ var ShelfToolbar = class {
   densityButton;
   constructor(handlers, initial) {
     this.handlers = handlers;
-    this.root = createDiv({ cls: "ez-reader__shelf-toolbar" });
+    this.root = createDiv2({ cls: "ez-reader__shelf-toolbar" });
     this.searchInput = this.root.createEl("input", {
       attr: { type: "search", placeholder: "\u641C\u7D22\u4E66\u540D\u3001\u4F5C\u8005\u6216\u6807\u8BC6\u7B26\u2026" }
     });
@@ -19827,29 +20519,10 @@ var nextShelfDensity = (current) => {
   const nextIdx = (safeIdx + 1) % SHELF_DENSITIES.length;
   return SHELF_DENSITIES[nextIdx] ?? "default";
 };
-var createDiv = (options = {}) => {
+var createDiv2 = (options = {}) => {
   const div = document.createElement("div");
   if (options.cls) div.addClass(options.cls);
   return div;
-};
-
-// src/ui/shelf/shelfFormatters.ts
-var statusLabel = (status) => {
-  switch (status) {
-    case "reading":
-      return "\u5728\u8BFB";
-    case "finished":
-      return "\u5DF2\u8BFB\u5B8C";
-    case "abandoned":
-      return "\u6682\u5F03";
-    default:
-      return "\u672A\u5F00\u59CB";
-  }
-};
-var extractAuthorFallback = (path) => {
-  const parts = path.split("/").filter(Boolean);
-  if (parts.length >= 2) return parts.slice(0, -1).join(" / ");
-  return "\u672A\u77E5\u4F5C\u8005";
 };
 
 // src/ui/shelf/placeholderCover.ts
@@ -20100,7 +20773,7 @@ var renderListItem = (entry, handlers, coverResourcePath) => {
 
 // src/ui/shelf/ShelfView.ts
 var SHELF_VIEW_TYPE = "ez-reader-shelf";
-var ShelfView = class extends import_obsidian8.ItemView {
+var ShelfView = class extends import_obsidian9.ItemView {
   deps;
   toolbar;
   body;
@@ -20196,7 +20869,7 @@ var ShelfView = class extends import_obsidian8.ItemView {
       this.shelfDensity = previous;
       this.applyShelfDensityToDom();
       this.toolbar.update(this.toolbarState());
-      new import_obsidian8.Notice(`\u4FDD\u5B58\u5C01\u9762\u5BC6\u5EA6\u5931\u8D25, \u5DF2\u56DE\u6EDA\u5230 ${previous}`, 3e3);
+      new import_obsidian9.Notice(`\u4FDD\u5B58\u5C01\u9762\u5BC6\u5EA6\u5931\u8D25, \u5DF2\u56DE\u6EDA\u5230 ${previous}`, 3e3);
     }
   }
   refreshTimer;
@@ -20388,17 +21061,26 @@ var ShelfView = class extends import_obsidian8.ItemView {
       await this.deps.openReader(entry);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian8.Notice(`\u6253\u5F00\u300A${entry.book.metadata?.title ?? entry.book.locator.path}\u300B\u5931\u8D25: ${message}`);
+      new import_obsidian9.Notice(`\u6253\u5F00\u300A${entry.book.metadata?.title ?? entry.book.locator.path}\u300B\u5931\u8D25: ${message}`);
       console.error("[ez-reader] openBook failed", entry.book.locator.path, error);
     }
   }
   openItemMenu(entry, event) {
-    const menu = new import_obsidian8.Menu();
+    const menu = new import_obsidian9.Menu();
     menu.addItem((item) => item.setTitle("\u6253\u5F00\u9605\u8BFB\u5668").setIcon("book-open").onClick(() => void this.openBook(entry)));
     menu.addItem(
       (item) => item.setTitle("\u5728 Obsidian \u4E2D\u67E5\u770B").setIcon("file-text").onClick(() => {
         const file = this.deps.app.vault.getAbstractFileByPath(entry.book.locator.path);
-        if (file instanceof import_obsidian8.TFile) void this.deps.app.workspace.openLinkText(file.path, "", true);
+        if (file instanceof import_obsidian9.TFile) void this.deps.app.workspace.openLinkText(file.path, "", true);
+      })
+    );
+    menu.addItem(
+      (item) => item.setTitle("\u{1F4D6} \u4E66\u7C4D\u8BE6\u60C5").setIcon("info").onClick(() => {
+        new BookInfoModal(this.deps.app, entry.book.id, {
+          app: this.deps.app,
+          library: this.deps.library,
+          openReader: (e3) => this.openBook(e3)
+        }).open();
       })
     );
     menu.addSeparator();
@@ -20429,10 +21111,10 @@ var ShelfView = class extends import_obsidian8.ItemView {
     const wasPinned = entry.book.pinnedAt !== null;
     try {
       await this.deps.library.togglePin(entry.book.id);
-      new import_obsidian8.Notice(wasPinned ? "\u5DF2\u53D6\u6D88\u7F6E\u9876" : "\u5DF2\u7F6E\u9876\u5230\u6700\u524D");
+      new import_obsidian9.Notice(wasPinned ? "\u5DF2\u53D6\u6D88\u7F6E\u9876" : "\u5DF2\u7F6E\u9876\u5230\u6700\u524D");
     } catch (error) {
       console.warn("[ez-reader] togglePin failed", error);
-      new import_obsidian8.Notice("\u7F6E\u9876\u5931\u8D25");
+      new import_obsidian9.Notice("\u7F6E\u9876\u5931\u8D25");
     }
   }
   async setStatus(entry, status) {
@@ -20443,7 +21125,7 @@ var ShelfView = class extends import_obsidian8.ItemView {
   }
   async removeFromLibrary(entry) {
     const title = entry.book.metadata?.title ?? entry.book.locator.path;
-    const confirm = new import_obsidian8.Modal(this.deps.app);
+    const confirm = new import_obsidian9.Modal(this.deps.app);
     confirm.contentEl.createEl("h3", { text: `\u4ECE\u56FE\u4E66\u9986\u79FB\u9664\u300A${title}\u300B?` });
     confirm.contentEl.createEl("p", {
       text: "\u4E66\u5C06\u4ECE\u4E2A\u4EBA\u56FE\u4E66\u9986\u6D88\u5931\u3002\u539F\u59CB\u6587\u4EF6\u3001\u9605\u8BFB\u8FDB\u5EA6\u3001\u4E66\u7B7E\u3001\u6458\u5F55\u90FD\u4E0D\u4F1A\u5220\u9664 \u2014 \u91CD\u65B0\u52A0\u5165\u5373\u53EF\u6062\u590D\u3002"
@@ -20456,7 +21138,7 @@ var ShelfView = class extends import_obsidian8.ItemView {
     removeBtn.onclick = () => {
       confirm.close();
       void this.deps.library.removeFromLibrary(entry.book.id).then(() => {
-        new import_obsidian8.Notice(`\u5DF2\u4ECE\u56FE\u4E66\u9986\u79FB\u9664\u300A${title}\u300B`);
+        new import_obsidian9.Notice(`\u5DF2\u4ECE\u56FE\u4E66\u9986\u79FB\u9664\u300A${title}\u300B`);
       });
     };
     confirm.open();
@@ -20500,14 +21182,14 @@ var ShelfView = class extends import_obsidian8.ItemView {
         "shelf.addAllToLibrary"
       );
       if (count === void 0 || timedOut) {
-        new import_obsidian8.Notice(timedOut ? "\u52A0\u5165\u8D85\u65F6,\u8BF7\u91CD\u8BD5" : "\u52A0\u5165\u5931\u8D25 (\u672A\u77E5)");
+        new import_obsidian9.Notice(timedOut ? "\u52A0\u5165\u8D85\u65F6,\u8BF7\u91CD\u8BD5" : "\u52A0\u5165\u5931\u8D25 (\u672A\u77E5)");
       } else {
-        new import_obsidian8.Notice(`\u5DF2\u52A0\u5165 ${count} \u672C\u4E66\u5230\u56FE\u4E66\u9986\u3002`);
+        new import_obsidian9.Notice(`\u5DF2\u52A0\u5165 ${count} \u672C\u4E66\u5230\u56FE\u4E66\u9986\u3002`);
       }
     } catch (error) {
       console.error("[ez-reader] addAllToLibrary failed", error);
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian8.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
+      new import_obsidian9.Notice(`\u5168\u90E8\u52A0\u5165\u5931\u8D25: ${message}`);
     } finally {
       window.clearTimeout(timeoutHandle);
       this.addingAll = false;
@@ -20605,7 +21287,7 @@ var ShelfView = class extends import_obsidian8.ItemView {
 };
 
 // src/ui/reader/ReaderView.ts
-var import_obsidian16 = require("obsidian");
+var import_obsidian17 = require("obsidian");
 
 // src/ui/reader/chineseSelectionExpansion.ts
 var STOP_CHARS = ["\u3002", "\uFF01", "\uFF1F", "!", "?", ";", "\uFF1B", ",", "\uFF0C", "\n"];
@@ -20657,7 +21339,7 @@ var expandWithCap = (raw, context, cap, options = {}) => {
 };
 
 // src/ui/reader/AppearanceModal.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 var FONT_SIZE_MIN = 60;
 var FONT_SIZE_MAX = 200;
 var LINE_HEIGHT_MIN = 1;
@@ -20682,7 +21364,7 @@ var themeLabel = (theme) => {
       return "\u7CFB\u7EDF";
   }
 };
-var AppearanceModal = class extends import_obsidian9.Modal {
+var AppearanceModal = class extends import_obsidian10.Modal {
   resolver = null;
   initial;
   fontSizeInput;
@@ -20915,8 +21597,8 @@ var BookmarksPanel = class {
 };
 
 // src/ui/reader/ConfirmModal.ts
-var import_obsidian10 = require("obsidian");
-var ConfirmModal = class extends import_obsidian10.Modal {
+var import_obsidian11 = require("obsidian");
+var ConfirmModal = class extends import_obsidian11.Modal {
   constructor(app, title, message, confirmLabel = "\u786E\u5B9A", cancelLabel = "\u53D6\u6D88") {
     super(app);
     this.title = title;
@@ -21169,7 +21851,7 @@ var offsetRect = (rect, dx, dy) => {
 };
 
 // src/ui/reader/ReaderToolbar.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 var ReaderToolbar = class {
   root;
   handlers;
@@ -21203,7 +21885,7 @@ var ReaderToolbar = class {
     this.root.addClass("ez-reader__reader-toolbar");
     const tocLeft = this.root.createEl("button", { attr: { type: "button", title: "\u663E\u793A\u76EE\u5F55 (T)", "aria-label": "\u76EE\u5F55" } });
     tocLeft.addClass("ez-reader__reader-toolbar__toc-left");
-    (0, import_obsidian11.setIcon)(tocLeft, "list");
+    (0, import_obsidian12.setIcon)(tocLeft, "list");
     tocLeft.addEventListener("click", () => handlers.onToggleToc());
     this.statusPill = this.root.createEl("button", {
       text: "\u5728\u8BFB",
@@ -21239,7 +21921,7 @@ var ReaderToolbar = class {
     this.fractionInput.addClass("ez-reader__reader-toolbar__progress");
     this.fractionInput.addEventListener("input", () => {
       const fraction = Number(this.fractionInput.value) / 1e3;
-      this.fractionValue.setText(`${Math.round(clampFraction(fraction) * 100)}%`);
+      this.fractionValue.setText(`${Math.round(clampFraction2(fraction) * 100)}%`);
     });
     this.fractionInput.addEventListener("pointerdown", () => {
       this.isDragging = true;
@@ -21251,7 +21933,7 @@ var ReaderToolbar = class {
       if (!this.isDragging) return;
       this.isDragging = false;
       const fraction = Number(this.fractionInput.value) / 1e3;
-      handlers.onProgressChange(clampFraction(fraction));
+      handlers.onProgressChange(clampFraction2(fraction));
     };
     this.fractionInput.addEventListener("pointerup", endDrag);
     this.fractionInput.addEventListener("pointercancel", endDrag);
@@ -21270,7 +21952,7 @@ var ReaderToolbar = class {
     addBookmark.addEventListener("click", () => handlers.onAddBookmark());
     this.searchButton = actionsGroup.createEl("button", { attr: { type: "button", title: "\u641C\u7D22 (/)", "aria-label": "\u641C\u7D22", "data-shortcut": "search" } });
     this.searchButton.addClass("ez-reader__reader-toolbar__action", "ez-reader__reader-toolbar__search-btn");
-    (0, import_obsidian11.setIcon)(this.searchButton, "search");
+    (0, import_obsidian12.setIcon)(this.searchButton, "search");
     this.searchBadge = this.searchButton.createEl("span", { cls: "ez-reader__reader-toolbar__badge ez-reader__reader-toolbar__search-badge" });
     this.searchBadge.addClass("is-hidden");
     this.searchBadge.setText("");
@@ -21303,7 +21985,7 @@ var ReaderToolbar = class {
     this.bookmarkToggle.addEventListener("click", () => handlers.onToggleBookmarks());
     const close = this.root.createEl("button", { attr: { type: "button", title: "\u5173\u95ED\u9605\u8BFB\u5668", "aria-label": "\u5173\u95ED" } });
     close.addClass("ez-reader__reader-toolbar__close");
-    (0, import_obsidian11.setIcon)(close, "x");
+    (0, import_obsidian12.setIcon)(close, "x");
     close.addEventListener("click", () => handlers.onClose());
     this.update(initial);
   }
@@ -21342,6 +22024,7 @@ var ReaderToolbar = class {
     if (totalMs >= 6e4) {
       this.readingTimeLabel.removeClass("is-hidden");
       this.readingTimeLabel.setText(formatReadingTime2(totalMs));
+      (0, import_obsidian12.setTooltip)(this.readingTimeLabel, "\u7D2F\u8BA1\u9605\u8BFB\u65F6\u957F (\u7528\u6237\u5B9E\u9645\u9605\u8BFB,30s \u65E0\u4EA4\u4E92\u81EA\u52A8\u6682\u505C)");
     } else {
       this.readingTimeLabel.addClass("is-hidden");
     }
@@ -21405,7 +22088,7 @@ var ReaderToolbar = class {
     }
   }
 };
-var clampFraction = (value) => Math.max(0, Math.min(1, value));
+var clampFraction2 = (value) => Math.max(0, Math.min(1, value));
 var formatReadingTime2 = (ms) => {
   const minutes = Math.floor(ms / 6e4);
   if (minutes < 60) return `${minutes} \u5206\u949F`;
@@ -22567,8 +23250,8 @@ var TocPanel = class {
 };
 
 // src/ui/reader/ThoughtModal.ts
-var import_obsidian12 = require("obsidian");
-var ThoughtModal = class extends import_obsidian12.Modal {
+var import_obsidian13 = require("obsidian");
+var ThoughtModal = class extends import_obsidian13.Modal {
   input;
   resolver = null;
   constructor(app, input) {
@@ -22955,7 +23638,7 @@ var composeQuickBookmarkLabel = (chapter, fraction) => {
   }
   return pct;
 };
-var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
+var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
   deps;
   entry;
   session;
@@ -23626,11 +24309,11 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
   async copyTextToClipboard(text) {
     try {
       await navigator.clipboard.writeText(text);
-      new import_obsidian16.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
+      new import_obsidian17.Notice(`\u5DF2\u590D\u5236 (${text.length} \u5B57\u7B26)`, 1500);
     } catch (error) {
       console.warn("[ez-reader] copy failed", error);
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian16.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
+      new import_obsidian17.Notice(`\u590D\u5236\u5931\u8D25: ${message}`, 4e3);
     }
   }
   /** Show keyboard shortcut help overlay. */
@@ -24121,7 +24804,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       const now = Date.now();
       if (now - this.lastProgressFailureNoticeAt > 5e3) {
         this.lastProgressFailureNoticeAt = now;
-        new import_obsidian16.Notice("\u4FDD\u5B58\u9605\u8BFB\u8FDB\u5EA6\u5931\u8D25,\u7A0D\u540E\u91CD\u8BD5");
+        new import_obsidian17.Notice("\u4FDD\u5B58\u9605\u8BFB\u8FDB\u5EA6\u5931\u8D25,\u7A0D\u540E\u91CD\u8BD5");
       }
     }
   }
@@ -24189,7 +24872,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
     if (!this.entry) return;
     const locator = await this.session?.exportLocator();
     if (!locator) {
-      new import_obsidian16.Notice("\u65E0\u6CD5\u83B7\u53D6\u5F53\u524D\u4F4D\u7F6E \u2014 \u4E66\u7B7E\u672A\u4FDD\u5B58");
+      new import_obsidian17.Notice("\u65E0\u6CD5\u83B7\u53D6\u5F53\u524D\u4F4D\u7F6E \u2014 \u4E66\u7B7E\u672A\u4FDD\u5B58");
       return;
     }
     try {
@@ -24202,11 +24885,11 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       });
     } catch (error) {
       console.warn("[ez-reader] addBookmark failed", error);
-      new import_obsidian16.Notice("\u6DFB\u52A0\u4E66\u7B7E\u5931\u8D25");
+      new import_obsidian17.Notice("\u6DFB\u52A0\u4E66\u7B7E\u5931\u8D25");
       return;
     }
     await this.refreshPanels();
-    new import_obsidian16.Notice(quick ? `\u{1F4D1} \u5DF2\u52A0\u4E66\u7B7E (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u4E66\u7B7E\u5DF2\u6DFB\u52A0", 1800);
+    new import_obsidian17.Notice(quick ? `\u{1F4D1} \u5DF2\u52A0\u4E66\u7B7E (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u4E66\u7B7E\u5DF2\u6DFB\u52A0", 1800);
   }
   async toggleBookmarks() {
     if (!this.bookmarksPanel) return;
@@ -24286,7 +24969,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       this.toolbar?.update(this.toolbarState());
     } catch (error) {
       console.warn("[ez-reader] cycleStatus failed", error);
-      new import_obsidian16.Notice("\u66F4\u65B0\u9605\u8BFB\u72B6\u6001\u5931\u8D25");
+      new import_obsidian17.Notice("\u66F4\u65B0\u9605\u8BFB\u72B6\u6001\u5931\u8D25");
     }
   }
   async toggleFavorite() {
@@ -24297,7 +24980,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       this.toolbar?.update(this.toolbarState());
     } catch (error) {
       console.warn("[ez-reader] toggleFavorite failed", error);
-      new import_obsidian16.Notice("\u66F4\u65B0\u6536\u85CF\u72B6\u6001\u5931\u8D25");
+      new import_obsidian17.Notice("\u66F4\u65B0\u6536\u85CF\u72B6\u6001\u5931\u8D25");
     }
   }
   async refreshPanels() {
@@ -24327,11 +25010,11 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       await this.deps.reading.removeBookmark(this.entry.book.id, bookmark.id);
     } catch (error) {
       console.warn("[ez-reader] removeBookmark failed", error);
-      new import_obsidian16.Notice("\u5220\u9664\u4E66\u7B7E\u5931\u8D25");
+      new import_obsidian17.Notice("\u5220\u9664\u4E66\u7B7E\u5931\u8D25");
       return;
     }
     await this.refreshPanels();
-    new import_obsidian16.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664", 1500);
+    new import_obsidian17.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664", 1500);
   }
   async jumpToExcerpt(excerpt) {
     if (!this.session) return;
@@ -24351,7 +25034,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       await this.deps.reading.removeExcerpt(this.entry.book.id, excerpt.id);
     } catch (error) {
       console.warn("[ez-reader] removeExcerpt failed", error);
-      new import_obsidian16.Notice("\u5220\u9664\u6458\u5F55\u5931\u8D25");
+      new import_obsidian17.Notice("\u5220\u9664\u6458\u5F55\u5931\u8D25");
       return;
     }
     if (this.session?.removeHighlight) {
@@ -24361,7 +25044,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       }
     }
     await this.refreshPanels();
-    new import_obsidian16.Notice("\u6458\u5F55\u5DF2\u5220\u9664", 1500);
+    new import_obsidian17.Notice("\u6458\u5F55\u5DF2\u5220\u9664", 1500);
   }
   async editExcerpt(excerpt) {
     const modal = new ThoughtModal(this.deps.app, {
@@ -24377,11 +25060,11 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       });
     } catch (error) {
       console.warn("[ez-reader] editExcerpt failed", error);
-      new import_obsidian16.Notice("\u7F16\u8F91\u6458\u5F55\u5931\u8D25");
+      new import_obsidian17.Notice("\u7F16\u8F91\u6458\u5F55\u5931\u8D25");
       return;
     }
     await this.refreshPanels();
-    new import_obsidian16.Notice("\u6458\u5F55\u5DF2\u66F4\u65B0", 1500);
+    new import_obsidian17.Notice("\u6458\u5F55\u5DF2\u66F4\u65B0", 1500);
   }
   /**
    * P2: inline note patch — 用户在 SidebarNotesPanel 点 note 直接编辑,
@@ -24411,7 +25094,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
    */
   async quickHighlight() {
     if (!this.entry || !this.pendingSelection) {
-      new import_obsidian16.Notice("\u5148\u9009\u4E00\u6BB5\u6587\u5B57\u518D\u6309 H", 2e3);
+      new import_obsidian17.Notice("\u5148\u9009\u4E00\u6BB5\u6587\u5B57\u518D\u6309 H", 2e3);
       return;
     }
     const note = "";
@@ -24423,7 +25106,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
     const excerptId = generateExcerptId("ex");
     const locator = this.pendingSelection?.locator ?? await this.session?.exportLocator() ?? void 0;
     if (!locator) {
-      new import_obsidian16.Notice("\u65E0\u6CD5\u83B7\u53D6\u9009\u533A\u4F4D\u7F6E \u2014 \u6458\u5F55\u672A\u4FDD\u5B58");
+      new import_obsidian17.Notice("\u65E0\u6CD5\u83B7\u53D6\u9009\u533A\u4F4D\u7F6E \u2014 \u6458\u5F55\u672A\u4FDD\u5B58");
       return;
     }
     const pos = this.isPdf && this.session?.currentPage ? {
@@ -24444,7 +25127,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       await this.deps.reading.addExcerpt(excerpt);
     } catch (error) {
       console.warn("[ez-reader] addExcerpt failed", error);
-      new import_obsidian16.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
+      new import_obsidian17.Notice("\u4FDD\u5B58\u6458\u5F55\u5931\u8D25");
       return;
     }
     if (this.session?.highlight) {
@@ -24479,12 +25162,12 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-        new import_obsidian16.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
+        new import_obsidian17.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u6458\u5F55\u5DF2\u4FDD\u5B58)");
       }
     }
     await this.refreshPanels();
     this.notesPanel?.flashLast(excerptId);
-    new import_obsidian16.Notice(quick ? `\u{1F58D} \u5DF2\u9AD8\u4EAE (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u6458\u5F55\u5DF2\u4FDD\u5B58", 1800);
+    new import_obsidian17.Notice(quick ? `\u{1F58D} \u5DF2\u9AD8\u4EAE (\u6309 ? \u770B\u5FEB\u6377\u952E)` : "\u6458\u5F55\u5DF2\u4FDD\u5B58", 1800);
   }
   async saveThoughtFromSelection() {
     if (!this.entry || !this.pendingSelection) return;
@@ -24523,7 +25206,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       await this.deps.reading.addExcerpt(excerpt);
     } catch (error) {
       console.warn("[ez-reader] saveThought addExcerpt failed", error);
-      new import_obsidian16.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
+      new import_obsidian17.Notice("\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25");
       return;
     }
     if (this.deps.noteWriter) {
@@ -24545,12 +25228,12 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
         });
       } catch (error) {
         console.warn("[ez-reader] noteWriter.appendExcerpt failed", error);
-        new import_obsidian16.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
+        new import_obsidian17.Notice("\u5199\u5165\u7B14\u8BB0\u5931\u8D25 (\u60F3\u6CD5\u5DF2\u4FDD\u5B58)");
       }
     }
     await this.refreshPanels();
     this.notesPanel?.flashLast(excerptId);
-    new import_obsidian16.Notice("\u60F3\u6CD5\u5DF2\u4FDD\u5B58", 1500);
+    new import_obsidian17.Notice("\u60F3\u6CD5\u5DF2\u4FDD\u5B58", 1500);
   }
   copySelectionToClipboard() {
     const selection = this.pendingSelection?.text;
@@ -24581,7 +25264,7 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
   async runFindInBook(query, fromStart) {
     if (!this.session || typeof this.session.findInBook !== "function") {
       this.closeSearchBar();
-      new import_obsidian16.Notice("\u5F53\u524D\u683C\u5F0F\u6682\u4E0D\u652F\u6301\u641C\u7D22");
+      new import_obsidian17.Notice("\u5F53\u524D\u683C\u5F0F\u6682\u4E0D\u652F\u6301\u641C\u7D22");
       return;
     }
     const trimmed = query.trim();
@@ -24595,15 +25278,15 @@ var ReaderView = class _ReaderView extends import_obsidian16.ItemView {
       this.searchMatchCount = count;
       this.toolbar?.update(this.toolbarState());
       if (count === 0) {
-        new import_obsidian16.Notice(`\u672A\u627E\u5230 "${trimmed}"`);
+        new import_obsidian17.Notice(`\u672A\u627E\u5230 "${trimmed}"`);
       } else if (fromStart) {
-        new import_obsidian16.Notice(`\u627E\u5230 ${count} \u5904\u5339\u914D (\u4ECE\u9996\u5904\u5F00\u59CB)`);
+        new import_obsidian17.Notice(`\u627E\u5230 ${count} \u5904\u5339\u914D (\u4ECE\u9996\u5904\u5F00\u59CB)`);
       } else {
-        new import_obsidian16.Notice(`\u5339\u914D ${this.findCursorDisplay(count)} / ${count}`);
+        new import_obsidian17.Notice(`\u5339\u914D ${this.findCursorDisplay(count)} / ${count}`);
       }
     } catch (error) {
       console.warn("[ez-reader] findInBook failed", error);
-      new import_obsidian16.Notice("\u641C\u7D22\u5931\u8D25");
+      new import_obsidian17.Notice("\u641C\u7D22\u5931\u8D25");
       this.closeSearchBar();
     }
   }
@@ -24627,7 +25310,7 @@ ${translated}`;
 };
 
 // src/ui/settings/SettingsTab.ts
-var import_obsidian17 = require("obsidian");
+var import_obsidian18 = require("obsidian");
 
 // src/core/types/Locale.ts
 var UI_LOCALES = [
@@ -24687,7 +25370,7 @@ var debounceAsync = (fn, ms = 300) => {
   };
   return debounced;
 };
-var SettingsTab = class extends import_obsidian17.PluginSettingTab {
+var SettingsTab = class extends import_obsidian18.PluginSettingTab {
   constructor(app, plugin, annotations, providers = []) {
     super(app, plugin);
     this.annotations = annotations;
@@ -24742,7 +25425,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   }
   // ---- 默认阅读外观 ----
   renderAppearanceSection(containerEl) {
-    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u9605\u8BFB\u5916\u89C2").setHeading();
+    new import_obsidian18.Setting(containerEl).setName("\u9ED8\u8BA4\u9605\u8BFB\u5916\u89C2").setHeading();
     const saveFontSize = this.debounceSave(async (value) => {
       await this.annotations.patchSettings((s3) => ({
         ...s3,
@@ -24761,16 +25444,16 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         defaultAppearance: { ...s3.defaultAppearance, margin: value }
       }));
     });
-    new import_obsidian17.Setting(containerEl).setName("\u5B57\u53F7").setDesc("\u9ED8\u8BA4 100%; \u8303\u56F4 60%-200%").addSlider(
+    new import_obsidian18.Setting(containerEl).setName("\u5B57\u53F7").setDesc("\u9ED8\u8BA4 100%; \u8303\u56F4 60%-200%").addSlider(
       (slider) => slider.setLimits(60, 200, 5).setValue(DEFAULT_READER_APPEARANCE.fontSize).onChange((value) => saveFontSize(value))
     );
-    new import_obsidian17.Setting(containerEl).setName("\u884C\u8DDD").setDesc("\u9ED8\u8BA4 1.6; \u8303\u56F4 1.0-2.4").addSlider(
+    new import_obsidian18.Setting(containerEl).setName("\u884C\u8DDD").setDesc("\u9ED8\u8BA4 1.6; \u8303\u56F4 1.0-2.4").addSlider(
       (slider) => slider.setLimits(1, 2.4, 0.1).setValue(DEFAULT_READER_APPEARANCE.lineHeight).onChange((value) => saveLineHeight(value))
     );
-    new import_obsidian17.Setting(containerEl).setName("\u9875\u8FB9\u8DDD").setDesc("\u9ED8\u8BA4 32px; \u8303\u56F4 0-80px").addSlider(
+    new import_obsidian18.Setting(containerEl).setName("\u9875\u8FB9\u8DDD").setDesc("\u9ED8\u8BA4 32px; \u8303\u56F4 0-80px").addSlider(
       (slider) => slider.setLimits(0, 80, 4).setValue(DEFAULT_READER_APPEARANCE.margin).onChange((value) => saveMargin(value))
     );
-    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u4E3B\u9898").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u4F7F\u7528\u7684\u4E3B\u9898").addDropdown((dropdown) => {
+    new import_obsidian18.Setting(containerEl).setName("\u9ED8\u8BA4\u4E3B\u9898").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u4F7F\u7528\u7684\u4E3B\u9898").addDropdown((dropdown) => {
       for (const theme of THEMES2) {
         dropdown.addOption(theme, themeLabel2(theme));
       }
@@ -24785,7 +25468,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         }));
       });
     });
-    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u6392\u7248").setDesc("paginated = \u5355\u9875\u7FFB\u9875; scrolled = \u6EDA\u5C4F").addDropdown((dropdown) => {
+    new import_obsidian18.Setting(containerEl).setName("\u9ED8\u8BA4\u6392\u7248").setDesc("paginated = \u5355\u9875\u7FFB\u9875; scrolled = \u6EDA\u5C4F").addDropdown((dropdown) => {
       dropdown.addOption("paginated", "\u5355\u9875\u7FFB\u9875");
       dropdown.addOption("scrolled", "\u8FDE\u7EED\u6EDA\u5C4F");
       void this.loadSettings().then((s3) => {
@@ -24802,8 +25485,8 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   }
   // ---- 阅读体验 ----
   renderReadingSection(containerEl) {
-    new import_obsidian17.Setting(containerEl).setName("\u9605\u8BFB\u4F53\u9A8C").setHeading();
-    new import_obsidian17.Setting(containerEl).setName("\u6253\u5F00\u9605\u8BFB\u5668\u65B9\u5F0F").setDesc("\u5728\u5F53\u524D\u6807\u7B7E\u9875\u6253\u5F00 / \u5F39\u7A97\u6253\u5F00").addDropdown((dropdown) => {
+    new import_obsidian18.Setting(containerEl).setName("\u9605\u8BFB\u4F53\u9A8C").setHeading();
+    new import_obsidian18.Setting(containerEl).setName("\u6253\u5F00\u9605\u8BFB\u5668\u65B9\u5F0F").setDesc("\u5728\u5F53\u524D\u6807\u7B7E\u9875\u6253\u5F00 / \u5F39\u7A97\u6253\u5F00").addDropdown((dropdown) => {
       dropdown.addOption("tab", "\u5728\u6807\u7B7E\u9875\u4E2D\u6253\u5F00");
       dropdown.addOption("window", "\u5728\u65B0\u7A97\u53E3\u4E2D\u6253\u5F00");
       void this.loadSettings().then((s3) => {
@@ -24814,7 +25497,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, readerOpenMode: value }));
       });
     });
-    new import_obsidian17.Setting(containerEl).setName("\u8BB0\u4F4F\u9605\u8BFB\u8FDB\u5EA6").setDesc("\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8DF3\u8F6C\u5230\u4E0A\u6B21\u9605\u8BFB\u4F4D\u7F6E").addToggle((toggle) => {
+    new import_obsidian18.Setting(containerEl).setName("\u8BB0\u4F4F\u9605\u8BFB\u8FDB\u5EA6").setDesc("\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8DF3\u8F6C\u5230\u4E0A\u6B21\u9605\u8BFB\u4F4D\u7F6E").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.rememberProgress !== false);
       });
@@ -24822,7 +25505,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, rememberProgress: value }));
       });
     });
-    new import_obsidian17.Setting(containerEl).setName("\u9ED8\u8BA4\u53CC\u9875\u663E\u793A").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u9ED8\u8BA4\u5F00\u542F\u53CC\u9875(\u4EC5\u684C\u9762, foliate \u9002\u7528)").addToggle((toggle) => {
+    new import_obsidian18.Setting(containerEl).setName("\u9ED8\u8BA4\u53CC\u9875\u663E\u793A").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u9ED8\u8BA4\u5F00\u542F\u53CC\u9875(\u4EC5\u684C\u9762, foliate \u9002\u7528)").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.twoPagesByDefault ?? false);
       });
@@ -24830,7 +25513,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, twoPagesByDefault: value }));
       });
     });
-    new import_obsidian17.Setting(containerEl).setName("Pad \u9ED8\u8BA4\u6C89\u6D78\u6A21\u5F0F").setDesc("\u5728 Pad / \u7A84\u5C4F\u4E0A\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8FDB\u5165\u6C89\u6D78\u6A21\u5F0F(\u9690\u85CF\u5DE5\u5177\u680F)").addToggle((toggle) => {
+    new import_obsidian18.Setting(containerEl).setName("Pad \u9ED8\u8BA4\u6C89\u6D78\u6A21\u5F0F").setDesc("\u5728 Pad / \u7A84\u5C4F\u4E0A\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8FDB\u5165\u6C89\u6D78\u6A21\u5F0F(\u9690\u85CF\u5DE5\u5177\u680F)").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.immersiveOnTablet ?? false);
       });
@@ -24838,7 +25521,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         await this.annotations.patchSettings((s3) => ({ ...s3, immersiveOnTablet: value }));
       });
     });
-    const shortcutSummary = new import_obsidian17.Setting(containerEl).setName("\u952E\u76D8\u5FEB\u6377\u952E").setDesc("\u9605\u8BFB\u5668\u952E\u76D8\u5FEB\u6377\u952E(\u5F53\u524D\u53EA\u8BFB;\u81EA\u5B9A\u4E49\u7F16\u8F91\u5668\u5728\u8DEF\u7EBF\u56FE\u91CC)");
+    const shortcutSummary = new import_obsidian18.Setting(containerEl).setName("\u952E\u76D8\u5FEB\u6377\u952E").setDesc("\u9605\u8BFB\u5668\u952E\u76D8\u5FEB\u6377\u952E(\u5F53\u524D\u53EA\u8BFB;\u81EA\u5B9A\u4E49\u7F16\u8F91\u5668\u5728\u8DEF\u7EBF\u56FE\u91CC)");
     void this.loadSettings().then((s3) => {
       const shortcuts = s3.keyboardShortcuts;
       shortcutSummary.controlEl.createDiv({
@@ -24854,7 +25537,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   // header hardcoded (不再支持 `{{title}} {{author}}` 占位符)。
   // 这里只展示一段说明文字,让用户知道结构。
   renderNotesSection(containerEl) {
-    new import_obsidian17.Setting(containerEl).setName("\u7B14\u8BB0\u4E0E\u6458\u5F55").setHeading();
+    new import_obsidian18.Setting(containerEl).setName("\u7B14\u8BB0\u4E0E\u6458\u5F55").setHeading();
     const desc = containerEl.createDiv({ cls: "ez-reader__settings-readonly" });
     desc.createEl("p", {
       text: "v0.3.0 \u8D77,\u6240\u6709 EzReader \u6587\u4EF6\u7EDF\u4E00\u653E\u5728 vault \u6839\u7684 `ezreader/` \u76EE\u5F55\u4E0B:"
@@ -24875,8 +25558,8 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   }
   // ---- 翻译 ----
   renderTranslationSection(containerEl) {
-    new import_obsidian17.Setting(containerEl).setName("\u7FFB\u8BD1").setHeading();
-    const providerSetting = new import_obsidian17.Setting(containerEl).setName("\u7FFB\u8BD1\u670D\u52A1").setDesc("\u9009\u62E9\u5728\u7EBF\u7FFB\u8BD1 API;\u7559\u7A7A = \u4E0D\u8054\u7F51\u3002").addDropdown((dropdown) => {
+    new import_obsidian18.Setting(containerEl).setName("\u7FFB\u8BD1").setHeading();
+    const providerSetting = new import_obsidian18.Setting(containerEl).setName("\u7FFB\u8BD1\u670D\u52A1").setDesc("\u9009\u62E9\u5728\u7EBF\u7FFB\u8BD1 API;\u7559\u7A7A = \u4E0D\u8054\u7F51\u3002").addDropdown((dropdown) => {
       dropdown.addOption("none", "\u5173\u95ED");
       dropdown.addOption("youdao", "\u6709\u9053\u667A\u4E91 \xB7 \u6587\u672C\u7FFB\u8BD1");
       dropdown.addOption("deepl", "DeepL");
@@ -24930,7 +25613,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
       refreshHint(value);
     });
     void this.renderTranslationApiKeyUi(containerEl);
-    new import_obsidian17.Setting(containerEl).setName("\u76EE\u6807\u8BED\u8A00").setDesc("\u9ED8\u8BA4\u7FFB\u8BD1\u5230\u7684\u8BED\u8A00(\u4F8B\u5982 zh-CN / en-US)").addText((text) => {
+    new import_obsidian18.Setting(containerEl).setName("\u76EE\u6807\u8BED\u8A00").setDesc("\u9ED8\u8BA4\u7FFB\u8BD1\u5230\u7684\u8BED\u8A00(\u4F8B\u5982 zh-CN / en-US)").addText((text) => {
       const saveTargetLocale = this.debounceSave(async (value) => {
         await this.annotations.patchSettings((s3) => {
           if (!s3.translation) return s3;
@@ -25030,7 +25713,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
       });
     });
     const addPasswordField = (label, desc, key) => {
-      new import_obsidian17.Setting(wrap2).setName(label).setDesc(desc).addText((text) => {
+      new import_obsidian18.Setting(wrap2).setName(label).setDesc(desc).addText((text) => {
         text.inputEl.type = "password";
         text.inputEl.autocomplete = "off";
         text.inputEl.spellcheck = false;
@@ -25108,14 +25791,14 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
       stored = next;
       void persist(next);
     };
-    new import_obsidian17.Setting(wrap2).setName(opts.title).setDesc(opts.desc).addText((text) => {
+    new import_obsidian18.Setting(wrap2).setName(opts.title).setDesc(opts.desc).addText((text) => {
       text.inputEl.type = "text";
       text.inputEl.autocomplete = "off";
       text.inputEl.placeholder = opts.baseUrlHint;
       text.setValue(stored.baseUrl);
       text.onChange((value) => update({ baseUrl: value.trim() }));
     });
-    new import_obsidian17.Setting(wrap2).setName("LLM \xB7 API Key").setDesc("\u5BF9\u5E94 API \u57FA\u7840\u5730\u5740\u7684\u5BC6\u94A5").addText((text) => {
+    new import_obsidian18.Setting(wrap2).setName("LLM \xB7 API Key").setDesc("\u5BF9\u5E94 API \u57FA\u7840\u5730\u5740\u7684\u5BC6\u94A5").addText((text) => {
       text.inputEl.type = "password";
       text.inputEl.autocomplete = "off";
       text.inputEl.spellcheck = false;
@@ -25133,7 +25816,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         button.setIcon(isHidden ? "eye-off" : "eye");
       });
     });
-    new import_obsidian17.Setting(wrap2).setName("LLM \xB7 \u6A21\u578B\u540D").setDesc("\u5177\u4F53\u6A21\u578B\u6807\u8BC6, \u89C1\u4E0B\u65B9\u793A\u4F8B\u6216\u4F9B\u5E94\u5546\u63A7\u5236\u53F0").addText((text) => {
+    new import_obsidian18.Setting(wrap2).setName("LLM \xB7 \u6A21\u578B\u540D").setDesc("\u5177\u4F53\u6A21\u578B\u6807\u8BC6, \u89C1\u4E0B\u65B9\u793A\u4F8B\u6216\u4F9B\u5E94\u5546\u63A7\u5236\u53F0").addText((text) => {
       text.inputEl.type = "text";
       text.inputEl.autocomplete = "off";
       text.inputEl.placeholder = "model-id";
@@ -25145,7 +25828,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   }
   renderSingleKeyField(wrap2, settings) {
     const desc = settings.translation?.providerId === "google-translation-v3" ? "Google: \u7C98\u8D34 service account JSON \u7684\u5B8C\u6574\u5185\u5BB9({...}),\u4E0D\u662F API key\u3002" : "DeepL: \u5728 DeepL Pro \u63A7\u5236\u53F0 \u2192 Account \u2192 Authentication key \u590D\u5236\u3002";
-    new import_obsidian17.Setting(wrap2).setName("\u7FFB\u8BD1 API key").setDesc(desc).addText((text) => {
+    new import_obsidian18.Setting(wrap2).setName("\u7FFB\u8BD1 API key").setDesc(desc).addText((text) => {
       text.inputEl.type = "password";
       const saveKey = this.debounceSave(async (value) => {
         await this.annotations.patchSettings((s3) => {
@@ -25170,8 +25853,8 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   }
   // ---- 界面 ----
   renderUISection(containerEl) {
-    new import_obsidian17.Setting(containerEl).setName("\u754C\u9762").setHeading();
-    new import_obsidian17.Setting(containerEl).setName("\u754C\u9762\u8BED\u8A00").setDesc("\u9009\u62E9\u63D2\u4EF6\u754C\u9762\u8BED\u8A00;\u5207\u6362\u540E\u4F1A\u91CD\u65B0\u6253\u5F00\u5DF2\u7ECF\u6253\u5F00\u7684\u9875\u9762\u3002").addDropdown((dropdown) => {
+    new import_obsidian18.Setting(containerEl).setName("\u754C\u9762").setHeading();
+    new import_obsidian18.Setting(containerEl).setName("\u754C\u9762\u8BED\u8A00").setDesc("\u9009\u62E9\u63D2\u4EF6\u754C\u9762\u8BED\u8A00;\u5207\u6362\u540E\u4F1A\u91CD\u65B0\u6253\u5F00\u5DF2\u7ECF\u6253\u5F00\u7684\u9875\u9762\u3002").addDropdown((dropdown) => {
       for (const { code, label } of UI_LOCALES) {
         dropdown.addOption(code, label);
       }
@@ -25181,10 +25864,10 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
       dropdown.onChange(async (value) => {
         if (!isUiLocale(value)) return;
         await this.annotations.patchSettings((s3) => ({ ...s3, uiLocale: value }));
-        new import_obsidian17.Notice("\u754C\u9762\u8BED\u8A00\u5C06\u5728\u91CD\u542F\u540E\u751F\u6548");
+        new import_obsidian18.Notice("\u754C\u9762\u8BED\u8A00\u5C06\u5728\u91CD\u542F\u540E\u751F\u6548");
       });
     });
-    new import_obsidian17.Setting(containerEl).setName("\u4E66\u67B6\u5C01\u9762\u5BC6\u5EA6").setDesc("\u5F71\u54CD\u7F51\u683C\u5217\u6570\u548C\u5217\u8868\u5C01\u9762\u5C3A\u5BF8\u3002\u7D27\u51D1=\u6BCF\u884C\u591A\u672C,\u8D85\u5927=\u6BCF\u884C\u4E00\u672C\u5927\u5C01\u9762\u3002").addDropdown((dropdown) => {
+    new import_obsidian18.Setting(containerEl).setName("\u4E66\u67B6\u5C01\u9762\u5BC6\u5EA6").setDesc("\u5F71\u54CD\u7F51\u683C\u5217\u6570\u548C\u5217\u8868\u5C01\u9762\u5C3A\u5BF8\u3002\u7D27\u51D1=\u6BCF\u884C\u591A\u672C,\u8D85\u5927=\u6BCF\u884C\u4E00\u672C\u5927\u5C01\u9762\u3002").addDropdown((dropdown) => {
       for (const density of SHELF_DENSITIES) {
         dropdown.addOption(density, SHELF_DENSITY_LABELS[density]);
       }
@@ -25200,7 +25883,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
   }
   // ---- 关于 ----
   renderAboutSection(containerEl) {
-    new import_obsidian17.Setting(containerEl).setName("\u5173\u4E8E").setHeading();
+    new import_obsidian18.Setting(containerEl).setName("\u5173\u4E8E").setHeading();
     const about = containerEl.createDiv({ cls: "ez-reader__settings-about" });
     about.createEl("p", {
       text: "EzReader \u2014 \u5728 Obsidian \u4E2D\u9605\u8BFB\u672C\u5730\u7535\u5B50\u4E66,\u81EA\u52A8\u751F\u6210\u53CC\u94FE\u7B14\u8BB0\u4E0E\u6458\u5F55\u3002"
@@ -25251,10 +25934,10 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
         }
         await this.annotations.save(parsed);
         const counts = parsed;
-        new import_obsidian17.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${counts.excerpts.length} \u6458\u5F55, ${counts.bookmarks.length} \u4E66\u7B7E, ${counts.library.length} \u4E66)`);
+        new import_obsidian18.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${counts.excerpts.length} \u6458\u5F55, ${counts.bookmarks.length} \u4E66\u7B7E, ${counts.library.length} \u4E66)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        new import_obsidian17.Notice(`\u5BFC\u5165\u5931\u8D25: ${message}`);
+        new import_obsidian18.Notice(`\u5BFC\u5165\u5931\u8D25: ${message}`);
         console.error("[ez-reader] importData failed", error);
       }
     };
@@ -25263,7 +25946,7 @@ var SettingsTab = class extends import_obsidian17.PluginSettingTab {
 };
 
 // src/Plugin.ts
-var EzReaderPlugin = class extends import_obsidian19.Plugin {
+var EzReaderPlugin = class extends import_obsidian20.Plugin {
   bookSource;
   annotationStore;
   library;
@@ -25321,7 +26004,10 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
       // 同步 LibraryService.entries + emit shelf refresh, 否则 reader 翻页
       // 写完 data.json 后 shelf 仍然显示旧进度, 关闭 → 重开 reader 也不
       // resume (entry.reading 是 library.entries 的旧快照).
-      (state) => this.library.updateReading(state)
+      (state) => this.library.updateReading(state),
+      // v0.3.0: 透传 libraryWriter 让 ReadingService.recordSession /
+      // getDailyReadingTime 能写到 ezreader/sessions/*.jsonl
+      this.noteWriter
     );
     this.translation = new TranslationCoordinator(this.annotationStore, [
       new YoudaoTranslationProvider(),
@@ -25467,7 +26153,7 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
     if (!bookId) return;
     const entry = this.library.get(bookId);
     if (!entry) {
-      new import_obsidian19.Notice(`\u627E\u4E0D\u5230\u4E66: ${bookId}`);
+      new import_obsidian20.Notice(`\u627E\u4E0D\u5230\u4E66: ${bookId}`);
       return;
     }
     const isPdf = entry.book.locator.format === "pdf";
@@ -25506,7 +26192,7 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new import_obsidian19.Notice(`\u65E0\u6CD5\u6253\u5F00\u7B14\u8BB0\u94FE\u63A5: ${message}`);
+      new import_obsidian20.Notice(`\u65E0\u6CD5\u6253\u5F00\u7B14\u8BB0\u94FE\u63A5: ${message}`);
       console.error("[ez-reader] handleProtocol failed", { bookId, excerptId, error });
     }
   }
@@ -25596,7 +26282,7 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
   makeBookBytesLoader() {
     return async (path) => {
       const file = this.app.vault.getAbstractFileByPath(path);
-      if (!(file instanceof import_obsidian19.TFile)) {
+      if (!(file instanceof import_obsidian20.TFile)) {
         throw new Error(`Book file not found: ${path}`);
       }
       return this.app.vault.readBinary(file);
@@ -25638,8 +26324,8 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
    */
   async openInBuiltInViewer(entry) {
     const file = this.app.vault.getAbstractFileByPath(entry.book.locator.path);
-    if (!(file instanceof import_obsidian19.TFile)) {
-      new import_obsidian19.Notice(`\u627E\u4E0D\u5230\u6587\u4EF6: ${entry.book.locator.path}`);
+    if (!(file instanceof import_obsidian20.TFile)) {
+      new import_obsidian20.Notice(`\u627E\u4E0D\u5230\u6587\u4EF6: ${entry.book.locator.path}`);
       return;
     }
     await this.app.workspace.openLinkText(file.path, "", true);
@@ -25720,7 +26406,7 @@ var EzReaderPlugin = class extends import_obsidian19.Plugin {
       const legacyDir = snapshot.settings.notesDirectory?.trim() || "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0";
       const result = await this.noteWriter.migrateLegacyNotes({ legacyNotesDir: legacyDir });
       if (result.migratedNotes > 0 || result.failedNotes > 0) {
-        new import_obsidian19.Notice(
+        new import_obsidian20.Notice(
           `EzReader 0.3.0 \u8FC1\u79FB: ${result.migratedNotes} \u4E2A\u7B14\u8BB0\u642C\u5230 ezreader/notes/,${result.failedNotes > 0 ? ` ${result.failedNotes} \u4E2A\u5931\u8D25` : ""}`
         );
       }

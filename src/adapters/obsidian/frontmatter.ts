@@ -62,6 +62,10 @@ const needsQuoting = (s: string): boolean => {
   // : followed by space, or # anywhere (comment marker)
   if (/(?:^|\s):\s/.test(s)) return true;
   if (s.includes("#")) return true;
+  // P0 fix: 内部换行 / tab 也会让 round-trip 丢数据 — quoteString 已经
+  // 处理了 \n/\t/\r 的转义,但 needsQuoting 必须先返回 true 才会调它.
+  // 否则 description 含换行直接落到 YAML 跨行 scalar,换行丢失。
+  if (s.includes("\n") || s.includes("\t") || s.includes("\r")) return true;
   // Leading/trailing whitespace
   if (s !== s.trim()) return true;
   return false;
@@ -134,7 +138,11 @@ export const serializeBookInfo = (info: BookInfo, body?: string): string => {
     lines.push("  []");
   } else {
     for (const author of info.authors) {
-      lines.push(`  ${formatValue(author, "  ")}`);
+      // P0 fix: 必须有 "- " 前缀,否则 YAML 解析成 multi-line scalar
+      // 而非 array,round-trip 时 authors 直接丢光. formatValue 用空
+      // indent,避免重复缩进 (跟 `formatValue([...], indent)` array 分支
+      // 的 `${indent}- ...` 模板保持一致).
+      lines.push(`  - ${formatValue(author, "")}`);
     }
   }
   if (info.publisher !== undefined) lines.push(`publisher: ${formatValue(info.publisher, "")}`);

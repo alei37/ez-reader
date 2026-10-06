@@ -29,13 +29,18 @@ export const aggregateDailyReadingTime = (
     buckets.set(date, current);
   }
 
-  // Walk backwards `days` days from "today" (local).
+  // Walk `days` days forward from today, but push in newest-first order
+  // (i=0 → today at result[0], i=days-1 → oldest at result[days-1]). The
+  // P0 fix here: previous loop iterated i=days-1→0 which produced
+  // OLDEST-first order, contradicting the docstring and breaking callers
+  // (BookInfoModal reverses for left→right chronological display,
+  // ReadingService/readingStreakDays treat daily[0] as "today").
   const result: DailyReadingTime[] = [];
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
   const todayMs = today.getTime();
   const oneDayMs = 24 * 60 * 60 * 1000;
-  for (let i = days - 1; i >= 0; i -= 1) {
+  for (let i = 0; i < days; i += 1) {
     const dayMs = todayMs - i * oneDayMs;
     const date = localDateString(dayMs);
     const bucket = buckets.get(date);
@@ -68,19 +73,20 @@ export const readingStreakDays = (
 ): number => {
   // `daily` is expected newest-first (per `aggregateDailyReadingTime`).
   // Skip today if empty, then count consecutive non-empty days going back.
+  // P0 fix: previous gate was `!skippedToday` — that fires on the FIRST
+  // empty day encountered, not just today. If today has data but a later
+  // day in the window is empty (e.g. user took a break yesterday), the
+  // code would skip that gap instead of breaking the streak, over-counting.
+  // We now track the iteration index and only allow skip when i === 0.
   let streak = 0;
-  let skippedToday = false;
-  for (const day of daily) {
+  for (let i = 0; i < daily.length; i += 1) {
+    const day = daily[i];
     if (day.totalMs <= 0 && day.sessionCount <= 0) {
-      if (!skippedToday) {
-        // Allow skipping the first empty day (which is "today") before
-        // the streak breaks — but only if there's at least one active
-        // day in the rest of the window.
+      if (i === 0) {
+        // Allow skipping today only — and only if there's at least one
+        // active day in the rest of the window (otherwise streak = 0).
         const hasAny = daily.some((d, idx) => idx > 0 && (d.totalMs > 0 || d.sessionCount > 0));
-        if (hasAny) {
-          skippedToday = true;
-          continue;
-        }
+        if (hasAny) continue;
       }
       break;
     }

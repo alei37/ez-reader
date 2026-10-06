@@ -474,7 +474,12 @@ export class BookInfoModal extends Modal {
     const buckets = rich.dailyReadingTime;
     const maxMs = buckets.reduce((acc, b) => (b.totalMs > acc ? b.totalMs : acc), 0);
     const chart = section.createDiv({ cls: "ez-reader__book-info-bar-chart" });
-    if (buckets.length === 0) {
+    // P0 fix: 当 LibraryService 返回 30 个 zero-buckets (sessions 全空但
+    // API 还是返回 days=30 条) 时,光检查 `buckets.length === 0` 永远 false,
+    // 用户看到的全是灰色 2px bar,没有"暂无阅读记录"占位提示. 改成检查
+    // 是否有任何数据 — 任一 bucket.totalMs > 0 才算有活动.
+    const hasAnyActivity = buckets.some((b) => b.totalMs > 0 || b.sessionCount > 0);
+    if (buckets.length === 0 || !hasAnyActivity) {
       chart.addClass("is-empty");
       const placeholder = chart.createDiv({
         cls: "ez-reader__book-info-bar-chart__placeholder",
