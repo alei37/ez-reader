@@ -4,6 +4,105 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-12
+
+> 这一版不新增功能,全部是修复。起因是一次全量 code review —— 结论是
+> **0.3.0 的核心功能(书籍详情 / 阅读时长统计 / `ezreader/` 目录)从未对任何
+> 真实用户生效过**。详见下面的「关键修复」。
+
+### 关键修复 (Critical)
+
+- **阅读时长统计从未工作过** — `Plugin.ts` 把 `this.noteWriter` 传给
+  `ReadingService` / `LibraryService` 时,它在 33 行之后才被构造,而构造参数
+  是按值捕获的 `private readonly libraryWriter?`。于是 `libraryWriter` 永久
+  `undefined`:`recordSession` 恒为 no-op,`sessions.jsonl` 从没被写过一个字节,
+  `getRichEntry` 永远返回零。书籍详情里的阅读时长面板是死 UI。
+  > 0.3.1 的 commit `f93faaf` 声称修过这个 P0 —— 它加了调用点,但没修接线。
+- **摘录在部分 vault 上静默丢失** — `bookId` 就是 vault 路径本身,而
+  `ensureBookDir` 对它做的是**未消毒的** `bookId.slice(0, 8)`。顶层目录名
+  5–7 个字符时(`books/`、`notes/`、`library/`)会算出
+  `ezreader/notes/Dune-books/du.md`,父目录不存在 → `vault.create` ENOENT →
+  该书所有摘录/想法无声丢弃,只在 data.json 里。
+- **重启后阅读历史永久不可见** — 冷缓存下 `loadReadingSessions` 只能靠
+  `info/*.md` 定位文件,而 `writeBookInfo` 从无生产调用者,`info/` 恒为空。
+- **导出泄露明文 API key** — 「导出全部数据」把整个 snapshot 原样写入 JSON。
+  Google provider 那个字段是**完整的 service account JSON,含 `private_key`**。
+  现在导出脱敏,导入自动保留 vault 里已有的 key。
+
+### 安全 (Security)
+
+- **`sanitizeHtml` 的 URL 检查是黑名单** — 只挡 `javascript:` /
+  `data:text/html` / `vbscript:`,**所有 `https://` 引用一律放行**。书籍内容
+  不可信,一次远程引用就是一次静默外发 + 定位信标,直接违反 PRIVACY.md 的
+  「EzReader 从不外发」。改成白名单:仅允许 fragment、相对路径、
+  `data:image/*`(排除可带脚本的 svg)。
+- **`srcset` / `ping` / `background` / `poster` 原本完全不在检查列表里**,
+  实测 `sanitizeHtml('<img srcset="https://attacker/b?1 1x">')` 原样返回。
+  `srcset` 的逗号分隔候选列表逐项检查,防止混过。
+- **EPUB 侧规则补齐** — `sanitizeBookContent` 只处理 `src|poster|data`。
+  它是唯一剥离 `href` 上 `javascript:` 的 TS 层,另一层是 foliate patch,
+  而 patch 依赖 pnpm 的 `patchedDependencies` —— 换 npm 安装或升级
+  foliate-js 就会静默失效。现在两层规则对齐。
+- **LLM provider 拒绝 `http://`** — `OpenAICompatible` / `AnthropicCompatible`
+  的 base URL 校验接受明文 http,会把 API key 和选中的书稿裸传。自建
+  Ollama / LM Studio 场景很常见。改为只接受 `https:`。
+- **翻译请求不再可能永久挂起** — `requestUrl` 连 `timeout` / `signal` 字段
+  都没有,TCP 连上不返回就一直卡在「正在翻译…」。改为 20s deadline。
+  `TranslationDrawer` 的 `AbortController` 此前从未接入请求,且 `hide()` 不
+  递增 generation token,导致旧译文会渲染进已隐藏的抽屉。
+
+### 资源 (Resource)
+
+- **Foliate 从不释放解包资源** — `view.close()` 只销毁渲染器,真正 revoke
+  blob URL 的是 `book.destroy() → loader.destroy()`。每次 EPUB 打开 / 抽封面 /
+  读元数据都泄漏整个解包后的资源直到进程结束。几百本书的封面预热在移动端
+  就是 OOM。现在 session 在 close() 销毁,cover / metadata 路径用
+  try/finally 覆盖早退与抛错。
+- **PDF 高亮每帧全量重建** — rAF 循环无条件调用 `repositionHighlights()`,
+  而后者每条高亮都做全页文本扫描 + 销毁重建 `extraDivs`。80 条摘录 ≈ 每秒
+  4800 次扫描 + 4800 次节点重建。改为按滚动几何变化触发。
+- **PDF overlay 泄漏** — Obsidian 关闭**后台** tab 时不触发
+  `active-leaf-change`,overlay 因此永不卸载(泄漏 document listener、
+  2 个 MutationObserver 和一个 60fps 循环)。补 `layout-change`。
+- **`openSession` 可并发重入** — `setEntry` 的 rAF 与 100ms 兜底都会调用它,
+  两者同步检查 `!this.session`,但第一个 await 在 `pendingClosePromise`。
+  两个调用都能通过检查并各自 mount,foliate iframe / PDF worker 只关掉一个。
+
+### 正确性 (Correctness)
+
+- **阅读时长两个数字会背离** — `recordSession` 绕过了 `flushReadingTime` 的
+  30s/60s 门槛,导致工具栏累计时长和书籍详情统计朝相反方向漂移。改为单一
+  决策同时作用于两个写入方。
+- **30 天窗口会整整丢一天** — `aggregateDailyReadingTime` 用固定 24h 步进
+  跨夏令时。实测 `America/New_York` 在 2026-03-08 前后,窗口内该日完全消失,
+  连续打卡天数算错。改为走本地日历。
+- **迁移标志写错层** — `migratedToV030` 写进 `settings.*` 却从顶层读,
+  守卫永不触发,老笔记迁移每次启动重跑。同时修正「失败也标记完成」——
+  对 Syncthing 用户这会让老笔记永久失联。改为失败保持未完成 + 最多重试 5 次。
+- **换书不清章节访问状态** — `tocFractions` 从不重置,读完 A 再打开 B 会把
+  A 的章节写进 B 的 `visitedTocIdsByBookId`,且已进 data.json 无法撤销。
+- **TXT 没有 UTF-16 分支** — strict UTF-8 失败后 GB18030 会在二进制垃圾上
+  「成功」并当文本返回,Windows 另存为「Unicode 编码」的书打开即乱码。
+  补 UTF-16LE / UTF-16BE。UTF-8 BOM 分支改严格解码后回落 GB18030。
+
+### 工程 (Engineering)
+
+- **构建期版本一致性检查** — `package.json` 自 0.2.10 之后一直停在 0.2.0
+  而无人察觉。新增 `scripts/check-version.mjs`,`pnpm run build` 会校验
+  `manifest.json` 与 `package.json` 一致,并在 CI 中比对 tag。
+- **补齐 obsidian stub 缺失导出** — `PluginSettingTab` / `Menu` /
+  `normalizePath` 此前缺失,任何 import `SettingsTab` 的测试都会在 esbuild
+  阶段炸掉。
+
+### 测试 (Tests)
+
+- 449 个测试(本版新增 36 个)。所有修复均经 **mutation 验证**:逐个把代码改坏
+  确认对应测试会失败。
+- 修正两个此前无效的测试:UTF-16 那个测试喂了 UTF-16BE BOM 却只断言
+  `typeof === "string"`,在纯乱码上也通过;`sanitizeHtml` 那个测试断言的是
+  「允许 http(s)」—— 也就是本文档记为安全问题的那条行为。
+
+
 ## [0.3.1] - 2026-10-06
 
 ### 修复 (Fixed)
