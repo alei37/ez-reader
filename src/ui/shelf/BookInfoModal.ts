@@ -481,7 +481,7 @@ export class BookInfoModal extends Modal {
     const hasAnyActivity = buckets.some((b) => b.totalMs > 0 || b.sessionCount > 0);
     if (buckets.length === 0 || !hasAnyActivity) {
       chart.addClass("is-empty");
-      const placeholder = chart.createDiv({
+      chart.createDiv({
         cls: "ez-reader__book-info-bar-chart__placeholder",
         text: "暂无阅读记录 — 在阅读器里读一会儿就会出现在这里"
       });

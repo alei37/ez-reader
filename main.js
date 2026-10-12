@@ -13839,11 +13839,8 @@ var init_pdfOverlay = __esm({
       prevBtn.addClass("ez-reader__pdf-overlay-search-bar__btn");
       const closeBtn = bar.createEl("button", { text: "\xD7", attr: { type: "button", title: "\u5173\u95ED" } });
       closeBtn.addClass("ez-reader__pdf-overlay-search-bar__btn", "ez-reader__pdf-overlay-search-bar__close");
-      let lastQuery = "";
       const commit = (fromStart) => {
-        const value = input.value.trim();
-        lastQuery = value;
-        handlers.onSearch(value, fromStart);
+        handlers.onSearch(input.value.trim(), fromStart);
       };
       input.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
@@ -15926,7 +15923,7 @@ ${block}`);
           continue;
         }
         await this.app.vault.create(newPath, raw);
-        await this.app.vault.delete(file);
+        await this.app.fileManager.trashFile(file);
         migrated += 1;
         migratedBookIds.push(bookId);
       } catch (error) {
@@ -17779,6 +17776,17 @@ var PdfCoverExtractor = class {
 
 // src/adapters/translation/BaseTranslationProvider.ts
 var import_obsidian4 = require("obsidian");
+var toError = (reason) => {
+  if (reason instanceof Error) return reason;
+  if (typeof reason === "string" && reason.length > 0) return new Error(reason);
+  let text;
+  try {
+    text = JSON.stringify(reason) ?? String(reason);
+  } catch {
+    text = String(reason);
+  }
+  return new Error(text.length > 0 ? text : "\u672A\u77E5\u9519\u8BEF");
+};
 var withDeadline = (promise, ms, label) => new Promise((resolve, reject) => {
   const timer = setTimeout(
     () => reject(new Error(`\u7FFB\u8BD1\u8BF7\u6C42\u8D85\u65F6 (${Math.round(ms / 1e3)}s): ${label} \u65E0\u54CD\u5E94,\u8BF7\u68C0\u67E5\u7F51\u7EDC\u6216 API \u5730\u5740`)),
@@ -17791,7 +17799,7 @@ var withDeadline = (promise, ms, label) => new Promise((resolve, reject) => {
     },
     (error) => {
       clearTimeout(timer);
-      reject(error);
+      reject(toError(error));
     }
   );
 });
@@ -20344,7 +20352,7 @@ var BookInfoModal = class extends import_obsidian6.Modal {
     const hasAnyActivity = buckets.some((b3) => b3.totalMs > 0 || b3.sessionCount > 0);
     if (buckets.length === 0 || !hasAnyActivity) {
       chart.addClass("is-empty");
-      const placeholder = chart.createDiv({
+      chart.createDiv({
         cls: "ez-reader__book-info-bar-chart__placeholder",
         text: "\u6682\u65E0\u9605\u8BFB\u8BB0\u5F55 \u2014 \u5728\u9605\u8BFB\u5668\u91CC\u8BFB\u4E00\u4F1A\u513F\u5C31\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC"
       });
@@ -24675,7 +24683,7 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
         if (this.searchBarVisible) this.closeSearchBar();
         else this.openSearchBar();
         return;
-      case "escape":
+      case "escape": {
         let escapeHandled = false;
         if (this.searchBarVisible) {
           this.closeSearchBar();
@@ -24692,6 +24700,7 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
         }
         if (escapeHandled) event.preventDefault();
         return;
+      }
     }
   }
   /** Copy current document selection to clipboard (Ctrl+C-style shortcut). */
@@ -26628,7 +26637,7 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
         if (excerptId) {
           await this.withTimeout(existingLeaf.view.openExcerptById(excerptId), 3e4, "openExcerptById");
         }
-        this.app.workspace.revealLeaf(existingLeaf);
+        await this.app.workspace.revealLeaf(existingLeaf);
         this.app.workspace.setActiveLeaf(existingLeaf);
         return;
       }
@@ -26740,12 +26749,12 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
   async openShelf() {
     const existing = this.app.workspace.getLeavesOfType(SHELF_VIEW_TYPE)[0];
     if (existing) {
-      this.app.workspace.revealLeaf(existing);
+      await this.app.workspace.revealLeaf(existing);
       return;
     }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: SHELF_VIEW_TYPE, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
   async openReader(entry) {
     if (entry.book.locator.format === "pdf") {

@@ -35,6 +35,31 @@ import type {
  */
 
 /**
+ * Normalize an arbitrary rejection reason into an `Error`.
+ *
+ * `withDeadline` re-throws whatever the underlying request rejected with,
+ * and that is not guaranteed to be an `Error`: `requestUrl` rejects with
+ * its own error type, `AbortError` is a `DOMException`, and a provider that
+ * does `throw "网络错误"` rejects with a bare string. Every caller reads
+ * `error.message` to build the drawer's error text, so a non-`Error`
+ * reason renders as a literal `undefined` in the UI. Normalizing here
+ * keeps that contract true for every provider.
+ */
+const toError = (reason: unknown): Error => {
+  if (reason instanceof Error) return reason;
+  if (typeof reason === "string" && reason.length > 0) return new Error(reason);
+  let text: string;
+  try {
+    // JSON.stringify throws on circular structures and returns undefined
+    // for undefined / functions / symbols — fall back in both cases.
+    text = JSON.stringify(reason) ?? String(reason);
+  } catch {
+    text = String(reason);
+  }
+  return new Error(text.length > 0 ? text : "未知错误");
+};
+
+/**
  * P1 fix: `requestUrl` cannot be cancelled or bounded. Verified against
  * `node_modules/obsidian/obsidian.d.ts` — `RequestUrlParam` has neither a
  * `timeout` nor a `signal` field, so there is no way to pass one through.
@@ -47,7 +72,16 @@ import type {
  * discarded — but the user gets a definite answer and the UI unblocks.
  * Same approach as `CoverCache.raceWithTimeout`.
  */
-const withDeadline = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+/**
+ * Exported so the rejection-normalization contract below is directly
+ * testable. `fetchJson` is the only production caller today, and it
+ * re-wraps whatever comes out in `new Error(...)` — so the normalization
+ * is not observable through the public surface yet. It is kept because
+ * `withDeadline` is a generic helper: the next call site that re-throws
+ * the reason directly (e.g. a provider surfacing a raw `requestUrl`
+ * rejection) would otherwise hand callers an `any`.
+ */
+export const withDeadline = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
   new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`翻译请求超时 (${Math.round(ms / 1000)}s): ${label} 无响应,请检查网络或 API 地址`)),
@@ -60,7 +94,7 @@ const withDeadline = <T>(promise: Promise<T>, ms: number, label: string): Promis
       },
       (error) => {
         clearTimeout(timer);
-        reject(error);
+        reject(toError(error));
       }
     );
   });

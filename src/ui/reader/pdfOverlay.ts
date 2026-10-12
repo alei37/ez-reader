@@ -1572,12 +1572,10 @@ const createSearchBar = (
   const closeBtn = bar.createEl("button", { text: "×", attr: { type: "button", title: "关闭" } });
   closeBtn.addClass("ez-reader__pdf-overlay-search-bar__btn", "ez-reader__pdf-overlay-search-bar__close");
 
-  // 用闭包变量记 current query, Enter 时区分 fromStart vs next.
-  let lastQuery = "";
+  // fromStart (向上翻到上一次命中) comes from Shift+Enter / the ↑ button and
+  // is passed per call, so no cross-call query state is needed here.
   const commit = (fromStart: boolean): void => {
-    const value = input.value.trim();
-    lastQuery = value;
-    handlers.onSearch(value, fromStart);
+    handlers.onSearch(input.value.trim(), fromStart);
   };
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {

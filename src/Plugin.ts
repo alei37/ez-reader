@@ -375,7 +375,7 @@ export default class EzReaderPlugin extends Plugin {
         if (excerptId) {
           await this.withTimeout(existingLeaf.view.openExcerptById(excerptId), 30000, "openExcerptById");
         }
-        this.app.workspace.revealLeaf(existingLeaf);
+        await this.app.workspace.revealLeaf(existingLeaf);
         this.app.workspace.setActiveLeaf(existingLeaf);
         return;
       }
@@ -498,12 +498,12 @@ export default class EzReaderPlugin extends Plugin {
   private async openShelf(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(SHELF_VIEW_TYPE)[0];
     if (existing) {
-      this.app.workspace.revealLeaf(existing);
+      await this.app.workspace.revealLeaf(existing);
       return;
     }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: SHELF_VIEW_TYPE, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    await this.app.workspace.revealLeaf(leaf);
   }
 
 

@@ -1094,7 +1094,7 @@ export class ReaderView extends ItemView {
         if (this.searchBarVisible) this.closeSearchBar();
         else this.openSearchBar();
         return;
-      case "escape":
+      case "escape": {
         // 优先级: search bar → 选区菜单 → 抽屉 → panel → 不动 reader (防止误关)
         //
         // C3 修复: 之前 case "escape" 不调 preventDefault,事件冒泡到 Obsidian
@@ -1122,6 +1122,7 @@ export class ReaderView extends ItemView {
         }
         if (escapeHandled) event.preventDefault();
         return;
+      }
     }
   }
 

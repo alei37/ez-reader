@@ -48,6 +48,10 @@ class MemoryTFile extends TFile {
   constructor(public path: string) {
     super();
   }
+  /** Mirrors Obsidian's `TFile.basename` (the stub TFile is empty). */
+  get basename(): string {
+    return this.path.split("/").pop() ?? "";
+  }
 }
 
 /**
@@ -107,11 +111,28 @@ class MemoryVault {
     this.files.set(file.path, next);
   };
   delete = async (file: MemoryTFile) => {
+    // Recorded, not thrown: migration must be *observed* taking the
+    // trashFile path. See `migrateLegacyNotes must not hard-delete`.
+    this.hardDeletes.push(file.path);
     this.files.delete(file.path);
   };
+  trashFile = async (file: MemoryTFile) => {
+    this.trashed.push(file.path);
+    this.files.delete(file.path);
+  };
+  /** Paths removed via `vault.delete` — permanent, bypasses the user's trash. */
+  readonly hardDeletes: string[] = [];
+  /** Paths removed via `fileManager.trashFile` — recoverable. */
+  readonly trashed: string[] = [];
 }
 
-const makeApp = (vault: MemoryVault) => ({ vault }) as never;
+const makeApp = (vault: MemoryVault) =>
+  ({
+    vault,
+    // `FileManager.trashFile` is what migration must use; Obsidian routes it
+    // through the user's Files → "Deleted files" preference.
+    fileManager: { trashFile: (file: MemoryTFile) => vault.trashFile(file) }
+  }) as never;
 const makePlugin = () => ({}) as never;
 const makeAnnotations = () => ({}) as never;
 
@@ -123,6 +144,57 @@ const session = (over: Partial<ReadingSession> = {}): ReadingSession => ({
   progressEnd: 0.42,
   chapter: "Chapter 3",
   ...over
+});
+
+// ---------------------------------------------------------------------------
+// Migration deletion safety
+//
+// `migrateLegacyNotes` copies the user's pre-0.3.0 notes into
+// `ezreader/notes/` and then removes the originals. It used `vault.delete`,
+// which permanently unlinks the file — bypassing the Files → "Deleted files:
+// Move to trash" preference. A user who enabled trash (the default on
+// desktop) had no recovery path for notes the plugin was still actively
+// rewriting at that moment.
+//
+// `MemoryVault` records which of the two APIs was used, so the test fails
+// on a revert rather than silently passing.
+// ---------------------------------------------------------------------------
+
+const seedLegacyNote = async (vault: MemoryVault): Promise<void> => {
+  await vault.createFolder("ezreader-notes/阅读笔记");
+  await vault.create(
+    "ezreader-notes/阅读笔记/dune-notes-a1b2c3d4.md",
+    "---\nbookId: dune-notes-a1b2c3d4\n---\n\n迁移前的正文\n"
+  );
+};
+
+test("migration: 旧笔记经 trashFile 移除,不硬删", async () => {
+  const vault = new MemoryVault();
+  await seedLegacyNote(vault);
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+
+  const result = await writer.migrateLegacyNotes({ legacyNotesDir: "ezreader-notes/阅读笔记" });
+
+  assert.equal(result.migratedNotes, 1);
+  assert.equal(result.failedNotes, 0);
+  assert.deepEqual(
+    vault.hardDeletes,
+    [],
+    "vault.delete permanently destroys the user's notes and ignores their trash preference"
+  );
+  assert.deepEqual(vault.trashed, ["ezreader-notes/阅读笔记/dune-notes-a1b2c3d4.md"]);
+});
+
+test("migration: 迁移后内容落到 ezreader/notes/", async () => {
+  const vault = new MemoryVault();
+  await seedLegacyNote(vault);
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+
+  await writer.migrateLegacyNotes({ legacyNotesDir: "ezreader-notes/阅读笔记" });
+
+  const migrated = [...vault.files.keys()].filter((p) => p.startsWith("ezreader/notes/"));
+  assert.equal(migrated.length, 1, `expected one migrated note, got ${migrated.join(", ")}`);
+  assert.match(vault.files.get(migrated[0])!, /迁移前的正文/);
 });
 
 // ---------------------------------------------------------------------------

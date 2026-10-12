@@ -503,7 +503,14 @@ export class ObsidianLibraryWriter implements LibraryWriter {
           continue;
         }
         await this.app.vault.create(newPath, raw);
-        await this.app.vault.delete(file);
+        // `vault.delete` permanently removes the file. A user who enabled
+        // Files → "Deleted files: Move to trash" expects *all* deletions to
+        // land in the trash — but `vault.delete` bypasses that preference, so
+        // the pre-migration notes they were still using would vanish with no
+        // recovery path. `FileManager.trashFile` honors the setting, and it
+        // still falls back to a hard delete when the user chose that, so it
+        // is correct under every configuration.
+        await this.app.fileManager.trashFile(file);
         migrated += 1;
         migratedBookIds.push(bookId);
       } catch (error) {
