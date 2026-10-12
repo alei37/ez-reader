@@ -38,17 +38,29 @@ export const aggregateDailyReadingTime = (
   const result: DailyReadingTime[] = [];
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
-  const todayMs = today.getTime();
-  const oneDayMs = 24 * 60 * 60 * 1000;
+  // P1 fix: walk the calendar, not milliseconds.
+  //
+  // Subtracting a fixed 24h from local midnight is wrong across a DST
+  // boundary. Verified in America/New_York: with today = 2026-03-12 the
+  // old loop produced
+  //   03-12 03-11 03-10 03-09 **03-07** 03-06 …
+  // March 8 never appears, and every later bucket is shifted by a day, so
+  // the "last 30 days" total silently dropped a whole day of reading and
+  // `readingStreakDays` reported 2 instead of 3. A spring-forward day is
+  // 23h long, a fall-back day 25h.
+  //
+  // `setDate` walks local calendar days, so each step lands on the next
+  // real midnight regardless of DST.
+  const cursor = new Date(today);
   for (let i = 0; i < days; i += 1) {
-    const dayMs = todayMs - i * oneDayMs;
-    const date = localDateString(dayMs);
+    const date = localDateString(cursor.getTime());
     const bucket = buckets.get(date);
     result.push({
       date,
       totalMs: bucket?.totalMs ?? 0,
       sessionCount: bucket?.count ?? 0
     });
+    cursor.setDate(cursor.getDate() - 1);
   }
   return result;
 };

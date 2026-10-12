@@ -81,7 +81,21 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId),
       // v0.3.0: 一次性迁移完成标记. sanitize boolean — 老 data.json
       // 没这个字段 → false → Plugin.runV030Migration 跑一次。
-      migratedToV030: raw?.migratedToV030 === true
+      //
+      // P1 fix: `Plugin.runV030Migration` wrote this flag via
+      // `patchSettings`, which lands it at `data.json.settings.migratedToV030`,
+      // while this read looks at the TOP level. The guard therefore never
+      // tripped and the legacy-notes migration re-ran on every launch,
+      // re-listing and re-reading the whole old folder each time. Read
+      // both, so a flag written by the buggy build is still honored.
+      migratedToV030:
+        raw?.migratedToV030 === true ||
+        (raw?.settings as { migratedToV030?: unknown } | undefined)?.migratedToV030 === true,
+      // Retry counter for a failed migration. Absent → 0 attempts so far.
+      migratedToV030Attempts:
+        typeof raw?.migratedToV030Attempts === "number" && Number.isFinite(raw.migratedToV030Attempts)
+          ? raw.migratedToV030Attempts
+          : 0
     };
     return this.cache;
   }
@@ -380,6 +394,27 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       const snapshot = await this.load();
       if (snapshot.onboardingDismissed === true) return snapshot;
       return { ...snapshot, onboardingDismissed: true };
+    });
+  }
+
+  /**
+   * P1 fix: record the v0.3.0 migration outcome at the TOP level of
+   * `data.json`, which is where `load()` looks. Writing it through
+   * `patchSettings` put it under `settings.*` instead, so the migration
+   * re-ran on every launch. `passed` records whether the run actually
+   * finished; `Plugin` retries a failed run a bounded number of times.
+   */
+  async setMigratedToV030(passed: boolean, attempts?: number): Promise<void> {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.migratedToV030 === passed && snapshot.migratedToV030Attempts === attempts) {
+        return snapshot;
+      }
+      return {
+        ...snapshot,
+        migratedToV030: passed,
+        ...(attempts === undefined ? {} : { migratedToV030Attempts: attempts })
+      };
     });
   }
 

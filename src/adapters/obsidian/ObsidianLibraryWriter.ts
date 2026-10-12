@@ -15,6 +15,7 @@ import type { BookInfo } from "../../core/entities/BookInfo";
 import type { ReadingSession } from "../../core/entities/ReadingSession";
 import { defaultBookInfo } from "../../core/entities/BookInfo";
 import { bookInfoFromFrontmatter, parseFrontmatter, serializeBookInfo } from "./frontmatter";
+import { hexFromBuffer, sha1Bytes } from "../../platform/Sha1";
 
 const PROTOCOL = "ez-reader";
 
@@ -70,8 +71,7 @@ export class ObsidianLibraryWriter implements LibraryWriter {
     await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
 
     const safeTitle = sanitizeFileBase(input.bookTitle || input.bookPath.split("/").pop() || input.bookId);
-    const idTag = input.bookId.slice(0, 8);
-    const fileBase = `${safeTitle}-${idTag}`;
+    const fileBase = await this.resolveFileBase(input.bookId, safeTitle);
     const notesPath = normalizePath(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
     const infoPath = normalizePath(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}/${fileBase}.md`);
     const sessionsPath = normalizePath(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`);
@@ -94,6 +94,69 @@ export class ObsidianLibraryWriter implements LibraryWriter {
     };
     this.cacheByBookId.set(input.bookId, ref);
     return ref;
+  }
+
+  /**
+   * Build the `<safeTitle>-<idTag>` file base for a book.
+   *
+   * P0 fix: `bookId` IS the vault path (`ObsidianBookSource.resolveId`
+   * returns `locator.path`), so the old `bookId.slice(0, 8)` could contain
+   * a `/` — e.g. `books/dune.epub` → `Dune-books/du.md` → a path whose
+   * parent directory does not exist → `vault.create` throws ENOENT and
+   * every excerpt for that book is silently dropped. Any vault with a
+   * 5–7 character top-level folder (`books/`, `notes/`, `library/`) hit
+   * this.
+   *
+   * It was ALSO not unique: a path prefix is shared by everything under the
+   * same first 8 characters, so every book in `04-resources/books/` produced
+   * the tag `04-resou`. Sanitizing the prefix does not help — it is still a
+   * prefix. The tag is now a hash of the whole bookId: path-safe AND
+   * collision-free.
+   *
+   * The legacy raw-slice form is still checked first: it could only ever
+   * have produced a working path when the first path segment was ≥ 8
+   * characters, so existing `notes/*.md` files under such vaults must stay
+   * reachable or they'd be orphaned by the upgrade.
+   */
+  private async resolveFileBase(bookId: BookId, safeTitle: string): Promise<string> {
+    const legacyTag = bookId.slice(0, 8);
+    if (!legacyTag.includes("/")) {
+      const legacyBase = `${safeTitle}-${legacyTag}`;
+      const legacyNotes = `${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${legacyBase}.md`;
+      if (this.app.vault.getAbstractFileByPath(legacyNotes) instanceof TFile) {
+        return legacyBase;
+      }
+    }
+    return `${safeTitle}-${bookIdTag(bookId)}`;
+  }
+
+  /**
+   * Locate `ezreader/sessions/<safeTitle>-<idTag>.jsonl` for a book without
+   * relying on `info.md` or on knowing the book's title.
+   *
+   * The id tag is derived from the bookId alone, and every sessions file is
+   * named `<something>-<idTag>.jsonl`, so a suffix match over a directory
+   * listing identifies the right file. Both the sanitized and the legacy
+   * raw-slice tags are tried. Returns `null` when nothing matches.
+   */
+  private async findSessionsPathByIdTag(bookId: BookId): Promise<string | undefined> {
+    const dir = normalizePath(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
+    let files: ReadonlyArray<string>;
+    try {
+      files = (await this.app.vault.adapter.list(dir)).files;
+    } catch {
+      return undefined;
+    }
+    const legacyTag = bookId.slice(0, 8);
+    const tags = [bookIdTag(bookId)];
+    if (!legacyTag.includes("/") && !tags.includes(legacyTag)) tags.push(legacyTag);
+
+    for (const filePath of files) {
+      if (!filePath.endsWith(".jsonl")) continue;
+      const stem = filePath.split("/").pop()!.replace(/\.jsonl$/i, "");
+      if (tags.some((tag) => tag.length > 0 && stem.endsWith(`-${tag}`))) return filePath;
+    }
+    return undefined;
   }
 
   // -----------------------------------------------------------------------
@@ -223,15 +286,24 @@ export class ObsidianLibraryWriter implements LibraryWriter {
             });
             const info = bookInfoFromFrontmatter(parsed, defaults);
             // Populate cache so subsequent calls skip the directory walk.
-            const safeTitle = info.title;
-            const idTag = bookId.slice(0, 8);
-            const fileBase = `${sanitizeFileBase(safeTitle)}-${idTag}`;
+            //
+            // P0 fix: derive the sibling paths from the infoPath we actually
+            // just found, instead of re-deriving them from title + bookId.
+            // The old `${sanitizeFileBase(info.title)}-${bookId.slice(0,8)}`
+            // reconstruction was wrong three ways:
+            //   - raw bookId.slice() could inject a `/` (see resolveFileBase)
+            //   - it used `info.title`, which is not necessarily the title
+            //     `ensureBookDir` was called with (ReaderView passes the full
+            //     locator.path as fallback, LibraryService uses the basename)
+            //   - any future change to the naming scheme silently breaks it
+            // `infoPath` is `ezreader/info/<base>.md` — swapping the
+            // subdirectory and extension gives the exact siblings.
             this.cacheByBookId.set(bookId, {
-              notesPath: normalizePath(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`),
+              notesPath: siblingPath(filePath, NOTES_SUBDIR, ".md"),
               infoPath: filePath,
-              sessionsPath: normalizePath(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`),
+              sessionsPath: siblingPath(filePath, SESSIONS_SUBDIR, ".jsonl"),
               bookId,
-              title: safeTitle,
+              title: info.title,
               bookPath: info.filePath
             });
             return info;
@@ -272,11 +344,31 @@ export class ObsidianLibraryWriter implements LibraryWriter {
   }
 
   async loadReadingSessions(bookId: BookId): Promise<ReadonlyArray<ReadingSession>> {
-    const cached = this.cacheByBookId.get(bookId);
-    let sessionsPath: string | undefined = cached?.sessionsPath;
+    let sessionsPath = this.cacheByBookId.get(bookId)?.sessionsPath;
     if (!sessionsPath) {
-      const info = await this.findAndReadBookInfo(bookId);
-      sessionsPath = info ? this.cacheByBookId.get(bookId)?.sessionsPath : undefined;
+      // P0 fix: the old code resolved the path exclusively through
+      // `findAndReadBookInfo`, i.e. by finding an `info/<base>.md` that
+      // carries the bookId in its frontmatter. But `writeBookInfo` has no
+      // production caller, so `info/` is empty for every real user — and
+      // after an Obsidian restart (cold cache) this returned `[]` even
+      // though `sessions/<base>.jsonl` was sitting on disk full of data.
+      // The BookInfoModal reading-time panel was therefore zero for every
+      // user until they happened to re-read a book in the same session.
+      //
+      // Fall back to locating the sessions file by its id tag: the file
+      // name is `<safeTitle>-<idTag>.jsonl` and the id tag is derived from
+      // the bookId alone, so it is stable without any title or info.md.
+      sessionsPath = await this.findSessionsPathByIdTag(bookId);
+      if (sessionsPath) {
+        this.cacheByBookId.set(bookId, {
+          notesPath: siblingPath(sessionsPath, NOTES_SUBDIR, ".md"),
+          infoPath: siblingPath(sessionsPath, INFO_SUBDIR, ".md"),
+          sessionsPath,
+          bookId,
+          title: "",
+          bookPath: bookId
+        });
+      }
     }
     if (!sessionsPath) return [];
     const file = this.app.vault.getAbstractFileByPath(sessionsPath);
@@ -533,6 +625,32 @@ const renderThoughtBlock = (input: ThoughtInput, blockId: string, protocol: stri
 
 const sanitizeDir = (raw: string): string =>
   normalizePath(raw.trim().replace(/^\/+/, ""));
+
+/**
+ * Map an `ezreader/<subdir>/<base>.<ext>` path onto one of its siblings,
+ * e.g. `ezreader/info/Dune-a1b2c3d4.md` →
+ *   `ezreader/sessions/Dune-a1b2c3d4.jsonl`.
+ *
+ * Used by the cold-cache lookup to recover `notesPath` / `sessionsPath`
+ * from a discovered `infoPath` without re-deriving the naming scheme from
+ * the book title.
+ */
+const siblingPath = (infoPath: string, subdir: string, ext: string): string => {
+  const base = infoPath.split("/").pop()?.replace(/\.md$/i, "") ?? "";
+  return normalizePath(`${LIBRARY_BASE_DIR}/${subdir}/${base}${ext}`);
+};
+
+/**
+ * Stable, path-safe, collision-free tag for a bookId.
+ *
+ * The bookId IS the vault path, so it can contain `/` — unusable as a
+ * filename component. It is also usually a long shared prefix
+ * (`04-resources/books/...`), so slicing it is not unique either. Hashing
+ * the whole thing fixes both: 10 hex chars off SHA-1, so ~2^40 buckets
+ * and a book library will never hit a collision.
+ */
+const bookIdTag = (bookId: BookId): string =>
+  hexFromBuffer(sha1Bytes(new TextEncoder().encode(bookId))).slice(0, 10);
 
 const sanitizeFileBase = (raw: string): string => {
   const cleaned = raw

@@ -12163,17 +12163,16 @@ var init_dailyReadingTime = __esm({
       const result = [];
       const today = new Date(now);
       today.setHours(0, 0, 0, 0);
-      const todayMs = today.getTime();
-      const oneDayMs = 24 * 60 * 60 * 1e3;
+      const cursor = new Date(today);
       for (let i3 = 0; i3 < days; i3 += 1) {
-        const dayMs = todayMs - i3 * oneDayMs;
-        const date = localDateString(dayMs);
+        const date = localDateString(cursor.getTime());
         const bucket = buckets.get(date);
         result.push({
           date,
           totalMs: bucket?.totalMs ?? 0,
           sessionCount: bucket?.count ?? 0
         });
+        cursor.setDate(cursor.getDate() - 1);
       }
       return result;
     };
@@ -12687,6 +12686,13 @@ var init_pdfOverlay = __esm({
       bookTitle = "";
       targetLocale = "zh-CN";
       mounted = false;
+      /**
+       * Marks the highlight layer as needing a reposition on the next animation
+       * frame. Assigned in `mount()` once the rAF loop's closure exists; until
+       * then it is a no-op so `mount()`-time callers are safe.
+       */
+      markHighlightsDirty = () => {
+      };
       /** P1: in-PDF find state — see `runPdfSearch`. */
       pdfFindQuery = "";
       pdfFindCurrentPage = null;
@@ -12749,6 +12755,7 @@ var init_pdfOverlay = __esm({
         });
         this.renderHighlightsDebounced = debounce2(() => void this.renderHighlights(), 250);
         this.repositionHighlightsDebounced = debounce2(() => this.repositionHighlights(), 100);
+        this.markHighlightsDirty();
       }
       /** Resolve bookId + title + translation locale. Must be awaited before mount. */
       async resolveBook() {
@@ -12819,6 +12826,7 @@ var init_pdfOverlay = __esm({
         highlightObserver.observe(this.container, { childList: true, subtree: true });
         this.disposers.push(() => highlightObserver.disconnect());
         const onViewportChange = () => {
+          this.markHighlightsDirty();
           this.repositionHighlightsDebounced();
         };
         window.addEventListener("resize", onViewportChange);
@@ -12828,15 +12836,26 @@ var init_pdfOverlay = __esm({
           pdfViewerEl.addEventListener("scroll", onViewportChange);
           this.disposers.push(() => pdfViewerEl.removeEventListener("scroll", onViewportChange));
           let rafHandle = 0;
-          let lastUpdate = 0;
+          let lastScrollTop = Number.NaN;
+          let lastScrollLeft = Number.NaN;
+          let dirty = true;
           const tick = () => {
-            const now = performance.now();
-            this.repositionHighlights();
-            lastUpdate = now;
             rafHandle = window.requestAnimationFrame(tick);
+            const scroller = this.container.querySelector(".pdf-viewer, .pdfViewer");
+            const top = scroller instanceof HTMLElement ? scroller.scrollTop : this.container.scrollTop;
+            const left = scroller instanceof HTMLElement ? scroller.scrollLeft : this.container.scrollLeft;
+            if (dirty || top !== lastScrollTop || left !== lastScrollLeft) {
+              dirty = false;
+              lastScrollTop = top;
+              lastScrollLeft = left;
+              this.repositionHighlights();
+            }
           };
           rafHandle = window.requestAnimationFrame(tick);
           this.disposers.push(() => window.cancelAnimationFrame(rafHandle));
+          this.markHighlightsDirty = () => {
+            dirty = true;
+          };
         }
         const onLeafChange = () => {
           if (!this.isLeafAlive()) {
@@ -12852,6 +12871,15 @@ var init_pdfOverlay = __esm({
         };
         this.opts.app.workspace.on("active-leaf-change", onLeafChange);
         this.disposers.push(() => this.opts.app.workspace.off("active-leaf-change", onLeafChange));
+        const onLayoutChange = () => {
+          if (!this.mounted) return;
+          if (!this.isLeafAlive()) {
+            this.flushPdfActiveSession();
+            this.unmount();
+          }
+        };
+        this.opts.app.workspace.on("layout-change", onLayoutChange);
+        this.disposers.push(() => this.opts.app.workspace.off("layout-change", onLayoutChange));
         const onVisibilityChange = () => {
           if (document.hidden) {
             this.flushPdfActiveSession();
@@ -12988,6 +13016,8 @@ var init_pdfOverlay = __esm({
         this.activeSessionProgressStart = 0;
         this.clearPdfInactivityCheck();
         if (delta < 1e3) return;
+        if (!this.shouldCountReadingTime(delta)) return;
+        this.lastReadingFlushAt = Date.now();
         void this.flushPdfReadingTime(delta);
         const entry = this.opts.library.list().find((e3) => e3.book.id === this.bookId);
         const titleHint = entry?.book.metadata?.title ?? this.opts.bookPath.split("/").pop()?.replace(/\.[^.]+$/, "") ?? this.bookId;
@@ -13017,14 +13047,22 @@ var init_pdfOverlay = __esm({
       }
       async flushPdfReadingTime(deltaMs) {
         if (!this.bookId) return;
-        const now = Date.now();
-        if (now - this.lastReadingFlushAt < 3e4 && deltaMs < 6e4) return;
-        this.lastReadingFlushAt = now;
         try {
           await this.opts.reading.addReadingTime(this.bookId, deltaMs);
         } catch (error) {
           console.warn("[ez-reader] flushPdfReadingTime failed", error);
         }
+      }
+      /**
+       * P1 fix: this gate used to live inside `flushPdfReadingTime`, so it only
+       * protected `totalReadingMs`. `recordSession` — called a few lines above —
+       * bypassed it, so `sessions.jsonl` accumulated intervals that the
+       * cumulative counter never saw, and the BookInfoModal total drifted away
+       * from the toolbar total. Mirrors `ReaderView.shouldCountReadingTime`.
+       */
+      shouldCountReadingTime(deltaMs) {
+        if (Date.now() - this.lastReadingFlushAt < 3e4) return deltaMs >= 6e4;
+        return true;
       }
       /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */
       restartPdfInactivityCheck() {
@@ -14188,6 +14226,14 @@ var sha1Bytes = (bytes) => {
   outView.setUint32(16, h4, false);
   return out;
 };
+var hexFromBuffer = (buffer) => {
+  const view = new Uint8Array(buffer);
+  let out = "";
+  for (let i3 = 0; i3 < view.length; i3++) {
+    out += view[i3].toString(16).padStart(2, "0");
+  }
+  return out;
+};
 
 // src/platform/polyfills.ts
 if (typeof Object.groupBy !== "function") {
@@ -14642,7 +14688,16 @@ var ObsidianAnnotationStore = class {
       visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId),
       // v0.3.0: 一次性迁移完成标记. sanitize boolean — 老 data.json
       // 没这个字段 → false → Plugin.runV030Migration 跑一次。
-      migratedToV030: raw?.migratedToV030 === true
+      //
+      // P1 fix: `Plugin.runV030Migration` wrote this flag via
+      // `patchSettings`, which lands it at `data.json.settings.migratedToV030`,
+      // while this read looks at the TOP level. The guard therefore never
+      // tripped and the legacy-notes migration re-ran on every launch,
+      // re-listing and re-reading the whole old folder each time. Read
+      // both, so a flag written by the buggy build is still honored.
+      migratedToV030: raw?.migratedToV030 === true || raw?.settings?.migratedToV030 === true,
+      // Retry counter for a failed migration. Absent → 0 attempts so far.
+      migratedToV030Attempts: typeof raw?.migratedToV030Attempts === "number" && Number.isFinite(raw.migratedToV030Attempts) ? raw.migratedToV030Attempts : 0
     };
     return this.cache;
   }
@@ -14891,6 +14946,26 @@ var ObsidianAnnotationStore = class {
       const snapshot = await this.load();
       if (snapshot.onboardingDismissed === true) return snapshot;
       return { ...snapshot, onboardingDismissed: true };
+    });
+  }
+  /**
+   * P1 fix: record the v0.3.0 migration outcome at the TOP level of
+   * `data.json`, which is where `load()` looks. Writing it through
+   * `patchSettings` put it under `settings.*` instead, so the migration
+   * re-ran on every launch. `passed` records whether the run actually
+   * finished; `Plugin` retries a failed run a bounded number of times.
+   */
+  async setMigratedToV030(passed, attempts) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.migratedToV030 === passed && snapshot.migratedToV030Attempts === attempts) {
+        return snapshot;
+      }
+      return {
+        ...snapshot,
+        migratedToV030: passed,
+        ...attempts === void 0 ? {} : { migratedToV030Attempts: attempts }
+      };
     });
   }
   async getAddedAt(bookId) {
@@ -15513,8 +15588,7 @@ var ObsidianLibraryWriter = class {
     await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}`);
     await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
     const safeTitle = sanitizeFileBase(input.bookTitle || input.bookPath.split("/").pop() || input.bookId);
-    const idTag = input.bookId.slice(0, 8);
-    const fileBase = `${safeTitle}-${idTag}`;
+    const fileBase = await this.resolveFileBase(input.bookId, safeTitle);
     const notesPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
     const infoPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}/${fileBase}.md`);
     const sessionsPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`);
@@ -15532,6 +15606,66 @@ var ObsidianLibraryWriter = class {
     };
     this.cacheByBookId.set(input.bookId, ref);
     return ref;
+  }
+  /**
+   * Build the `<safeTitle>-<idTag>` file base for a book.
+   *
+   * P0 fix: `bookId` IS the vault path (`ObsidianBookSource.resolveId`
+   * returns `locator.path`), so the old `bookId.slice(0, 8)` could contain
+   * a `/` — e.g. `books/dune.epub` → `Dune-books/du.md` → a path whose
+   * parent directory does not exist → `vault.create` throws ENOENT and
+   * every excerpt for that book is silently dropped. Any vault with a
+   * 5–7 character top-level folder (`books/`, `notes/`, `library/`) hit
+   * this.
+   *
+   * It was ALSO not unique: a path prefix is shared by everything under the
+   * same first 8 characters, so every book in `04-resources/books/` produced
+   * the tag `04-resou`. Sanitizing the prefix does not help — it is still a
+   * prefix. The tag is now a hash of the whole bookId: path-safe AND
+   * collision-free.
+   *
+   * The legacy raw-slice form is still checked first: it could only ever
+   * have produced a working path when the first path segment was ≥ 8
+   * characters, so existing `notes/*.md` files under such vaults must stay
+   * reachable or they'd be orphaned by the upgrade.
+   */
+  async resolveFileBase(bookId, safeTitle) {
+    const legacyTag = bookId.slice(0, 8);
+    if (!legacyTag.includes("/")) {
+      const legacyBase = `${safeTitle}-${legacyTag}`;
+      const legacyNotes = `${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${legacyBase}.md`;
+      if (this.app.vault.getAbstractFileByPath(legacyNotes) instanceof import_obsidian3.TFile) {
+        return legacyBase;
+      }
+    }
+    return `${safeTitle}-${bookIdTag(bookId)}`;
+  }
+  /**
+   * Locate `ezreader/sessions/<safeTitle>-<idTag>.jsonl` for a book without
+   * relying on `info.md` or on knowing the book's title.
+   *
+   * The id tag is derived from the bookId alone, and every sessions file is
+   * named `<something>-<idTag>.jsonl`, so a suffix match over a directory
+   * listing identifies the right file. Both the sanitized and the legacy
+   * raw-slice tags are tried. Returns `null` when nothing matches.
+   */
+  async findSessionsPathByIdTag(bookId) {
+    const dir = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
+    let files;
+    try {
+      files = (await this.app.vault.adapter.list(dir)).files;
+    } catch {
+      return void 0;
+    }
+    const legacyTag = bookId.slice(0, 8);
+    const tags = [bookIdTag(bookId)];
+    if (!legacyTag.includes("/") && !tags.includes(legacyTag)) tags.push(legacyTag);
+    for (const filePath of files) {
+      if (!filePath.endsWith(".jsonl")) continue;
+      const stem = filePath.split("/").pop().replace(/\.jsonl$/i, "");
+      if (tags.some((tag) => tag.length > 0 && stem.endsWith(`-${tag}`))) return filePath;
+    }
+    return void 0;
   }
   // -----------------------------------------------------------------------
   // Excerpt / Thought
@@ -15644,15 +15778,12 @@ ${block}`);
               title: bookId
             });
             const info = bookInfoFromFrontmatter(parsed, defaults2);
-            const safeTitle = info.title;
-            const idTag = bookId.slice(0, 8);
-            const fileBase = `${sanitizeFileBase(safeTitle)}-${idTag}`;
             this.cacheByBookId.set(bookId, {
-              notesPath: (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`),
+              notesPath: siblingPath(filePath, NOTES_SUBDIR, ".md"),
               infoPath: filePath,
-              sessionsPath: (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`),
+              sessionsPath: siblingPath(filePath, SESSIONS_SUBDIR, ".jsonl"),
               bookId,
-              title: safeTitle,
+              title: info.title,
               bookPath: info.filePath
             });
             return info;
@@ -15680,11 +15811,19 @@ ${block}`);
     });
   }
   async loadReadingSessions(bookId) {
-    const cached = this.cacheByBookId.get(bookId);
-    let sessionsPath = cached?.sessionsPath;
+    let sessionsPath = this.cacheByBookId.get(bookId)?.sessionsPath;
     if (!sessionsPath) {
-      const info = await this.findAndReadBookInfo(bookId);
-      sessionsPath = info ? this.cacheByBookId.get(bookId)?.sessionsPath : void 0;
+      sessionsPath = await this.findSessionsPathByIdTag(bookId);
+      if (sessionsPath) {
+        this.cacheByBookId.set(bookId, {
+          notesPath: siblingPath(sessionsPath, NOTES_SUBDIR, ".md"),
+          infoPath: siblingPath(sessionsPath, INFO_SUBDIR, ".md"),
+          sessionsPath,
+          bookId,
+          title: "",
+          bookPath: bookId
+        });
+      }
     }
     if (!sessionsPath) return [];
     const file = this.app.vault.getAbstractFileByPath(sessionsPath);
@@ -15887,6 +16026,11 @@ var renderThoughtBlock = (input, blockId, protocol) => {
   return lines.join("\n");
 };
 var sanitizeDir = (raw) => (0, import_obsidian3.normalizePath)(raw.trim().replace(/^\/+/, ""));
+var siblingPath = (infoPath, subdir, ext) => {
+  const base = infoPath.split("/").pop()?.replace(/\.md$/i, "") ?? "";
+  return (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}/${base}${ext}`);
+};
+var bookIdTag = (bookId) => hexFromBuffer(sha1Bytes(new TextEncoder().encode(bookId))).slice(0, 10);
 var sanitizeFileBase = (raw) => {
   const cleaned = raw.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}\-_]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80);
   return cleaned || "untitled";
@@ -23737,6 +23881,10 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
   windowHasFocus = true;
   static INACTIVITY_TIMEOUT_MS = 3e4;
   static INTERACTION_THROTTLE_MS = 5e3;
+  /** Ignore a flush within this window unless it is long enough to stand on its own. */
+  static READING_FLUSH_DEBOUNCE_MS = 3e4;
+  /** A single interval this long is always counted, debounce or not. */
+  static READING_FLUSH_MIN_MS = 6e4;
   /**
    * P0 v0.3.0 fix: 当前 active session 的元数据. session 启动时 capture
    * (chapter / progressStart), flush 时跟 progressEnd + durationMs 一起
@@ -23982,6 +24130,11 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     }
     this.pendingSelection = void 0;
     this.selectionMenu?.hide();
+    this.tocFractions.clear();
+    this.persistVisitedLastSnapshot = [];
+    this.tocItems = [];
+    this.tocPanel?.setVisited([]);
+    if (this.toolbar && this.entry) this.toolbar.update(this.toolbarState());
     this.markReady();
     if (this.host) {
       void this.openSession();
@@ -24240,6 +24393,8 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     this.activeSessionProgressStart = 0;
     this.clearInactivityCheck();
     if (delta < 1e3) return;
+    if (!this.shouldCountReadingTime(delta)) return;
+    this.lastReadingFlushAt = Date.now();
     void this.flushReadingTime(delta);
     if (this.entry) {
       const titleHint = this.entry.book.metadata?.title ?? this.entry.book.locator.path;
@@ -24273,9 +24428,6 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
   }
   async flushReadingTime(deltaMs) {
     if (!this.entry) return;
-    const now = Date.now();
-    if (now - this.lastReadingFlushAt < 3e4 && deltaMs < 6e4) return;
-    this.lastReadingFlushAt = now;
     try {
       const next = await this.deps.reading.addReadingTime(this.entry.book.id, deltaMs);
       this.entry = { ...this.entry, reading: next };
@@ -24283,6 +24435,26 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     } catch (error) {
       console.warn("[ez-reader] flushReadingTime failed", error);
     }
+  }
+  /**
+   * Should this interval be counted at all?
+   *
+   * P1 fix: this gate used to live inside `flushReadingTime`, which meant
+   * it only protected `totalReadingMs` (the toolbar / info.md counter).
+   * `recordSession` — called one line later from `flushActiveSession` —
+   * bypassed it entirely, so every ≥1s interval landed in sessions.jsonl
+   * while sub-threshold ones were dropped from the cumulative total. The
+   * BookInfoModal chart and the toolbar counter therefore drifted apart
+   * in both directions depending on reading pattern.
+   *
+   * The decision is now made once per flush and applied to BOTH writers,
+   * so the two numbers are the same number by construction.
+   */
+  shouldCountReadingTime(deltaMs) {
+    if (Date.now() - this.lastReadingFlushAt < _ReaderView.READING_FLUSH_DEBOUNCE_MS) {
+      return deltaMs >= _ReaderView.READING_FLUSH_MIN_MS;
+    }
+    return true;
   }
   // ---- 键盘 ----
   bindKeyboardNavigation() {
@@ -25411,6 +25583,28 @@ var UI_LOCALES = [
 var isUiLocale = (value) => value === "zh-CN" || value === "zh-TW" || value === "en" || value === "fr";
 
 // src/ui/settings/SettingsTab.ts
+var redactSecrets = (snapshot) => {
+  const copy = structuredCloneCompat(snapshot);
+  const translation = copy?.settings?.translation;
+  if (translation && typeof translation === "object") {
+    translation.apiKey = "";
+    translation.__redactedApiKey = true;
+  }
+  return copy;
+};
+var restoreExportedKeys = (incoming, current) => {
+  const next = incoming;
+  const nextTranslation = next?.settings?.translation;
+  if (!nextTranslation || nextTranslation.__redactedApiKey !== true) return incoming;
+  const currentKey = current?.settings?.translation?.apiKey;
+  nextTranslation.apiKey = currentKey ?? "";
+  delete nextTranslation.__redactedApiKey;
+  return incoming;
+};
+var structuredCloneCompat = (value) => {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+};
 var THEMES2 = ["system", "light", "dark", "sepia"];
 var themeLabel2 = (theme) => {
   switch (theme) {
@@ -25988,7 +26182,7 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
   }
   async exportData() {
     const data = await this.annotations.load();
-    const json = JSON.stringify(data, null, 2);
+    const json = JSON.stringify(redactSecrets(data), null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a3 = document.createElement("a");
@@ -25998,6 +26192,10 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
     a3.click();
     a3.remove();
     URL.revokeObjectURL(url);
+    const hadKey = typeof data?.settings?.translation?.apiKey === "string" && !!data?.settings?.translation?.apiKey;
+    new import_obsidian18.Notice(
+      hadKey ? "\u6570\u636E\u5DF2\u5BFC\u51FA (API key \u5DF2\u8131\u654F, \u4E0D\u4F1A\u5199\u5165\u5907\u4EFD\u6587\u4EF6)" : "\u6570\u636E\u5DF2\u5BFC\u51FA"
+    );
   }
   async importData() {
     const input = document.createElement("input");
@@ -26021,7 +26219,11 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
         if (!Array.isArray(parsed.library) || !Array.isArray(parsed.reading) || !Array.isArray(parsed.bookmarks) || !Array.isArray(parsed.excerpts)) {
           throw new Error("library/reading/bookmarks/excerpts \u5FC5\u987B\u662F\u6570\u7EC4");
         }
-        await this.annotations.save(parsed);
+        const merged = restoreExportedKeys(
+          parsed,
+          await this.annotations.load()
+        );
+        await this.annotations.save(merged);
         const counts = parsed;
         new import_obsidian18.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${counts.excerpts.length} \u6458\u5F55, ${counts.bookmarks.length} \u4E66\u7B7E, ${counts.library.length} \u4E66)`);
       } catch (error) {
@@ -26035,6 +26237,7 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
 };
 
 // src/Plugin.ts
+var MIGRATION_MAX_ATTEMPTS = 5;
 var EzReaderPlugin = class extends import_obsidian20.Plugin {
   bookSource;
   annotationStore;
@@ -26056,6 +26259,7 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
   async onload() {
     this.bookSource = new ObsidianBookSource(this.app);
     this.annotationStore = new ObsidianAnnotationStore(this);
+    this.noteWriter = new ObsidianLibraryWriter(this.app, this, this.annotationStore);
     await this.enableAllBookFormatsInFileExplorer();
     this.foliate = new FoliateBookReader();
     this.txtReader = new TxtBookReader();
@@ -26086,7 +26290,10 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
       this.bookSource,
       this.annotationStore,
       metadataReader,
-      this.makeBookBytesLoader()
+      this.makeBookBytesLoader(),
+      // P0 fix: 第 5 个参数必须传, 否则 getRichEntry 的 analytics 分支
+      // 永远跳过 (dailyReadingTime: [] / streak: 0 / info.md 读不到).
+      this.noteWriter
     );
     this.reading = new ReadingService(
       this.annotationStore,
@@ -26125,7 +26332,6 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
       },
       this.annotationStore
     );
-    this.noteWriter = new ObsidianLibraryWriter(this.app, this, this.annotationStore);
     this.app.workspace.onLayoutReady(async () => {
       await this.runV030Migration();
       await this.library.initialize();
@@ -26481,9 +26687,18 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
    * v0.3.0: 一次性迁移老 `notesDirectory/` → 新 `<vault>/ezreader/notes/`
    * 布局。跑过一次后写 `migratedToV030 = true`,后续启动跳过。
    *
-   * 失败的 case 不会抛 — try/catch 包住,失败时只 console.warn,标记位
-   * 仍然写成 `true`(避免每次启动都重试失败的成本)。用户如果想重跑,
-   * 手动把 data.json 的 `migratedToV030` 改成 `false` 重启。
+   * P1 修复两点:
+   *
+   * 1. 标志写错层。旧代码用 `patchSettings` 写,落在 `settings.migratedToV030`,
+   *    而 `load()` 读的是顶层 `migratedToV030` — 守卫永远不触发,老笔记
+   *    迁移**每次启动都重跑一遍**(重新 list + read 整个老目录)。现在走
+   *    `setMigratedToV030`,写在顶层。
+   *
+   * 2. 失败也写标志。旧代码在 catch 里也写 `true`,理由是"避免重试风暴",
+   *    但对 Syncthing 用户这是错的:新设备上老目录可能还没同步下来,
+   *    此时迁移静默跳过并被永久标记为完成,老笔记从此再也搬不过去。
+   *    现在失败时保持 `false` 并计数重试,最多 {@link MIGRATION_MAX_ATTEMPTS}
+   *    次 —— 既能等到同步完成,又不会对着一个永远不存在的目录无限重扫。
    *
    * 为什么不删老目录:留给用户 review。LibraryWriter.migrateLegacyNotes
    * 只把 `.md` 文件搬走,空目录用户可以自己 `rm -r`。
@@ -26492,25 +26707,34 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
     try {
       const snapshot = await this.annotationStore.load();
       if (snapshot.migratedToV030 === true) return;
+      const attempts = snapshot.migratedToV030Attempts ?? 0;
+      if (attempts >= MIGRATION_MAX_ATTEMPTS) {
+        if (attempts === MIGRATION_MAX_ATTEMPTS) {
+          new import_obsidian20.Notice(
+            `EzReader \u8FC1\u79FB\u5DF2\u91CD\u8BD5 ${attempts} \u6B21\u4ECD\u672A\u5B8C\u6210,\u5DF2\u505C\u6B62\u91CD\u8BD5\u3002\u8001\u7B14\u8BB0\u4ECD\u5728 ${snapshot.settings.notesDirectory?.trim() || "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0"},\u53EF\u624B\u52A8\u79FB\u52A8\u5230 ezreader/notes/,\u6216\u628A data.json \u7684 migratedToV030Attempts \u5F52\u96F6\u540E\u91CD\u542F\u3002`
+          );
+          await this.annotationStore.setMigratedToV030(false, MIGRATION_MAX_ATTEMPTS + 1);
+        }
+        return;
+      }
       const legacyDir = snapshot.settings.notesDirectory?.trim() || "ezreader-notes/\u9605\u8BFB\u7B14\u8BB0";
       const result = await this.noteWriter.migrateLegacyNotes({ legacyNotesDir: legacyDir });
+      const clean = result.failedNotes === 0;
       if (result.migratedNotes > 0 || result.failedNotes > 0) {
         new import_obsidian20.Notice(
-          `EzReader 0.3.0 \u8FC1\u79FB: ${result.migratedNotes} \u4E2A\u7B14\u8BB0\u642C\u5230 ezreader/notes/,${result.failedNotes > 0 ? ` ${result.failedNotes} \u4E2A\u5931\u8D25` : ""}`
+          `EzReader 0.3.0 \u8FC1\u79FB: ${result.migratedNotes} \u4E2A\u7B14\u8BB0\u642C\u5230 ezreader/notes/${result.failedNotes > 0 ? `,${result.failedNotes} \u4E2A\u5931\u8D25(\u5C06\u5728\u4E0B\u6B21\u542F\u52A8\u91CD\u8BD5)` : ""}`
         );
       }
-      await this.annotationStore.patchSettings((s3) => ({
-        ...s3,
-        notesDirectory: "",
-        migratedToV030: true
-      }));
+      await this.annotationStore.patchSettings((s3) => ({ ...s3, notesDirectory: "" }));
+      await this.annotationStore.setMigratedToV030(clean, attempts + 1);
       console.info(
-        `[ez-reader] v0.3.0 migration complete: ${result.migratedNotes} migrated, ${result.failedNotes} failed`
+        `[ez-reader] v0.3.0 migration attempt ${attempts + 1}: ${result.migratedNotes} migrated, ${result.failedNotes} failed`
       );
     } catch (error) {
       console.warn("[ez-reader] v0.3.0 migration failed", error);
       try {
-        await this.annotationStore.patchSettings((s3) => ({ ...s3, migratedToV030: true }));
+        const snapshot = await this.annotationStore.load();
+        await this.annotationStore.setMigratedToV030(false, (snapshot.migratedToV030Attempts ?? 0) + 1);
       } catch (innerError) {
         console.warn("[ez-reader] could not persist migratedToV030 flag", innerError);
       }

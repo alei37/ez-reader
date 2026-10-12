@@ -59,6 +59,14 @@ export interface AnnotationSnapshot {
    * 老 data.json 没这字段 → false → Plugin.runV030Migration 跑一次.
    */
   readonly migratedToV030?: boolean;
+  /**
+   * How many times the v0.3.0 migration has been attempted. A failed run
+   * (e.g. the legacy folder has not finished syncing yet on a second
+   * device) leaves `migratedToV030` false so the next launch retries,
+   * but only up to {@link MIGRATION_MAX_ATTEMPTS} so a permanently
+   * missing folder can't re-scan the vault on every single startup.
+   */
+  readonly migratedToV030Attempts?: number;
 }
 
 /** Read/write access to annotation data, independent of how it's persisted. */
@@ -106,6 +114,23 @@ export interface AnnotationStore {
    * stored on the snapshot so it survives plugin reloads.
    */
   markOnboardingDismissed(): Promise<void>;
+
+  /**
+   * Record the outcome of the v0.3.0 legacy-notes migration.
+   *
+   * Writes the flag at the TOP level of the snapshot — NOT inside
+   * `settings` — because it is migration state, not user configuration.
+   * `Plugin.runV030Migration` previously used `patchSettings`, which put
+   * it under `settings.migratedToV030` while `load()` read the top level,
+   * so the "already migrated" guard never fired and the migration re-ran
+   * on every launch.
+   *
+   * @param passed  `true` only when the run genuinely finished. A failed
+   *                run leaves it `false` so the next launch retries.
+   * @param attempts  Retry counter, so a permanently missing legacy folder
+   *                doesn't re-scan the vault forever.
+   */
+  setMigratedToV030(passed: boolean, attempts?: number): Promise<void>;
   /**
    * Has the first-launch onboarding modal been dismissed on this vault?
    * Used by ShelfView to decide whether to surface the modal again.

@@ -165,6 +165,12 @@ export class PdfOverlay {
   private bookTitle = "";
   private targetLocale = "zh-CN";
   private mounted = false;
+  /**
+   * Marks the highlight layer as needing a reposition on the next animation
+   * frame. Assigned in `mount()` once the rAF loop's closure exists; until
+   * then it is a no-op so `mount()`-time callers are safe.
+   */
+  private markHighlightsDirty: () => void = () => {};
   /** P1: in-PDF find state — see `runPdfSearch`. */
   private pdfFindQuery = "";
   private pdfFindCurrentPage: number | null = null;
@@ -232,6 +238,8 @@ export class PdfOverlay {
 
     this.renderHighlightsDebounced = debounce(() => void this.renderHighlights(), 250);
     this.repositionHighlightsDebounced = debounce(() => this.repositionHighlights(), 100);
+    // Default: nothing has moved yet, but the first rAF frame should run.
+    this.markHighlightsDirty();
   }
 
   /** Resolve bookId + title + translation locale. Must be awaited before mount. */
@@ -325,6 +333,10 @@ export class PdfOverlay {
 
     // viewport 变化 — 原地更新位置 (不重建)
     const onViewportChange = () => {
+      // Scroll/resize can move a highlight without the debounced pass
+      // firing in time (Obsidian PDFView scrolls programmatically), so
+      // flag the rAF loop directly too.
+      this.markHighlightsDirty();
       this.repositionHighlightsDebounced();
     };
     window.addEventListener("resize", onViewportChange);
@@ -341,17 +353,41 @@ export class PdfOverlay {
       // 可忽略. 但仍要 debounce 100ms 避免节流期间的密集 update (highlight
       // div 修改触发的 layout 影响 page element 反过来再次触发观察).
       let rafHandle = 0;
-      let lastUpdate = 0;
+      let lastScrollTop = Number.NaN;
+      let lastScrollLeft = Number.NaN;
+      let dirty = true;
       const tick = (): void => {
-        const now = performance.now();
-        // 每帧检查一次位置 — 但只在 viewport 真的变化时触发 update, 避免空跑.
-        // 简化: 永远调一次 reposition, 内部判断 visible / hidden / in-place.
-        this.repositionHighlights();
-        lastUpdate = now;
         rafHandle = window.requestAnimationFrame(tick);
+        // P1 fix: this used to call `repositionHighlights()` on EVERY frame.
+        // That method is not cheap — per highlight it locates the page
+        // element, scans the page's text layer for the search string, then
+        // removes and recreates every `extraDivs` node with fresh DOM
+        // writes. At 60fps with 80 excerpts on a 300-page PDF that is
+        // ~4800 full-page text scans plus 4800 node create/destroy cycles
+        // per second on the main thread — enough to make the tab unusable
+        // and get it killed by the GPU watchdog.
+        //
+        // Highlight rectangles only move when the viewport does, so gate on
+        // scroll geometry. The explicit `repositionHighlightsDebounced()`
+        // callers (resize / mutation) mark the layer dirty so lazy page
+        // loads and zoom still refresh promptly.
+        const scroller = this.container.querySelector(".pdf-viewer, .pdfViewer");
+        const top = scroller instanceof HTMLElement ? scroller.scrollTop : this.container.scrollTop;
+        const left = scroller instanceof HTMLElement ? scroller.scrollLeft : this.container.scrollLeft;
+        if (dirty || top !== lastScrollTop || left !== lastScrollLeft) {
+          dirty = false;
+          lastScrollTop = top;
+          lastScrollLeft = left;
+          this.repositionHighlights();
+        }
       };
       rafHandle = window.requestAnimationFrame(tick);
       this.disposers.push(() => window.cancelAnimationFrame(rafHandle));
+      // Anything that can move a highlight without moving the scroll
+      // offset flags the layer for the next frame.
+      this.markHighlightsDirty = () => {
+        dirty = true;
+      };
     }
 
     // workspace 变化 — 检测 leaf 是否还在, 同时驱动 PDF 阅读时长 session
@@ -371,6 +407,28 @@ export class PdfOverlay {
     };
     this.opts.app.workspace.on("active-leaf-change", onLeafChange);
     this.disposers.push(() => this.opts.app.workspace.off("active-leaf-change", onLeafChange));
+
+    // P1 fix: `active-leaf-change` does NOT fire when a *background* tab is
+    // closed — Obsidian only emits it for the newly-activated leaf. So a
+    // PDF opened from the shelf, then closed after switching to a markdown
+    // tab, left this overlay fully alive: two MutationObservers watching a
+    // detached subtree, document-level selection/mousedown listeners, and
+    // an unconditional 60fps rAF loop calling `repositionHighlights()`.
+    // Ten such PDFs meant ten live render loops burning CPU until restart.
+    //
+    // `layout-change` fires for every tab close regardless of which tab was
+    // active, so it is the reliable death signal. `isLeafAlive()` does the
+    // actual check, and it is cheap (a detached flag + a view type compare),
+    // so running it on every layout change is fine.
+    const onLayoutChange = () => {
+      if (!this.mounted) return;
+      if (!this.isLeafAlive()) {
+        this.flushPdfActiveSession();
+        this.unmount();
+      }
+    };
+    this.opts.app.workspace.on("layout-change", onLayoutChange);
+    this.disposers.push(() => this.opts.app.workspace.off("layout-change", onLayoutChange));
 
     // P2 polish: Page Visibility + Window focus/blur — 切 tab / 切窗口时
     // 暂停 PDF 阅读时长计数 (跟 ReaderView 一致的 4 条件算法)。
@@ -536,6 +594,9 @@ export class PdfOverlay {
     this.activeSessionProgressStart = 0;
     this.clearPdfInactivityCheck();
     if (delta < 1000) return; // 太短的 session 不记录
+    // One gate, two writers — see `shouldCountReadingTime`.
+    if (!this.shouldCountReadingTime(delta)) return;
+    this.lastReadingFlushAt = Date.now();
     void this.flushPdfReadingTime(delta);
     // titleHint 从 entry.metadata.title 取 (fallback 到 filePath basename).
     // 真实 title 比 session.chapter / bookId 都稳定 — 保证 sessions.jsonl
@@ -573,16 +634,23 @@ export class PdfOverlay {
 
   private async flushPdfReadingTime(deltaMs: number): Promise<void> {
     if (!this.bookId) return;
-    const now = Date.now();
-    // 30s 防抖 + 1min 阈值 — 跟 ReaderView.flushReadingTime 一致,
-    // 避免高频切窗 / 翻页造成 IO 风暴。
-    if (now - this.lastReadingFlushAt < 30000 && deltaMs < 60000) return;
-    this.lastReadingFlushAt = now;
     try {
       await this.opts.reading.addReadingTime(this.bookId, deltaMs);
     } catch (error) {
       console.warn("[ez-reader] flushPdfReadingTime failed", error);
     }
+  }
+
+  /**
+   * P1 fix: this gate used to live inside `flushPdfReadingTime`, so it only
+   * protected `totalReadingMs`. `recordSession` — called a few lines above —
+   * bypassed it, so `sessions.jsonl` accumulated intervals that the
+   * cumulative counter never saw, and the BookInfoModal total drifted away
+   * from the toolbar total. Mirrors `ReaderView.shouldCountReadingTime`.
+   */
+  private shouldCountReadingTime(deltaMs: number): boolean {
+    if (Date.now() - this.lastReadingFlushAt < 30_000) return deltaMs >= 60_000;
+    return true;
   }
 
   /** 启动 30s inactivity timer — 触发时自动 flush 暂停. */

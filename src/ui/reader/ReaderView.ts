@@ -301,6 +301,10 @@ export class ReaderView extends ItemView {
   private windowHasFocus = true;
   private static readonly INACTIVITY_TIMEOUT_MS = 30_000;
   private static readonly INTERACTION_THROTTLE_MS = 5_000;
+  /** Ignore a flush within this window unless it is long enough to stand on its own. */
+  private static readonly READING_FLUSH_DEBOUNCE_MS = 30_000;
+  /** A single interval this long is always counted, debounce or not. */
+  private static readonly READING_FLUSH_MIN_MS = 60_000;
   /**
    * P0 v0.3.0 fix: 当前 active session 的元数据. session 启动时 capture
    * (chapter / progressStart), flush 时跟 progressEnd + durationMs 一起
@@ -604,6 +608,25 @@ export class ReaderView extends ItemView {
     // 旧书. 用户点 "翻译 / 摘录 / 想法" 按钮会作用在错的书上 (locator 也无效).
     this.pendingSelection = undefined;
     this.selectionMenu?.hide();
+
+    // P1 fix: 清掉上一本书的章节访问状态.
+    //
+    // `tocFractions` 之前从不在换书时重置, 而 `openSession` 会把新书持久化的
+    // visited ids 合并进同一个 Map, `flushVisited` 又把整个 keys() 写进
+    // `visitedTocIdsByBookId[新书id]`. 结果: 读完 A 再在同一 leaf 打开 B,
+    // A 的章节 id 被记成 B 已读 — B 的目录凭空多出几个绿点, toolbar 进度条上
+    // 画出 A 的标记点,而且已经写进 data.json 无法撤销.
+    //
+    // `persistVisitedLastSnapshot` 必须一起清, 否则 flushVisited 会以为
+    // "跟上次写盘一样" 而跳过第一次写入.
+    this.tocFractions.clear();
+    this.persistVisitedLastSnapshot = [];
+    this.tocItems = [];
+    this.tocPanel?.setVisited([]);
+    // Toolbar markers come from `toolbarState()` on every update; nudge it
+    // so the previous book's dots disappear immediately rather than at the
+    // next relocate.
+    if (this.toolbar && this.entry) this.toolbar.update(this.toolbarState());
     // 解析旧 readyPromise — 旧 awaiter (例如协议 handler 调
     // openExcerptById) 之前阻塞在 await whenReady(),现在让它退出.
     this.markReady();
@@ -908,6 +931,9 @@ export class ReaderView extends ItemView {
     this.activeSessionProgressStart = 0;
     this.clearInactivityCheck();
     if (delta < 1000) return; // 太短的 session 不记录 (切 tab 等瞬态)
+    // One gate, two writers. See `shouldCountReadingTime`.
+    if (!this.shouldCountReadingTime(delta)) return;
+    this.lastReadingFlushAt = Date.now();
     void this.flushReadingTime(delta);
     if (this.entry) {
       // 不 await — recordSession 内部会写 IO, 但不阻塞 UI.
@@ -945,9 +971,6 @@ export class ReaderView extends ItemView {
 
   private async flushReadingTime(deltaMs: number): Promise<void> {
     if (!this.entry) return;
-    const now = Date.now();
-    if (now - this.lastReadingFlushAt < 30000 && deltaMs < 60000) return;
-    this.lastReadingFlushAt = now;
     try {
       const next = await this.deps.reading.addReadingTime(this.entry.book.id, deltaMs);
       // 同步 entry 里的 reading 字段 — 让 toolbar 显示新累计。
@@ -956,6 +979,27 @@ export class ReaderView extends ItemView {
     } catch (error) {
       console.warn("[ez-reader] flushReadingTime failed", error);
     }
+  }
+
+  /**
+   * Should this interval be counted at all?
+   *
+   * P1 fix: this gate used to live inside `flushReadingTime`, which meant
+   * it only protected `totalReadingMs` (the toolbar / info.md counter).
+   * `recordSession` — called one line later from `flushActiveSession` —
+   * bypassed it entirely, so every ≥1s interval landed in sessions.jsonl
+   * while sub-threshold ones were dropped from the cumulative total. The
+   * BookInfoModal chart and the toolbar counter therefore drifted apart
+   * in both directions depending on reading pattern.
+   *
+   * The decision is now made once per flush and applied to BOTH writers,
+   * so the two numbers are the same number by construction.
+   */
+  private shouldCountReadingTime(deltaMs: number): boolean {
+    if (Date.now() - this.lastReadingFlushAt < ReaderView.READING_FLUSH_DEBOUNCE_MS) {
+      return deltaMs >= ReaderView.READING_FLUSH_MIN_MS;
+    }
+    return true;
   }
 
   // ---- 键盘 ----

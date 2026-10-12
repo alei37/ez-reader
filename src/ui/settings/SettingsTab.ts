@@ -13,6 +13,57 @@ import {
   type TranslationSettings
 } from "../../core/types/ReaderSettings";
 
+/**
+ * Strip credentials from a snapshot before it leaves the vault.
+ *
+ * The exported JSON is a file the user emails, syncs, or commits to a
+ * notes repo. `settings.translation.apiKey` is a plaintext credential —
+ * for the Google provider it is a full service-account JSON including a
+ * `private_key`. Shipping it in a "data backup" is how keys end up in
+ * git history.
+ *
+ * The key is replaced with an empty string plus a marker so that
+ * `restoreExportedKeys` can tell "intentionally blanked by the exporter"
+ * apart from "user genuinely has no key". Import then keeps whatever key
+ * the vault already has, which makes export → import a safe round-trip.
+ */
+export const redactSecrets = <T>(snapshot: T): T => {
+  const copy = structuredCloneCompat(snapshot) as {
+    settings?: { translation?: RedactableTranslation | null };
+  };
+  const translation = copy?.settings?.translation;
+  if (translation && typeof translation === "object") {
+    translation.apiKey = "";
+    translation.__redactedApiKey = true;
+  }
+  return copy as T;
+};
+
+/**
+ * Re-apply the current API key when importing a file that was produced by
+ * {@link redactSecrets}. Never overwrites a key the user actually set.
+ */
+export const restoreExportedKeys = <T>(incoming: T, current: T): T => {
+  const next = incoming as { settings?: { translation?: RedactableTranslation | null } };
+  const nextTranslation = next?.settings?.translation;
+  if (!nextTranslation || nextTranslation.__redactedApiKey !== true) return incoming;
+  const currentKey = (current as { settings?: { translation?: TranslationSettings | null } })
+    ?.settings?.translation?.apiKey;
+  nextTranslation.apiKey = currentKey ?? "";
+  delete nextTranslation.__redactedApiKey;
+  return incoming;
+};
+
+/** Translation settings plus the marker `redactSecrets` stamps on export. */
+type RedactableTranslation = {
+  -readonly [K in keyof TranslationSettings]: TranslationSettings[K];
+} & { __redactedApiKey?: boolean };
+
+const structuredCloneCompat = <T>(value: T): T => {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+
 const THEMES: ReaderTheme[] = ["system", "light", "dark", "sepia"];
 
 const themeLabel = (theme: ReaderTheme): string => {
@@ -739,7 +790,10 @@ export class SettingsTab extends PluginSettingTab {
 
   private async exportData(): Promise<void> {
     const data = await this.annotations.load();
-    const json = JSON.stringify(data, null, 2);
+    // P0 fix: never write the API key into the exported file. See
+    // `redactSecrets` — for the Google provider that field is a full
+    // service-account JSON with a private key.
+    const json = JSON.stringify(redactSecrets(data), null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -749,6 +803,14 @@ export class SettingsTab extends PluginSettingTab {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+    const hadKey = typeof (data as { settings?: { translation?: { apiKey?: string } } })
+      ?.settings?.translation?.apiKey === "string" &&
+      !!(data as { settings?: { translation?: { apiKey?: string } } })?.settings?.translation?.apiKey;
+    new Notice(
+      hadKey
+        ? "数据已导出 (API key 已脱敏, 不会写入备份文件)"
+        : "数据已导出"
+    );
   }
 
   private async importData(): Promise<void> {
@@ -776,7 +838,11 @@ export class SettingsTab extends PluginSettingTab {
             !Array.isArray(parsed.bookmarks) || !Array.isArray(parsed.excerpts)) {
           throw new Error("library/reading/bookmarks/excerpts 必须是数组");
         }
-        await this.annotations.save(parsed as never);
+        const merged = restoreExportedKeys(
+      parsed as unknown as Record<string, unknown>,
+      (await this.annotations.load()) as unknown as Record<string, unknown>
+    );
+    await this.annotations.save(merged as never);
         const counts = parsed as { excerpts: unknown[]; bookmarks: unknown[]; library: unknown[] };
         new Notice(`数据已导入 (${counts.excerpts.length} 摘录, ${counts.bookmarks.length} 书签, ${counts.library.length} 书)`);
       } catch (error) {

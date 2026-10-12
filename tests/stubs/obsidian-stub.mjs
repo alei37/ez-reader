@@ -149,4 +149,31 @@ export class TFile {}
 export const Platform = {};
 export const setIcon = () => {};
 export const setTooltip = () => {};
+
+/**
+ * These three were used by `src/` but never stubbed, so any test that
+ * transitively imported `SettingsTab` / `Plugin` / `CoverCache` failed at
+ * bundle time with a confusing esbuild "No matching export" error.
+ * Latent because no existing test imported those modules.
+ */
+export class PluginSettingTab {
+  constructor(app, plugin) {
+    this.app = app;
+    this.plugin = plugin;
+    this.containerEl = { empty: () => {}, createDiv: () => ({}) };
+  }
+  display() {}
+  hide() {}
+}
+export class Menu {
+  addItem(cb) {
+    cb({ setTitle() {}, setIcon() {}, onClick() {} });
+  }
+  showAtMouseEvent() {}
+  addSeparator() {}
+}
+export const normalizePath = (raw) => {
+  const collapsed = String(raw).replace(/\\/g, "/").replace(/\/+/g, "/").trim();
+  return collapsed.replace(/^\/+/, "").replace(/\/+$/, "");
+};
 export default {};

@@ -35,6 +35,15 @@ import { READER_VIEW_TYPE, ReaderView } from "./ui/reader/ReaderView";
 import { SettingsTab } from "./ui/settings/SettingsTab";
 
 /**
+ * How many times the v0.3.0 legacy-notes migration is retried before
+ * giving up. A failed run keeps the flag false so the next launch can try
+ * again — which matters on a second device where the legacy folder may
+ * not have finished syncing yet — but an unbounded retry would re-list
+ * the vault on every startup forever if the folder is genuinely gone.
+ */
+const MIGRATION_MAX_ATTEMPTS = 5;
+
+/**
  * Obsidian plugin class. Wires adapters into the core services and exposes
  * the shelf + reader views to the workspace.
  *
@@ -63,6 +72,15 @@ export default class EzReaderPlugin extends Plugin {
   async onload(): Promise<void> {
     this.bookSource = new ObsidianBookSource(this.app);
     this.annotationStore = new ObsidianAnnotationStore(this);
+    // P0 fix: noteWriter 必须在 LibraryService / ReadingService 之前构造.
+    // 之前它在下面 (构造 CoverCache 之后) 才 new, 而两个 service 的构造
+    // 参数是 `private readonly libraryWriter?: LibraryWriter` —— 按值捕获.
+    // 传进去的 undefined 会被永久锁死, 导致:
+    //   - ReadingService.recordSession 恒 no-op → sessions/*.jsonl 从没写过
+    //   - LibraryService.getRichEntry 跳过整个 analytics 分支 → BookInfoModal
+    //     阅读时长面板永远是 0
+    // ObsidianLibraryWriter 只依赖 (app, plugin, annotations), 三个此时都已就绪.
+    this.noteWriter = new ObsidianLibraryWriter(this.app, this, this.annotationStore);
     // Local Book Reader upstream opens Obsidian's "Detect all file
     // extensions" setting so `vault.getFiles()` returns PDF/EPUB alongside
     // markdown. We do the same before initializing the library.
@@ -105,7 +123,10 @@ export default class EzReaderPlugin extends Plugin {
       this.bookSource,
       this.annotationStore,
       metadataReader,
-      this.makeBookBytesLoader()
+      this.makeBookBytesLoader(),
+      // P0 fix: 第 5 个参数必须传, 否则 getRichEntry 的 analytics 分支
+      // 永远跳过 (dailyReadingTime: [] / streak: 0 / info.md 读不到).
+      this.noteWriter
     );
     this.reading = new ReadingService(
       this.annotationStore,
@@ -148,7 +169,6 @@ export default class EzReaderPlugin extends Plugin {
       },
       this.annotationStore
     );
-    this.noteWriter = new ObsidianLibraryWriter(this.app, this, this.annotationStore);
 
     // Obsidian loads files asynchronously. `vault.getFiles()` returns an
     // empty list until the layout is ready and the initial vault scan has
@@ -593,9 +613,18 @@ export default class EzReaderPlugin extends Plugin {
    * v0.3.0: 一次性迁移老 `notesDirectory/` → 新 `<vault>/ezreader/notes/`
    * 布局。跑过一次后写 `migratedToV030 = true`,后续启动跳过。
    *
-   * 失败的 case 不会抛 — try/catch 包住,失败时只 console.warn,标记位
-   * 仍然写成 `true`(避免每次启动都重试失败的成本)。用户如果想重跑,
-   * 手动把 data.json 的 `migratedToV030` 改成 `false` 重启。
+   * P1 修复两点:
+   *
+   * 1. 标志写错层。旧代码用 `patchSettings` 写,落在 `settings.migratedToV030`,
+   *    而 `load()` 读的是顶层 `migratedToV030` — 守卫永远不触发,老笔记
+   *    迁移**每次启动都重跑一遍**(重新 list + read 整个老目录)。现在走
+   *    `setMigratedToV030`,写在顶层。
+   *
+   * 2. 失败也写标志。旧代码在 catch 里也写 `true`,理由是"避免重试风暴",
+   *    但对 Syncthing 用户这是错的:新设备上老目录可能还没同步下来,
+   *    此时迁移静默跳过并被永久标记为完成,老笔记从此再也搬不过去。
+   *    现在失败时保持 `false` 并计数重试,最多 {@link MIGRATION_MAX_ATTEMPTS}
+   *    次 —— 既能等到同步完成,又不会对着一个永远不存在的目录无限重扫。
    *
    * 为什么不删老目录:留给用户 review。LibraryWriter.migrateLegacyNotes
    * 只把 `.md` 文件搬走,空目录用户可以自己 `rm -r`。
@@ -604,31 +633,43 @@ export default class EzReaderPlugin extends Plugin {
     try {
       const snapshot = await this.annotationStore.load();
       if (snapshot.migratedToV030 === true) return;
+      const attempts = snapshot.migratedToV030Attempts ?? 0;
+      if (attempts >= MIGRATION_MAX_ATTEMPTS) {
+        if (attempts === MIGRATION_MAX_ATTEMPTS) {
+          new Notice(
+            `EzReader 迁移已重试 ${attempts} 次仍未完成,已停止重试。老笔记仍在 ` +
+              `${snapshot.settings.notesDirectory?.trim() || "ezreader-notes/阅读笔记"},` +
+              "可手动移动到 ezreader/notes/,或把 data.json 的 migratedToV030Attempts 归零后重启。"
+          );
+          // 记到上限,避免每次启动都再弹一次
+          await this.annotationStore.setMigratedToV030(false, MIGRATION_MAX_ATTEMPTS + 1);
+        }
+        return;
+      }
       // 老 settings.notesDirectory 没值就 fallback 到 hardcoded 默认值
       // (v0.2.x 的 `DEFAULT_PLUGIN_SETTINGS.notesDirectory`)。
       const legacyDir = snapshot.settings.notesDirectory?.trim() || "ezreader-notes/阅读笔记";
       const result = await this.noteWriter.migrateLegacyNotes({ legacyNotesDir: legacyDir });
+      const clean = result.failedNotes === 0;
       if (result.migratedNotes > 0 || result.failedNotes > 0) {
         new Notice(
-          `EzReader 0.3.0 迁移: ${result.migratedNotes} 个笔记搬到 ezreader/notes/,${
-            result.failedNotes > 0 ? ` ${result.failedNotes} 个失败` : ""
+          `EzReader 0.3.0 迁移: ${result.migratedNotes} 个笔记搬到 ezreader/notes/${
+            result.failedNotes > 0 ? `,${result.failedNotes} 个失败(将在下次启动重试)` : ""
           }`
         );
       }
-      // 清空老字段(避免用户后续调试时困惑),写标记
-      await this.annotationStore.patchSettings((s) => ({
-        ...s,
-        notesDirectory: "",
-        migratedToV030: true
-      }));
+      // 清空老字段(避免用户后续调试时困惑);标志写在顶层。
+      await this.annotationStore.patchSettings((s) => ({ ...s, notesDirectory: "" }));
+      await this.annotationStore.setMigratedToV030(clean, attempts + 1);
       console.info(
-        `[ez-reader] v0.3.0 migration complete: ${result.migratedNotes} migrated, ${result.failedNotes} failed`
+        `[ez-reader] v0.3.0 migration attempt ${attempts + 1}: ${result.migratedNotes} migrated, ${result.failedNotes} failed`
       );
     } catch (error) {
       console.warn("[ez-reader] v0.3.0 migration failed", error);
-      // 即使失败也写标记位 — 避免每次启动都重试同样的失败 IO
+      // 失败保持 migratedToV030 = false,下次启动重试(有次数上限)。
       try {
-        await this.annotationStore.patchSettings((s) => ({ ...s, migratedToV030: true }));
+        const snapshot = await this.annotationStore.load();
+        await this.annotationStore.setMigratedToV030(false, (snapshot.migratedToV030Attempts ?? 0) + 1);
       } catch (innerError) {
         console.warn("[ez-reader] could not persist migratedToV030 flag", innerError);
       }
