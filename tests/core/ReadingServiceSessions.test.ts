@@ -105,6 +105,9 @@ class FakeLibraryWriter implements LibraryWriter {
   async migrateLegacyNotes(): Promise<{ migratedNotes: 0; failedNotes: 0; migratedBookIds: [] }> {
     return { migratedNotes: 0, failedNotes: 0, migratedBookIds: [] };
   }
+  async renameBookFiles(): Promise<{ moved: []; missing: [] }> {
+    return { moved: [], missing: [] };
+  }
 }
 
 const makeSession = (durationMs: number, chapter?: string): ReadingSession => {

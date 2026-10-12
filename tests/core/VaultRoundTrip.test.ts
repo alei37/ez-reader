@@ -39,6 +39,8 @@ import { ReadingService } from "../../src/core/services/ReadingService";
 import { LibraryService } from "../../src/core/services/LibraryService";
 import type { ReadingSession } from "../../src/core/entities/ReadingSession";
 import type { BookLocatorInfo } from "../../src/core/ports/LibraryWriter";
+import { hexFromBuffer, sha1Bytes } from "../../src/platform/Sha1";
+import { defaultBookInfo } from "../../src/core/entities/BookInfo";
 
 // ---------------------------------------------------------------------------
 // In-memory vault
@@ -115,6 +117,19 @@ class MemoryVault {
     // trashFile path. See `migrateLegacyNotes must not hard-delete`.
     this.hardDeletes.push(file.path);
     this.files.delete(file.path);
+  };
+  rename = async (file: MemoryTFile, newPath: string) => {
+    const key = normalizePath(newPath);
+    if (this.files.has(key)) throw new Error(`File already exists: ${key}`);
+    const data = this.files.get(file.path);
+    if (data === undefined) throw new Error(`ENOENT: ${file.path}`);
+    const parent = key.split("/").slice(0, -1).join("/");
+    if (parent && !this.folders.has(parent)) {
+      throw new Error(`ENOENT: no such directory '${parent}' (renaming to ${key})`);
+    }
+    this.files.delete(file.path);
+    this.files.set(key, data);
+    return new MemoryTFile(key);
   };
   trashFile = async (file: MemoryTFile) => {
     this.trashed.push(file.path);
@@ -195,6 +210,152 @@ test("migration: 迁移后内容落到 ezreader/notes/", async () => {
   const migrated = [...vault.files.keys()].filter((p) => p.startsWith("ezreader/notes/"));
   assert.equal(migrated.length, 1, `expected one migrated note, got ${migrated.join(", ")}`);
   assert.match(vault.files.get(migrated[0])!, /迁移前的正文/);
+});
+
+// ---------------------------------------------------------------------------
+// Rename: moving the per-book files to the new file base
+//
+// `bookId` is the vault path, so renaming a book file changes BOTH halves
+// of the file base — the `<safeTitle>` and the hash-of-path `<idTag>`.
+// The writer can only recover the old files from the old id tag, because
+// the caller (LibraryService) knows the old bookId but never the old
+// title. If this regresses, notes/info/sessions stay under a name nothing
+// will ever look up again and the book appears to have no history.
+// ---------------------------------------------------------------------------
+
+const idTag = (bookId: string): string =>
+  hexFromBuffer(sha1Bytes(new TextEncoder().encode(bookId))).slice(0, 10);
+
+const seedBookFiles = async (vault: MemoryVault, writer: ObsidianLibraryWriter) => {
+  const bookId = "books/dune.epub";
+  const ref = await writer.ensureBookDir({ bookId, bookTitle: "Dune", bookPath: bookId });
+  await writer.writeBookInfo(
+    ref,
+    defaultBookInfo({
+      bookId,
+      format: "epub",
+      filePath: bookId,
+      fileSizeBytes: 1024,
+      fileModifiedAt: 1,
+      addedToLibraryAt: 1,
+      title: "Dune"
+    })
+  );
+  await writer.appendReadingSession(ref, session());
+  return { bookId, ref };
+};
+
+test("rename: 三个文件都搬到新 base", async () => {
+  const vault = new MemoryVault();
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const { bookId, ref } = await seedBookFiles(vault, writer);
+
+  const toBookId = "library/Dune 2.epub";
+  const result = await writer.renameBookFiles({ fromBookId: bookId, toBookId, newTitle: "Dune 2" });
+
+  const newBase = `Dune-2-${idTag(toBookId)}`;
+  assert.deepEqual(result.missing, [], "all three per-book files exist and should move");
+  assert.equal(result.moved.length, 3);
+
+  for (const oldPath of [ref.notesPath, ref.infoPath, ref.sessionsPath]) {
+    assert.equal(vault.files.has(oldPath), false, `${oldPath} must not survive under the old name`);
+  }
+  assert.ok(vault.files.has(`ezreader/notes/${newBase}.md`), "notes moved");
+  assert.ok(vault.files.has(`ezreader/info/${newBase}.md`), "info moved");
+  assert.ok(vault.files.has(`ezreader/sessions/${newBase}.jsonl`), "sessions moved");
+});
+
+test("rename: 靠旧 idTag 找到文件,即使书名已经变了", async () => {
+  const vault = new MemoryVault();
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const { bookId, ref } = await seedBookFiles(vault, writer);
+
+  // The new title differs, so a title-derived lookup would find nothing —
+  // only the id tag (a hash of the old bookId) can locate the old files.
+  await writer.renameBookFiles({
+    fromBookId: bookId,
+    toBookId: "library/dune.epub",
+    newTitle: "完全不同的新名字"
+  });
+
+  assert.equal(vault.files.has(ref.notesPath), false, "the old-tagged file was located and moved");
+  assert.ok(
+    [...vault.files.keys()].some((p) => p.startsWith("ezreader/notes/完全不同的新名字-")),
+    "the new file uses the new title + new tag"
+  );
+});
+
+test("rename: 内容逐字保留", async () => {
+  const vault = new MemoryVault();
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const { bookId, ref } = await seedBookFiles(vault, writer);
+  const before = [...vault.files.entries()];
+
+  await writer.renameBookFiles({
+    fromBookId: bookId,
+    toBookId: "library/dune.epub",
+    newTitle: "Dune 2"
+  });
+
+  const after = [...vault.files.values()];
+  assert.equal(after.length, before.length, "no file created or lost");
+  for (const [path, data] of before) {
+    assert.ok(after.includes(data), `contents of ${path} survive the rename`);
+  }
+});
+
+test("rename: 目标已被占用时不覆盖,原文件保留", async () => {
+  const vault = new MemoryVault();
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const { bookId, ref } = await seedBookFiles(vault, writer);
+
+  // Pre-create a file at the destination base.
+  const toBookId = "library/dune.epub";
+  const occupied = `ezreader/notes/Dune-2-${idTag(toBookId)}.md`;
+  await vault.create(occupied, "别人的笔记\n");
+
+  const result = await writer.renameBookFiles({ fromBookId: bookId, toBookId, newTitle: "Dune 2" });
+
+  assert.equal(vault.files.get(occupied), "别人的笔记\n", "destination must not be clobbered");
+  assert.ok(result.missing.includes(ref.notesPath), "the un-movable file is reported");
+  assert.equal(vault.files.has(ref.notesPath), true, "the source file is left in place, not deleted");
+});
+
+test("rename: 没有对应文件的 book 不报错", async () => {
+  const vault = new MemoryVault();
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const result = await writer.renameBookFiles({
+    fromBookId: "never/opened.epub",
+    toBookId: "still/never.epub",
+    newTitle: "X"
+  });
+  assert.deepEqual(result.moved, []);
+  assert.equal(result.missing.length, 3, "notes/info/sessions are all reported missing");
+});
+
+test("rename: from === to 是 no-op", async () => {
+  const vault = new MemoryVault();
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const { bookId, ref } = await seedBookFiles(vault, writer);
+  const result = await writer.renameBookFiles({ fromBookId: bookId, toBookId: bookId, newTitle: "Z" });
+  assert.deepEqual(result, { moved: [], missing: [] });
+  assert.ok(vault.files.has(ref.notesPath));
+});
+
+test("rename: 丢弃旧 cache,让下一次 ensureBookDir 重算路径", async () => {
+  const vault = new MemoryVault();
+  const writer = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const { bookId } = await seedBookFiles(vault, writer);
+  await writer.renameBookFiles({ fromBookId: bookId, toBookId: "library/dune.epub", newTitle: "Dune 2" });
+
+  const fresh = new ObsidianLibraryWriter(makeApp(vault), makePlugin(), makeAnnotations());
+  const ref = await fresh.ensureBookDir({
+    bookId: "library/dune.epub",
+    bookTitle: "Dune 2",
+    bookPath: "library/dune.epub"
+  });
+  assert.equal(ref.notesPath, `ezreader/notes/Dune-2-${idTag("library/dune.epub")}.md`);
+  assert.ok(vault.files.has(ref.notesPath), "ensureBookDir did not resurrect the old path");
 });
 
 // ---------------------------------------------------------------------------

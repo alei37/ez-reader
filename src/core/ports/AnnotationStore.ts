@@ -80,6 +80,25 @@ export interface AnnotationStore {
 
   listReading(): Promise<ReadonlyArray<ReadingState>>;
   upsertReading(state: ReadingState): Promise<void>;
+
+  /**
+   * Re-key every piece of per-book state from `fromBookId` to `toBookId`.
+   *
+   * `bookId` is the vault path, so renaming a book file mints a new id and
+   * strands everything stored under the old one. Without this, a rename in
+   * the OS file manager silently resets the user's reading progress,
+   * bookmarks, excerpts, cover cache, pin state and TOC progress to zero —
+   * the records are still in `data.json`, just unreachable.
+   *
+   * Must be atomic: it rewrites `library`, `reading`, `bookmarks`,
+   * `excerpts` and every `*ByBookId` map in ONE snapshot write, so a crash
+   * mid-way cannot leave half the records re-keyed.
+   *
+   * Collision policy: if `toBookId` already has its own records, the
+   * pre-existing destination data wins — the renamed book adopts it rather
+   * than overwriting it. See `renameInSnapshot`.
+   */
+  renameBookId(fromBookId: BookId, toBookId: BookId): Promise<void>;
   listBookmarks(bookId: BookId): Promise<ReadonlyArray<Bookmark>>;
   addBookmark(bookmark: Bookmark): Promise<void>;
   removeBookmark(bookId: BookId, bookmarkId: string): Promise<void>;

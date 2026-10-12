@@ -154,6 +154,36 @@ export interface LibraryWriter {
    * NOT delete — it leaves that decision to Plugin.
    */
   migrateLegacyNotes(input: { legacyNotesDir: string }): Promise<MigrationResult>;
+
+  /**
+   * Move a book's `notes/*.md`, `info/*.md` and `sessions/*.jsonl` to the
+   * file base derived from its new id + title.
+   *
+   * Both halves of the file base change on a rename: the `<safeTitle>` part
+   * follows the book's title and the `<idTag>` part is a hash of the
+   * `bookId`, which IS the vault path. Without this the three files are
+   * stranded under a name nothing will ever look up again, so the user's
+   * notes and reading history vanish from the UI while sitting on disk.
+   *
+   * Missing files are reported, not treated as an error — a book that was
+   * never opened has no `info.md` or `sessions.jsonl`, and that is normal.
+   */
+  renameBookFiles(input: {
+    fromBookId: BookId;
+    toBookId: BookId;
+    newTitle: string;
+  }): Promise<RenameBookFilesResult>;
+}
+
+export interface RenameBookFilesResult {
+  /** Vault paths that were successfully moved to their new base. */
+  readonly moved: ReadonlyArray<string>;
+  /**
+   * Vault paths that could not be moved: no file existed under the old id
+   * tag, or the destination was already occupied. The old file is left in
+   * place in the latter case rather than overwritten.
+   */
+  readonly missing: ReadonlyArray<string>;
 }
 
 export interface MigrationResult {

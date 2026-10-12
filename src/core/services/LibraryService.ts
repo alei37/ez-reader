@@ -4,7 +4,7 @@ import type { BookInfo } from "../entities/BookInfo";
 import { BOOK_INFO_SCHEMA_VERSION } from "../entities/BookInfo";
 import type { ReadingSession, DailyReadingTime } from "../entities/ReadingSession";
 import type { AnnotationStore } from "../ports/AnnotationStore";
-import type { BookSource } from "../ports/BookSource";
+import type { BookChangeEvent, BookSource } from "../ports/BookSource";
 import type { LibraryWriter } from "../ports/LibraryWriter";
 import {
   DEFAULT_SORT,
@@ -210,6 +210,11 @@ export class LibraryService {
           const id = this.source.resolveId({ path: event.path, format: event.format, sizeBytes: 0, modifiedAt: 0 });
           this.entries.delete(id);
           this.emit();
+        } else if (event.kind === "renamed") {
+          // Must be handled before the generic branches below: a rename
+          // both retires the old id and introduces a new one, and the two
+          // halves have to happen in one pass or the book loses its state.
+          void this.handleRenamed(event);
         } else if (event.kind === "added") {
           // For added events, we want to surface the new file. Refresh-on-id
           // would miss sibling files Obsidian just loaded. We call refreshBook
@@ -226,6 +231,75 @@ export class LibraryService {
         }
       })
     );
+
+    this.emit();
+  }
+
+  /**
+   * Re-key a book after its file was renamed.
+   *
+   * `bookId` IS the vault path, so a rename mints a new id. Before this
+   * existed the source reported renames as plain "modified" events, which
+   * meant: the entry map kept the old id, the old id's records stayed in
+   * `data.json` unreachable, and the shelf showed the book at 0% with an
+   * empty notes file — while a *second* entry for the new path appeared
+   * with no history. The user's progress, bookmarks, excerpts, cover,
+   * pin state and TOC progress were all still on disk, just orphaned.
+   *
+   * Three things have to move together, and each is allowed to fail
+   * without blocking the others: the in-memory entry, every bookId-keyed
+   * record in the store, and the `ezreader/` files on disk.
+   *
+   * Known limitation: a book that is *currently open* still holds the old
+   * `bookId` in its `ReaderView`, so a session flush that lands after this
+   * runs writes a few stray records back under the old id. That is strictly
+   * less data loss than the pre-0.3.3 behaviour (everything stranded), and
+   * a live reader-relocation channel is a much larger change.
+   */
+  private async handleRenamed(event: BookChangeEvent): Promise<void> {
+    const fromId = event.oldPath;
+    const toId = event.path;
+    if (!fromId || fromId === toId) return;
+
+    // 1. Re-key the in-memory entry. Do this first and synchronously so the
+    //    shelf never renders a frame with both ids (or neither).
+    const existing = this.entries.get(fromId);
+    if (existing) {
+      this.entries.delete(fromId);
+      const locator =
+        (await this.source.lookup(toId)) ?? { ...existing.book.locator, path: toId };
+      this.entries.set(toId, {
+        book: { ...existing.book, id: toId, locator },
+        reading: { ...existing.reading, bookId: toId }
+      });
+    }
+
+    // 2. Rewrite every bookId-keyed record in the store, atomically.
+    try {
+      await this.annotations.renameBookId(fromId, toId);
+    } catch (error) {
+      console.warn("[ez-reader] rename: failed to re-key stored annotations", error);
+    }
+
+    // 3. Move notes/info/sessions to the new file base. Both halves of the
+    //    base change — the title and the hash-of-path tag — so these files
+    //    are unreachable under the new id until they are moved.
+    if (this.libraryWriter && existing) {
+      try {
+        const result = await this.libraryWriter.renameBookFiles({
+          fromBookId: fromId,
+          toBookId: toId,
+          newTitle: existing.book.metadata?.title ?? existing.book.locator.path
+        });
+        if (result.missing.length > 0) {
+          console.warn(
+            `[ez-reader] rename: ${result.missing.length} per-book file(s) left in place for ${fromId}`
+          );
+        }
+      } catch (error) {
+        console.warn("[ez-reader] rename: failed to move per-book files", error);
+      }
+    }
 
     this.emit();
   }

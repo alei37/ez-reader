@@ -8,6 +8,7 @@ import type {
   ExcerptInput,
   LibraryWriter,
   MigrationResult,
+  RenameBookFilesResult,
   ThoughtInput
 } from "../../core/ports/LibraryWriter";
 import type { BookId } from "../../core/entities/Book";
@@ -131,16 +132,22 @@ export class ObsidianLibraryWriter implements LibraryWriter {
   }
 
   /**
-   * Locate `ezreader/sessions/<safeTitle>-<idTag>.jsonl` for a book without
+   * Locate `ezreader/<subdir>/<safeTitle>-<idTag><ext>` for a book without
    * relying on `info.md` or on knowing the book's title.
    *
-   * The id tag is derived from the bookId alone, and every sessions file is
-   * named `<something>-<idTag>.jsonl`, so a suffix match over a directory
-   * listing identifies the right file. Both the sanitized and the legacy
-   * raw-slice tags are tried. Returns `null` when nothing matches.
+   * The id tag is derived from the bookId alone, and every per-book file is
+   * named `<something>-<idTag><ext>`, so a suffix match over a directory
+   * listing identifies the right file no matter what the title was. This is
+   * what makes a rename recoverable: the caller knows only the OLD bookId,
+   * never the old title. Both the sanitized and the legacy raw-slice tags
+   * are tried. Returns `undefined` when nothing matches.
    */
-  private async findSessionsPathByIdTag(bookId: BookId): Promise<string | undefined> {
-    const dir = normalizePath(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
+  private async findPathByIdTag(
+    bookId: BookId,
+    subdir: string,
+    ext: string
+  ): Promise<string | undefined> {
+    const dir = normalizePath(`${LIBRARY_BASE_DIR}/${subdir}`);
     let files: ReadonlyArray<string>;
     try {
       files = (await this.app.vault.adapter.list(dir)).files;
@@ -152,11 +159,64 @@ export class ObsidianLibraryWriter implements LibraryWriter {
     if (!legacyTag.includes("/") && !tags.includes(legacyTag)) tags.push(legacyTag);
 
     for (const filePath of files) {
-      if (!filePath.endsWith(".jsonl")) continue;
-      const stem = filePath.split("/").pop()!.replace(/\.jsonl$/i, "");
+      if (!filePath.toLowerCase().endsWith(`.${ext}`)) continue;
+      const stem = filePath.split("/").pop()!.replace(/\.[^.]+$/, "");
       if (tags.some((tag) => tag.length > 0 && stem.endsWith(`-${tag}`))) return filePath;
     }
     return undefined;
+  }
+
+  async renameBookFiles(input: {
+    fromBookId: BookId;
+    toBookId: BookId;
+    newTitle: string;
+  }): Promise<RenameBookFilesResult> {
+    const moved: string[] = [];
+    const missing: string[] = [];
+    if (input.fromBookId === input.toBookId) return { moved, missing };
+
+    const fallbackTitle =
+      input.newTitle || input.toBookId.split("/").pop() || input.toBookId;
+    const newBase = `${sanitizeFileBase(fallbackTitle)}-${bookIdTag(input.toBookId)}`;
+
+    const targets: ReadonlyArray<{ subdir: string; ext: string }> = [
+      { subdir: NOTES_SUBDIR, ext: "md" },
+      { subdir: INFO_SUBDIR, ext: "md" },
+      { subdir: SESSIONS_SUBDIR, ext: "jsonl" }
+    ];
+
+    for (const { subdir, ext } of targets) {
+      const oldPath = await this.findPathByIdTag(input.fromBookId, subdir, ext);
+      if (!oldPath) {
+        missing.push(`${LIBRARY_BASE_DIR}/${subdir}/<unknown>.${ext}`);
+        continue;
+      }
+      const newPath = normalizePath(`${LIBRARY_BASE_DIR}/${subdir}/${newBase}.${ext}`);
+      if (oldPath === newPath) continue;
+
+      const file = this.app.vault.getAbstractFileByPath(oldPath);
+      if (!(file instanceof TFile)) {
+        missing.push(oldPath);
+        continue;
+      }
+      if (this.app.vault.getAbstractFileByPath(newPath) instanceof TFile) {
+        // Destination occupied (a second book already claims this base).
+        // Overwriting would destroy that book's notes; leave the source
+        // file untouched and report it so the caller can surface it.
+        missing.push(oldPath);
+        continue;
+      }
+      await this.app.vault.rename(file, newPath);
+      moved.push(oldPath);
+    }
+
+    // Drop the stale ref so the next write recomputes paths. Deliberately
+    // NOT seeding a ref for `toBookId` here: we only moved the files that
+    // happened to exist, and a cached ref would claim paths (notably
+    // notes.md) that were never created.
+    this.cacheByBookId.delete(input.fromBookId);
+
+    return { moved, missing };
   }
 
   // -----------------------------------------------------------------------
@@ -358,7 +418,7 @@ export class ObsidianLibraryWriter implements LibraryWriter {
       // Fall back to locating the sessions file by its id tag: the file
       // name is `<safeTitle>-<idTag>.jsonl` and the id tag is derived from
       // the bookId alone, so it is stable without any title or info.md.
-      sessionsPath = await this.findSessionsPathByIdTag(bookId);
+      sessionsPath = await this.findPathByIdTag(bookId, SESSIONS_SUBDIR, "jsonl");
       if (sessionsPath) {
         this.cacheByBookId.set(bookId, {
           notesPath: siblingPath(sessionsPath, NOTES_SUBDIR, ".md"),

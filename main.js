@@ -14621,6 +14621,52 @@ var DEFAULT_PLUGIN_SETTINGS = Object.freeze({
   migratedToV030: false
 });
 
+// src/core/utils/renameSnapshot.ts
+var rekeyArray = (items, fromBookId, toBookId) => items.map((item) => item.bookId === fromBookId ? { ...item, bookId: toBookId } : item);
+var rekeyMap = (map, fromBookId, toBookId) => {
+  if (!map || !(fromBookId in map)) return map;
+  const next = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (key === fromBookId) continue;
+    next[key] = value;
+  }
+  if (!(toBookId in map)) {
+    next[toBookId] = map[fromBookId];
+  }
+  return next;
+};
+var dedupeReading = (states) => {
+  const byBookId = /* @__PURE__ */ new Map();
+  for (const state of states) byBookId.set(state.bookId, state);
+  return [...byBookId.values()];
+};
+var renameInSnapshot = (snapshot, fromBookId, toBookId) => {
+  if (fromBookId === toBookId) return snapshot;
+  let destinationSeen = snapshot.library.includes(toBookId);
+  const library = [];
+  for (const id of snapshot.library) {
+    if (id !== fromBookId) {
+      library.push(id);
+      continue;
+    }
+    if (destinationSeen) continue;
+    destinationSeen = true;
+    library.push(toBookId);
+  }
+  return {
+    ...snapshot,
+    library,
+    reading: dedupeReading(rekeyArray(snapshot.reading, fromBookId, toBookId)),
+    bookmarks: rekeyArray(snapshot.bookmarks, fromBookId, toBookId),
+    excerpts: rekeyArray(snapshot.excerpts, fromBookId, toBookId),
+    coverPaths: rekeyMap(snapshot.coverPaths, fromBookId, toBookId),
+    addedAtByBookId: rekeyMap(snapshot.addedAtByBookId, fromBookId, toBookId),
+    pinnedAtByBookId: rekeyMap(snapshot.pinnedAtByBookId, fromBookId, toBookId),
+    richMetadataByBookId: rekeyMap(snapshot.richMetadataByBookId, fromBookId, toBookId),
+    visitedTocIdsByBookId: rekeyMap(snapshot.visitedTocIdsByBookId, fromBookId, toBookId)
+  };
+};
+
 // src/adapters/obsidian/ObsidianAnnotationStore.ts
 var ObsidianAnnotationStore = class {
   constructor(plugin) {
@@ -14831,6 +14877,13 @@ var ObsidianAnnotationStore = class {
       const snapshot = await this.load();
       const next = [...snapshot.reading.filter((s3) => s3.bookId !== state.bookId), state];
       return { ...snapshot, reading: next };
+    });
+  }
+  async renameBookId(fromBookId, toBookId) {
+    if (fromBookId === toBookId) return;
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return renameInSnapshot(snapshot, fromBookId, toBookId);
     });
   }
   async listBookmarks(bookId) {
@@ -15212,10 +15265,20 @@ var ObsidianBookSource = class {
     };
   }
   watch(handler) {
-    const refRename = this.app.vault.on("rename", (file) => {
-      if (file instanceof import_obsidian2.TFile) {
-        const format = extensionToFormat(file.extension);
-        if (format) handler({ kind: "modified", path: file.path, format });
+    const refRename = this.app.vault.on("rename", (file, oldPath) => {
+      if (!(file instanceof import_obsidian2.TFile)) return;
+      const format = extensionToFormat(file.extension);
+      const previous = typeof oldPath === "string" ? oldPath : void 0;
+      const previousFormat = previous ? extensionToFormat(previous.split(".").pop() ?? "") : null;
+      if (format) {
+        handler({
+          kind: "renamed",
+          path: file.path,
+          format,
+          ...previous ? { oldPath: previous } : {}
+        });
+      } else if (previous && previousFormat) {
+        handler({ kind: "removed", path: previous, format: previousFormat });
       }
     });
     const refCreate = this.app.vault.on("create", (file) => {
@@ -15638,16 +15701,18 @@ var ObsidianLibraryWriter = class {
     return `${safeTitle}-${bookIdTag(bookId)}`;
   }
   /**
-   * Locate `ezreader/sessions/<safeTitle>-<idTag>.jsonl` for a book without
+   * Locate `ezreader/<subdir>/<safeTitle>-<idTag><ext>` for a book without
    * relying on `info.md` or on knowing the book's title.
    *
-   * The id tag is derived from the bookId alone, and every sessions file is
-   * named `<something>-<idTag>.jsonl`, so a suffix match over a directory
-   * listing identifies the right file. Both the sanitized and the legacy
-   * raw-slice tags are tried. Returns `null` when nothing matches.
+   * The id tag is derived from the bookId alone, and every per-book file is
+   * named `<something>-<idTag><ext>`, so a suffix match over a directory
+   * listing identifies the right file no matter what the title was. This is
+   * what makes a rename recoverable: the caller knows only the OLD bookId,
+   * never the old title. Both the sanitized and the legacy raw-slice tags
+   * are tried. Returns `undefined` when nothing matches.
    */
-  async findSessionsPathByIdTag(bookId) {
-    const dir = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
+  async findPathByIdTag(bookId, subdir, ext) {
+    const dir = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}`);
     let files;
     try {
       files = (await this.app.vault.adapter.list(dir)).files;
@@ -15658,11 +15723,45 @@ var ObsidianLibraryWriter = class {
     const tags = [bookIdTag(bookId)];
     if (!legacyTag.includes("/") && !tags.includes(legacyTag)) tags.push(legacyTag);
     for (const filePath of files) {
-      if (!filePath.endsWith(".jsonl")) continue;
-      const stem = filePath.split("/").pop().replace(/\.jsonl$/i, "");
+      if (!filePath.toLowerCase().endsWith(`.${ext}`)) continue;
+      const stem = filePath.split("/").pop().replace(/\.[^.]+$/, "");
       if (tags.some((tag) => tag.length > 0 && stem.endsWith(`-${tag}`))) return filePath;
     }
     return void 0;
+  }
+  async renameBookFiles(input) {
+    const moved = [];
+    const missing = [];
+    if (input.fromBookId === input.toBookId) return { moved, missing };
+    const fallbackTitle = input.newTitle || input.toBookId.split("/").pop() || input.toBookId;
+    const newBase = `${sanitizeFileBase(fallbackTitle)}-${bookIdTag(input.toBookId)}`;
+    const targets = [
+      { subdir: NOTES_SUBDIR, ext: "md" },
+      { subdir: INFO_SUBDIR, ext: "md" },
+      { subdir: SESSIONS_SUBDIR, ext: "jsonl" }
+    ];
+    for (const { subdir, ext } of targets) {
+      const oldPath = await this.findPathByIdTag(input.fromBookId, subdir, ext);
+      if (!oldPath) {
+        missing.push(`${LIBRARY_BASE_DIR}/${subdir}/<unknown>.${ext}`);
+        continue;
+      }
+      const newPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}/${newBase}.${ext}`);
+      if (oldPath === newPath) continue;
+      const file = this.app.vault.getAbstractFileByPath(oldPath);
+      if (!(file instanceof import_obsidian3.TFile)) {
+        missing.push(oldPath);
+        continue;
+      }
+      if (this.app.vault.getAbstractFileByPath(newPath) instanceof import_obsidian3.TFile) {
+        missing.push(oldPath);
+        continue;
+      }
+      await this.app.vault.rename(file, newPath);
+      moved.push(oldPath);
+    }
+    this.cacheByBookId.delete(input.fromBookId);
+    return { moved, missing };
   }
   // -----------------------------------------------------------------------
   // Excerpt / Thought
@@ -15810,7 +15909,7 @@ ${block}`);
   async loadReadingSessions(bookId) {
     let sessionsPath = this.cacheByBookId.get(bookId)?.sessionsPath;
     if (!sessionsPath) {
-      sessionsPath = await this.findSessionsPathByIdTag(bookId);
+      sessionsPath = await this.findPathByIdTag(bookId, SESSIONS_SUBDIR, "jsonl");
       if (sessionsPath) {
         this.cacheByBookId.set(bookId, {
           notesPath: siblingPath(sessionsPath, NOTES_SUBDIR, ".md"),
@@ -19006,6 +19105,8 @@ var LibraryService = class {
           const id = this.source.resolveId({ path: event.path, format: event.format, sizeBytes: 0, modifiedAt: 0 });
           this.entries.delete(id);
           this.emit();
+        } else if (event.kind === "renamed") {
+          void this.handleRenamed(event);
         } else if (event.kind === "added") {
           if (this.entries.size === 0) {
             void this.initialize();
@@ -19017,6 +19118,63 @@ var LibraryService = class {
         }
       })
     );
+    this.emit();
+  }
+  /**
+   * Re-key a book after its file was renamed.
+   *
+   * `bookId` IS the vault path, so a rename mints a new id. Before this
+   * existed the source reported renames as plain "modified" events, which
+   * meant: the entry map kept the old id, the old id's records stayed in
+   * `data.json` unreachable, and the shelf showed the book at 0% with an
+   * empty notes file — while a *second* entry for the new path appeared
+   * with no history. The user's progress, bookmarks, excerpts, cover,
+   * pin state and TOC progress were all still on disk, just orphaned.
+   *
+   * Three things have to move together, and each is allowed to fail
+   * without blocking the others: the in-memory entry, every bookId-keyed
+   * record in the store, and the `ezreader/` files on disk.
+   *
+   * Known limitation: a book that is *currently open* still holds the old
+   * `bookId` in its `ReaderView`, so a session flush that lands after this
+   * runs writes a few stray records back under the old id. That is strictly
+   * less data loss than the pre-0.3.3 behaviour (everything stranded), and
+   * a live reader-relocation channel is a much larger change.
+   */
+  async handleRenamed(event) {
+    const fromId = event.oldPath;
+    const toId = event.path;
+    if (!fromId || fromId === toId) return;
+    const existing = this.entries.get(fromId);
+    if (existing) {
+      this.entries.delete(fromId);
+      const locator = await this.source.lookup(toId) ?? { ...existing.book.locator, path: toId };
+      this.entries.set(toId, {
+        book: { ...existing.book, id: toId, locator },
+        reading: { ...existing.reading, bookId: toId }
+      });
+    }
+    try {
+      await this.annotations.renameBookId(fromId, toId);
+    } catch (error) {
+      console.warn("[ez-reader] rename: failed to re-key stored annotations", error);
+    }
+    if (this.libraryWriter && existing) {
+      try {
+        const result = await this.libraryWriter.renameBookFiles({
+          fromBookId: fromId,
+          toBookId: toId,
+          newTitle: existing.book.metadata?.title ?? existing.book.locator.path
+        });
+        if (result.missing.length > 0) {
+          console.warn(
+            `[ez-reader] rename: ${result.missing.length} per-book file(s) left in place for ${fromId}`
+          );
+        }
+      } catch (error) {
+        console.warn("[ez-reader] rename: failed to move per-book files", error);
+      }
+    }
     this.emit();
   }
   /**

@@ -148,10 +148,29 @@ export class ObsidianBookSource implements BookSource {
   }
 
   watch(handler: BookChangeHandler): Disposable {
-    const refRename = this.app.vault.on("rename", (file) => {
-      if (file instanceof TFile) {
-        const format = extensionToFormat(file.extension);
-        if (format) handler({ kind: "modified", path: file.path, format });
+    const refRename = this.app.vault.on("rename", (file, oldPath) => {
+      if (!(file instanceof TFile)) return;
+      const format = extensionToFormat(file.extension);
+      const previous = typeof oldPath === "string" ? oldPath : undefined;
+      const previousFormat = previous
+        ? extensionToFormat(previous.split(".").pop() ?? "")
+        : null;
+
+      if (format) {
+        // A rename is its own kind. Reporting it as "modified" (what this
+        // used to do) made the service re-scan the NEW path while silently
+        // leaving every old-path-keyed record behind — the user's progress,
+        // bookmarks and excerpts appeared to reset to zero.
+        handler({
+          kind: "renamed",
+          path: file.path,
+          format,
+          ...(previous ? { oldPath: previous } : {})
+        });
+      } else if (previous && previousFormat) {
+        // Renamed out of the supported set (`dune.epub` → `dune.epub.bak`).
+        // Nothing to re-key toward, so it is a plain removal of the old id.
+        handler({ kind: "removed", path: previous, format: previousFormat });
       }
     });
     const refCreate = this.app.vault.on("create", (file) => {

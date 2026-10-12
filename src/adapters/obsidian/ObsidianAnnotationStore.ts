@@ -8,6 +8,7 @@ import type {
   AnnotationStore
 } from "../../core/ports/AnnotationStore";
 import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from "../../core/types/ReaderSettings";
+import { renameInSnapshot } from "../../core/utils/renameSnapshot";
 
 /**
  * Persistence adapter for annotation data. Mirrors what the upstream plugin
@@ -260,6 +261,18 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       const snapshot = await this.load();
       const next = [...snapshot.reading.filter((s) => s.bookId !== state.bookId), state];
       return { ...snapshot, reading: next };
+    });
+  }
+
+  async renameBookId(fromBookId: BookId, toBookId: BookId): Promise<void> {
+    if (fromBookId === toBookId) return;
+    // One `mutate` = one `saveData` round-trip on the write chain. Splitting
+    // this into per-field writes would leave data.json half-re-keyed if the
+    // plugin is disabled mid-rename, which is the exact failure this method
+    // exists to prevent.
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return renameInSnapshot(snapshot, fromBookId, toBookId);
     });
   }
 
