@@ -33,7 +33,48 @@ import type {
  * main process / Node's net stack, sidesteps the renderer CSP, and is
  * the documented API for plugins (see AGENTS.md §3.7 locked-rule note).
  */
+
+/**
+ * P1 fix: `requestUrl` cannot be cancelled or bounded. Verified against
+ * `node_modules/obsidian/obsidian.d.ts` — `RequestUrlParam` has neither a
+ * `timeout` nor a `signal` field, so there is no way to pass one through.
+ * A request that TCP-connects and then stalls therefore hung the drawer on
+ * "正在翻译…" forever, with no cancel and no retry, and each retry stacked
+ * another hung request on top.
+ *
+ * This races a deadline instead. Note it *abandons* the pending request
+ * rather than cancelling it — the socket still eventually completes and is
+ * discarded — but the user gets a definite answer and the UI unblocks.
+ * Same approach as `CoverCache.raceWithTimeout`.
+ */
+const withDeadline = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`翻译请求超时 (${Math.round(ms / 1000)}s): ${label} 无响应,请检查网络或 API 地址`)),
+      ms
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+
+/** Long enough for a slow LLM endpoint, short enough that the UI unblocks. */
+const TRANSLATION_TIMEOUT_MS = 20_000;
+
 export abstract class BaseTranslationProvider implements TranslationProvider {
+  /**
+   * Per-provider request deadline. Overridable so tests can exercise the
+   * timeout path without actually waiting the production 20s.
+   */
+  protected requestTimeoutMs: number = TRANSLATION_TIMEOUT_MS;
+
   abstract readonly id: string;
   abstract readonly displayName: string;
   abstract readonly signupUrl: string;
@@ -80,13 +121,13 @@ export abstract class BaseTranslationProvider implements TranslationProvider {
     const name = options?.providerName ?? this.providerName;
     let response: { status: number; text: string };
     try {
-      response = await requestUrl({
+      response = await withDeadline(requestUrl({
         url,
         method: typeof init.method === "string" ? init.method : "GET",
         headers: this.stringifyHeaders(init.headers),
         body: typeof init.body === "string" ? init.body : undefined,
         throw: false
-      });
+      }), this.requestTimeoutMs, name);
     } catch (error) {
       // requestUrl throws when throw:true AND for connection-level failures
       // (DNS, refused, reset, TLS). Wrap with our Chinese prefix so the user

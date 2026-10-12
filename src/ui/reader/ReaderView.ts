@@ -689,6 +689,11 @@ export class ReaderView extends ItemView {
   // P0-7 修复: setEntry 是 sync, 旧 session.close() 不能 fire-and-forget
   // (见 setEntry 注释). 这里存 promise 让后续 openSession / onClose await.
   private pendingClosePromise: Promise<void> | undefined;
+  /**
+   * P1: in-flight `openSession`, so overlapping calls serialise instead of
+   * both mounting a reader onto the host. See `openSession`.
+   */
+  private openingPromise: Promise<void> | undefined;
   // C7 修复: setEntry / openSession 生成一个 token. whenReady / openExcerptById
   // await 完后, 还要检查 token 是不是还是当前 — 否则 await 的是旧 session,
   // 新 session 已经挂上去, 旧 awaiter 在新 session 上调 jumpToExcerpt 跳到
@@ -1234,6 +1239,33 @@ private async showFontSettings(): Promise<void> {
   }
 
   private async openSession(): Promise<void> {
+    if (!this.entry || !this.host) return;
+    // P1 fix: re-entrancy guard. `setEntry` schedules BOTH a rAF and a
+    // 100ms fallback that call `openSession`, and each checks `!this.session`
+    // *synchronously* — but `openSession`'s first real await is
+    // `pendingClosePromise` / `delegate.mount(...)`, which does not set
+    // `this.session` until much later. Two overlapping opens therefore both
+    // saw an empty `this.session` and both mounted: two `<foliate-view>`
+    // elements (or two PagedTextSession stages) on the same host, of which
+    // only the second was kept — the first iframe / PDF worker was never
+    // closed. `currentSessionToken` guards `openExcerptById` but not this.
+    //
+    // Chaining onto the in-flight promise serialises the calls: the second
+    // waits, then runs after the first has published `this.session`.
+    if (this.openingPromise) {
+      await this.openingPromise;
+      if (this.session || !this.entry || !this.host) return;
+    }
+    const run = this.openSessionInner();
+    this.openingPromise = run;
+    try {
+      await run;
+    } finally {
+      if (this.openingPromise === run) this.openingPromise = undefined;
+    }
+  }
+
+  private async openSessionInner(): Promise<void> {
     if (!this.entry || !this.host) return;
     // P0-7 修复: 等旧 session 真正关掉(切书路径), 否则两份 reader 同时
     // 挂在 host 上 — foliate iframe + PDF.js worker 内存翻倍, 旧 worker

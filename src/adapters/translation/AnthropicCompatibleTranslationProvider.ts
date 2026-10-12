@@ -182,10 +182,22 @@ export class AnthropicCompatibleTranslationProvider extends BaseTranslationProvi
     }
   }
 
+  /**
+   * P1 security fix: `http:` used to be accepted here, which sends the
+   * user's API key and the selected book text in cleartext. That matters
+   * for these two providers specifically — their config is a *custom*
+   * base URL, commonly copy-pasted from a forum post or pointing at a
+   * self-hosted Ollama / LM Studio on the LAN, and the key is a real
+   * bearer credential. A typo or a hostile config string would leak it to
+   * anyone on the path.
+   *
+   * `https:` only. Users who genuinely need a plaintext LAN endpoint can
+   * put it behind a TLS terminator or a VPN.
+   */
   private isValidHttpUrl(s: string): boolean {
     try {
       const url = new URL(s);
-      return url.protocol === "https:" || url.protocol === "http:";
+      return url.protocol === "https:";
     } catch {
       return false;
     }

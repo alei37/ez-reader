@@ -134,7 +134,7 @@ export class FoliateBookReader implements BookReader {
       throw error;
     }
 
-    const session = new FoliateSession(view, onTransformData, transformTarget);
+    const session = new FoliateSession(view, onTransformData, transformTarget, parsed);
     try {
       await session.applyAppearance(appearance);
     } catch (error) {
@@ -180,13 +180,22 @@ export class FoliateBookReader implements BookReader {
   async extractCover(book: Book, loader: BookBytesLoader): Promise<ExtractedCover | null> {
     const { makeBook } = await importFoliateModule();
     const parsed = await loadEpubFile(book, loader, makeBook);
-    const bookObj = parsed as { getCover?: () => Promise<Blob | null> };
-    if (typeof bookObj.getCover !== "function") return null;
-    const blob = await bookObj.getCover();
-    if (!blob) return null;
-    const coverBytes = await blob.arrayBuffer();
-    // foliate 的 getCover() 经常返回空 blob.type — 用 sniffer 看实际 bytes.
-    return { bytes: coverBytes, mimeType: sniffImageMime(coverBytes) ?? (blob.type || "image/jpeg") };
+    // P1 fix: `loadEpubFile` unpacks the whole EPUB into blob URLs. Without
+    // this the parsed book stayed alive for the process lifetime — and
+    // `extractCover` runs once per book, so `CoverCache.hydrateCovers` over a
+    // few hundred books leaked every one of them. try/finally so the
+    // early returns and the throw path both release.
+    try {
+      const bookObj = parsed as { getCover?: () => Promise<Blob | null> };
+      if (typeof bookObj.getCover !== "function") return null;
+      const blob = await bookObj.getCover();
+      if (!blob) return null;
+      const coverBytes = await blob.arrayBuffer();
+      // foliate 的 getCover() 经常返回空 blob.type — 用 sniffer 看实际 bytes.
+      return { bytes: coverBytes, mimeType: sniffImageMime(coverBytes) ?? (blob.type || "image/jpeg") };
+    } finally {
+      destroyParsedBook(parsed, "extractCover");
+    }
   }
 
   /**
@@ -203,6 +212,24 @@ export class FoliateBookReader implements BookReader {
     try {
       const { makeBook } = await importFoliateModule();
       const parsed = await loadEpubFile(book, loader, makeBook);
+      // P1 fix: same leak as extractCover — LibraryService.refreshMetadata
+      // parses the book on every open / metadata sweep.
+      try {
+        return readParsedMetadata(parsed);
+      } finally {
+        destroyParsedBook(parsed, "readMetadata");
+      }
+    } catch (error) {
+      console.warn("[ez-reader] foliate readMetadata failed", book.locator.path, error);
+      return null;
+    }
+  }
+}
+
+/** Read OPF metadata off a parsed foliate book. Extracted so the caller can
+ *  wrap it in try/finally and always destroy the book. */
+const readParsedMetadata = (parsed: unknown): BookMetadata | null => {
+  {
       const bookObj = parsed as { metadata?: { title?: unknown; creator?: unknown; language?: unknown; publisher?: unknown; identifier?: unknown; description?: unknown } };
       const raw = bookObj.metadata ?? {};
       const title = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : undefined;
@@ -232,12 +259,32 @@ export class FoliateBookReader implements BookReader {
         description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined,
         cachedAt: Date.now()
       };
-    } catch (error) {
-      console.warn("[ez-reader] foliate readMetadata failed", book.locator.path, error);
-      return null;
     }
+};
+
+/**
+ * P1 fix: release the blob URLs a parsed foliate book holds.
+ *
+ * `makeBook()` unpacks every EPUB resource into a `URL.createObjectURL`.
+ * foliate keeps them in a per-book resource cache and only revokes them from
+ * `book.destroy()` → `loader.destroy()`. Nothing else does it — `view.close()`
+ * tears down the renderer only. We previously never called it, so each EPUB
+ * open, cover extraction and metadata read leaked its unpacked resources for
+ * the life of the Obsidian process.
+ *
+ * Tolerant by design: `destroy` is foliate's private-ish API, so a version
+ * bump degrades to a skipped cleanup rather than a crash, and a failure here
+ * must never fail the operation the caller was actually performing.
+ */
+const destroyParsedBook = (parsed: unknown, context: string): void => {
+  const book = parsed as { destroy?: () => void } | null | undefined;
+  if (!book || typeof book.destroy !== "function") return;
+  try {
+    book.destroy();
+  } catch (error) {
+    console.warn(`[ez-reader] foliate book.destroy failed (${context})`, error);
   }
-}
+};
 
 /** Shared dynamic-import + cast for the foliate-js view module. */
 const importFoliateModule = async (): Promise<FoliateModule> => {
@@ -263,6 +310,8 @@ const loadEpubFile = async (
 class FoliateSession implements ReaderSession {
   readonly element: HTMLElement;
   private readonly view: FoliateViewElement;
+  /** Parsed foliate book — `destroy()` releases its blob URLs. See ctor. */
+  private parsedBook: unknown;
   private readonly docListeners = new Set<() => void>();
   private readonly disposers = new Set<() => void>();
   private readonly transformCleanup: () => void;
@@ -295,9 +344,21 @@ class FoliateSession implements ReaderSession {
   constructor(
     view: FoliateViewElement,
     transformListener: EventListener,
-    transformTarget: EventTarget | null | undefined
+    transformTarget: EventTarget | null | undefined,
+    /**
+     * P1 fix: the parsed foliate book owns every blob URL created while
+     * unpacking the EPUB. `view.close()` tears down the *renderer* only —
+     * foliate's `book.destroy()` is what calls `loader.destroy()`, which
+     * walks the resource cache and revokes each `URL.createObjectURL`.
+     * We never called it, so every EPUB open / cover extraction / metadata
+     * read leaked its unpacked blobs for the life of the Obsidian process.
+     * Twenty books, or a `refreshMetadata` sweep over a large shelf, is
+     * hundreds of megabytes of retained ArrayBuffers — fatal on mobile.
+     */
+    parsedBook?: unknown
   ) {
     this.view = view;
+    this.parsedBook = parsedBook;
     this.element = view;
     // P0 修复: 之前 transformTarget 上的 data listener 永不被移除, foliate
     // 的 transformTarget 在 parsed book 上持有, 不移除意味着 listener 跟着
@@ -344,6 +405,20 @@ class FoliateSession implements ReaderSession {
     } catch (error) {
       console.warn("[ez-reader] foliate view.close failed", error);
     }
+    // P1 fix: release the parsed book's blob URLs. `view.close()` only
+    // destroys the renderer; foliate's `book.destroy()` is what calls
+    // `loader.destroy()` and revokes every `URL.createObjectURL` created
+    // while unpacking. Optional-chained because the shape is foliate's
+    // private, and a version bump must not turn cleanup into a crash.
+    const book = this.parsedBook as { destroy?: () => void } | undefined;
+    if (book && typeof book.destroy === "function") {
+      try {
+        book.destroy();
+      } catch (error) {
+        console.warn("[ez-reader] foliate book.destroy failed", error);
+      }
+    }
+    this.parsedBook = undefined;
     try {
       this.view.remove();
     } catch (error) {
@@ -794,4 +869,21 @@ const sanitizeBookContent = (source: string): string =>
     .replace(/<(?:iframe|object|embed)\b[^>]*\/?>/gi, "")
     .replace(/<meta\b[^>]*http-equiv\s*=\s*(?:"refresh"|'refresh'|refresh)[^>]*\/?>/gi, "")
     .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/\s(?:src|poster|data)\s*=\s*(?:"(?:https?:|file:|javascript:)[^"]*"|'(?:https?:|file:|javascript:)[^']*'|(?:https?:|file:|javascript:)[^\s>]+)/gi, "");
+    // P1 fix: the URL rule only covered `src|poster|data`, so `href`,
+    // `xlink:href`, `formaction`, `srcset`, `ping` and `background` were
+    // untouched — and this function is the ONLY layer that strips
+    // `javascript:` from `href`/`xlink:href` (the foliate patch does it,
+    // but the patch silently stops applying if foliate-js is bumped or
+    // anyone installs with npm instead of pnpm, since
+    // `patchedDependencies` is a pnpm-only mechanism). Mirroring the
+    // rules here makes the TS layer self-sufficient, so a lost patch
+    // degrades to defence-in-depth rather than exposure.
+    .replace(
+      /\s(?:src|href|xlink:href|poster|data|formaction|action|background)\s*=\s*(?:"(?:https?:|file:|javascript:|vbscript:|data:text\/)[^"]*"|'(?:https?:|file:|javascript:|vbscript:|data:text\/)[^']*'|(?:https?:|file:|javascript:|vbscript:|data:text\/)[^\s>]+)/gi,
+      ""
+    )
+    // `srcset` holds a candidate list; strip the whole attribute if any
+    // candidate is remote.
+    .replace(/\ssrcset\s*=\s*(?:"[^"]*(?:https?:|file:|javascript:)[^"]*"|'[^']*(?:https?:|file:|javascript:)[^']*'|[^\s>]*(?:https?:|file:|javascript:)[^\s>]*)/gi, "")
+    // `ping` fires a POST on click with no visible affordance.
+    .replace(/\sping\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");

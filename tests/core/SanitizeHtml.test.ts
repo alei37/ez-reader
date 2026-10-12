@@ -67,11 +67,46 @@ test("sanitizeHtml: blocks javascript: URLs in href/src", () => {
   }
 });
 
-test("sanitizeHtml: allows safe http(s) URLs", () => {
+test("sanitizeHtml: strips remote http(s) URLs but keeps relative ones", () => {
+  // P0 fix: this used to assert that `https://` survives. Book content is
+  // untrusted and the reader has no use for a remote reference, so keeping
+  // one was a silent outbound request — a beacon leaking the user's IP and
+  // the fact that they are reading a given book, contradicting
+  // PRIVACY.md's "EzReader never transmits" claim. Link text and the
+  // relative image are preserved; only the fetching URL is dropped.
   const input = '<a href="https://example.com/foo">ok</a><img src="/relative.png">';
   const out = sanitizeHtml(input);
-  assert.match(out, /href="https:\/\/example\.com\/foo"/);
-  assert.match(out, /src="\/relative\.png"/);
+  assert.doesNotMatch(out, /https:\/\/example\.com/, "remote URL must not survive");
+  assert.match(out, />ok<\/a>/, "link text is preserved");
+  assert.match(out, /src="\/relative\.png"/, "relative URLs are not requests");
+});
+
+test("sanitizeHtml: keeps inline data:image but drops data:image/svg+xml", () => {
+  // MOBI cover art legitimately arrives as an inline data URL. SVG is
+  // excluded because it can carry script.
+  assert.match(sanitizeHtml('<img src="data:image/png;base64,iVBOR">'), /data:image\/png/);
+  assert.doesNotMatch(sanitizeHtml('<img src="data:image/svg+xml;base64,AAA">'), /svg\+xml/);
+});
+
+test("sanitizeHtml: srcset / ping / background cannot beacon", () => {
+  // These three fetched without a click and were missing from URL_ATTRS
+  // entirely, so they bypassed the check before the fix.
+  assert.doesNotMatch(sanitizeHtml('<img srcset="https://attacker.example/b?1 1x">'), /attacker/);
+  assert.doesNotMatch(sanitizeHtml('<a href="#x" ping="https://attacker.example/t">x</a>'), /attacker/);
+  assert.doesNotMatch(sanitizeHtml('<div background="https://attacker.example/bg.png">x</div>'), /attacker/);
+});
+
+test("sanitizeHtml: srcset checks every candidate, not just the first", () => {
+  // A mixed list would smuggle a remote candidate past a first-only check.
+  assert.doesNotMatch(sanitizeHtml('<img srcset="a.png 1x, https://attacker.example/x.png 2x">'), /attacker/);
+  // ...while an all-relative list is legitimate and must survive.
+  assert.match(sanitizeHtml('<img srcset="a.png 1x, b.png 2x">'), /a\.png 1x/);
+});
+
+test("sanitizeHtml: scheme detection is not fooled by control characters", () => {
+  // Browsers strip control chars before resolving the scheme.
+  assert.doesNotMatch(sanitizeHtml('<a href="java\tscript:alert(1)">x</a>'), /href=/);
+  assert.doesNotMatch(sanitizeHtml('<img src="  https://attacker.example/x">'), /attacker/);
 });
 
 test("sanitizeHtml: drops malformed / unquoted attribute tags", () => {

