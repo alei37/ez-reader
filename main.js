@@ -17793,6 +17793,18 @@ var buildContent = async (parser2, book) => {
     }
   };
   walk(parser2.getToc(), 0);
+  for (const [pageIdx, label] of spineIdToChapterLabel) {
+    const page = pages[pageIdx];
+    if (page) page.chapterTitle = label;
+  }
+  let carried;
+  for (const page of pages) {
+    if (page.chapterTitle) {
+      carried = page.chapterTitle;
+    } else if (carried) {
+      page.chapterTitle = carried;
+    }
+  }
   if (flatToc.length === 0) {
     const metadata = parser2.getMetadata();
     const title = metadata.title?.trim() || book.locator.path.split("/").pop() || "\u4E66";
@@ -20066,19 +20078,22 @@ var AddToLibraryModal = class extends import_obsidian5.Modal {
       timedOut = true;
       console.error(`[ez-reader] confirmSelection timed out after ${timeoutMs}ms \u2014 closing modal forcibly`);
     }, timeoutMs);
+    let deadline = Date.now() + timeoutMs;
+    const phaseExpired = () => timedOut || Date.now() >= deadline;
     try {
       const settled = await this.raceWithTimeout(
         Promise.allSettled(ids.map((id) => this.service.addToLibrary(id))),
         timeoutMs,
         "confirmSelection.addToLibrary"
       );
-      if (timedOut) throw new Error("addToLibrary \u8D85\u65F6");
+      if (phaseExpired()) throw new Error("addToLibrary \u8D85\u65F6");
       const rejected = (settled ?? []).filter(
         (r3) => r3.status === "rejected"
       );
       const books = ids.filter((_id, idx) => settled?.[idx]?.status === "fulfilled").map((id) => this.candidates.find((entry) => entry.book.id === id)?.book).filter((b3) => Boolean(b3));
+      deadline = Date.now() + timeoutMs;
       await this.raceWithTimeout(this.extractCoversFor(books), timeoutMs, "confirmSelection.extractCoversFor");
-      if (timedOut) throw new Error("extractCoversFor \u8D85\u65F6");
+      if (phaseExpired()) throw new Error("extractCoversFor \u8D85\u65F6");
       if (rejected.length > 0) {
         const firstReason = rejected[0]?.reason;
         const message = firstReason instanceof Error ? firstReason.message : String(firstReason);
@@ -20105,13 +20120,16 @@ var AddToLibraryModal = class extends import_obsidian5.Modal {
       timedOut = true;
       console.error(`[ez-reader] confirmAddAll timed out after ${timeoutMs}ms \u2014 closing modal forcibly`);
     }, timeoutMs);
+    let deadline = Date.now() + timeoutMs;
+    const phaseExpired = () => timedOut || Date.now() >= deadline;
     try {
       const before = new Set(this.service.list({}, "titleAsc", true).map((entry) => entry.book.id));
       await this.raceWithTimeout(this.service.addAllToLibrary(), timeoutMs, "confirmAddAll.addAllToLibrary");
-      if (timedOut) throw new Error("addAllToLibrary \u8D85\u65F6");
+      if (phaseExpired()) throw new Error("addAllToLibrary \u8D85\u65F6");
       const newlyAdded = this.service.list({}, "titleAsc", true).filter((entry) => !before.has(entry.book.id)).map((entry) => entry.book);
+      deadline = Date.now() + timeoutMs;
       await this.raceWithTimeout(this.extractCoversFor(newlyAdded), timeoutMs, "confirmAddAll.extractCoversFor");
-      if (timedOut) throw new Error("extractCoversFor \u8D85\u65F6");
+      if (phaseExpired()) throw new Error("extractCoversFor \u8D85\u65F6");
     } catch (error) {
       console.error("[ez-reader] confirmAddAll failed", error);
       const message = error instanceof Error ? error.message : String(error);
@@ -20234,10 +20252,7 @@ var formatReadingLong = (ms) => {
   if (rem === 0) return `${hours} \u5C0F\u65F6`;
   return `${hours} \u5C0F\u65F6 ${rem} \u5206\u949F`;
 };
-var sanitizeWikiTitle = (raw) => {
-  const cleaned = raw.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").replace(/[^\p{L}\p{N}\-_]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-  return cleaned || "untitled";
-};
+var bookFileStem = (title, bookId) => `${sanitizeFileBase(title)}-${bookIdTag(bookId)}`;
 var statusBadge = (status) => {
   switch (status) {
     case "reading":
@@ -20393,9 +20408,7 @@ var BookInfoModal = class extends import_obsidian6.Modal {
    */
   async copyWikiLink(rich, btn) {
     const title = rich.bookInfo?.title ?? rich.entry.book.metadata?.title ?? rich.entry.book.locator.path;
-    const safeTitle = sanitizeWikiTitle(title);
-    const idTag = rich.entry.book.id.slice(0, 8);
-    const link = `[[${safeTitle}-${idTag}]]`;
+    const link = `[[${bookFileStem(title, rich.entry.book.id)}]]`;
     try {
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(link);
@@ -20603,7 +20616,7 @@ var BookInfoModal = class extends import_obsidian6.Modal {
   // ---------------------------------------------------------------------------
   renderFooter(root, info) {
     const footer = root.createDiv({ cls: "ez-reader__book-info-footer" });
-    const basePath = `ezreader/notes/${sanitizeWikiTitle(info.title)}-${info.bookId.slice(0, 8)}.md`;
+    const basePath = `ezreader/notes/${bookFileStem(info.title, info.bookId)}.md`;
     const notesBtn = footer.createEl("button", {
       text: "\u{1F4DD} \u6253\u5F00 notes.md",
       attr: { type: "button" }
@@ -20612,7 +20625,7 @@ var BookInfoModal = class extends import_obsidian6.Modal {
       void this.deps.app.workspace.openLinkText(basePath, "", true);
       this.close();
     };
-    const infoPath = `ezreader/info/${sanitizeWikiTitle(info.title)}-${info.bookId.slice(0, 8)}.md`;
+    const infoPath = `ezreader/info/${bookFileStem(info.title, info.bookId)}.md`;
     const infoBtn = footer.createEl("button", {
       text: "\u{1F4CA} \u6253\u5F00 info.md",
       attr: { type: "button" }

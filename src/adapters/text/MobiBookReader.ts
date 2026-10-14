@@ -318,11 +318,27 @@ const buildContent = async (parser: EpubLikeParser, book: Book): Promise<PagedTe
   };
   walk(parser.getToc(), 0);
 
-  // 第二轮: 把 page 上的 chapterTitle 填回去 — 第一轮时 pages 还在
-  // 构建 (loadChapter 调用还没结束), 所以 spineIdToChapterLabel 先填,
-  // 现在二次遍历 pages 把对应 label 写上。
-  // 注: 现在 pages 数组里 chapterTitle 都已是 label (我在第一轮填了)。
-  // 保留双步骤是为了让 toc 解析后还能影响未填充的 page。
+  // 第二轮: 把 page 上的 chapterTitle 填回去 —— 这一段之前**只有注释没有
+  // 实现**。第一轮构造 pages 时读 `spineIdToChapterLabel.get(i)`,而那个 Map
+  // 要到下面 walk() 才填,所以真实 EPUB(几乎都有 TOC)的每一页拿到的都是
+  // undefined。连锁后果:PagedTextSession.currentChapter() 永远 null、工具栏
+  // 章节名空白、ReaderView 用 chapter label 匹配 tocId 匹配不上、TOC 进度点全灰。
+  // 下面的 `if (flatToc.length === 0)` 那段回填是唯一真正生效的,却只在
+  // 没有目录的书上跑得到。
+  for (const [pageIdx, label] of spineIdToChapterLabel) {
+    const page = pages[pageIdx];
+    if (page) (page as { chapterTitle?: string }).chapterTitle = label;
+  }
+  // 顶层 TOC 之前没覆盖到的页(例如目录从中间某章才开始)继承前一个已知章节,
+  // 这样翻到任何一页工具栏都有章节名,而不是空白。
+  let carried: string | undefined;
+  for (const page of pages) {
+    if ((page as { chapterTitle?: string }).chapterTitle) {
+      carried = (page as { chapterTitle?: string }).chapterTitle;
+    } else if (carried) {
+      (page as { chapterTitle?: string }).chapterTitle = carried;
+    }
+  }
 
   // 如果 parser 没返回 TOC, 给每个 page 一个默认 chapterTitle.
   if (flatToc.length === 0) {

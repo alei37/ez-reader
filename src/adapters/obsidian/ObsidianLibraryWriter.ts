@@ -715,11 +715,22 @@ const siblingPath = (infoPath: string, subdir: string, ext: string): string => {
  * (`04-resources/books/...`), so slicing it is not unique either. Hashing
  * the whole thing fixes both: 10 hex chars off SHA-1, so ~2^40 buckets
  * and a book library will never hit a collision.
+ *
+ * Exported because `BookInfoModal` has to name the same files. It used to
+ * roll its own `bookId.slice(0, 8)` and every one of its paths pointed at a
+ * file that did not exist — the two naming schemes are unrelated, not
+ * merely out of date.
  */
-const bookIdTag = (bookId: BookId): string =>
+export const bookIdTag = (bookId: BookId): string =>
   hexFromBuffer(sha1Bytes(new TextEncoder().encode(bookId))).slice(0, 10);
 
-const sanitizeFileBase = (raw: string): string => {
+/**
+ * The `<safeTitle>` half of a per-book filename.
+ *
+ * Exported alongside {@link bookIdTag} so anything that has to reproduce a
+ * per-book path derives it from the same two functions the writer uses.
+ */
+export const sanitizeFileBase = (raw: string): string => {
   const cleaned = raw
     .replace(/[\\/:*?"<>|]/g, "-")
     .replace(/\s+/g, "-")

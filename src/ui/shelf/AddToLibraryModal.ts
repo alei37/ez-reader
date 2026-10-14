@@ -246,6 +246,16 @@ export class AddToLibraryModal extends Modal {
       timedOut = true;
       console.error(`[ez-reader] confirmSelection timed out after ${timeoutMs}ms — closing modal forcibly`);
     }, timeoutMs);
+    // P0 修复(本轮 codereview): 下面是**两段串行流程** — 先 addToLibrary,
+    // 再 extractCoversFor —— 但上面那个 `timedOut` 只在入口起了一次表, 两段共用。
+    // 于是「加书花 29s + 封封面花 6s」在 t=30s 翻转 flag, 第二段成功返回后
+    // `if (timedOut) throw new Error("extractCoversFor 超时")` 照样抛 ——
+    // **所有书其实都已入库**, 用户却收到「加入失败」并会再点一次, 重复劳动。
+    //
+    // 每段现在有独立 deadline。入口那个 timer 退化成纯兜底(超时强制关窗,
+    // 不让 UI 卡死), 不再参与「是否超时」的判定。
+    let deadline = Date.now() + timeoutMs;
+    const phaseExpired = (): boolean => timedOut || Date.now() >= deadline;
     try {
       // 并行 addToLibrary: ObsidianAnnotationStore.writeChain 内部串行化
       // write,但读 + 准备可以并行 — N 本书的 IO 不再 N 倍耗时.
@@ -262,7 +272,7 @@ export class AddToLibraryModal extends Modal {
         timeoutMs,
         "confirmSelection.addToLibrary"
       );
-      if (timedOut) throw new Error("addToLibrary 超时");
+      if (phaseExpired()) throw new Error("addToLibrary 超时");
       const rejected = (settled ?? []).filter(
         (r): r is PromiseRejectedResult => r.status === "rejected"
       );
@@ -274,8 +284,10 @@ export class AddToLibraryModal extends Modal {
         .filter((_id, idx) => settled?.[idx]?.status === "fulfilled")
         .map((id) => this.candidates.find((entry) => entry.book.id === id)?.book)
         .filter((b): b is Book => Boolean(b));
+      // 第二段独立计时 —— 不继承第一段已经花掉的时间。
+      deadline = Date.now() + timeoutMs;
       await this.raceWithTimeout(this.extractCoversFor(books), timeoutMs, "confirmSelection.extractCoversFor");
-      if (timedOut) throw new Error("extractCoversFor 超时");
+      if (phaseExpired()) throw new Error("extractCoversFor 超时");
       if (rejected.length > 0) {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- PromiseSettledResult.reason is `any` per TS lib; guard before use
         const firstReason = rejected[0]?.reason;
@@ -306,16 +318,21 @@ export class AddToLibraryModal extends Modal {
       timedOut = true;
       console.error(`[ez-reader] confirmAddAll timed out after ${timeoutMs}ms — closing modal forcibly`);
     }, timeoutMs);
+    // 同 confirmSelection: 两段串行共用一个 flag 会让"全部加入"在两段都
+    // 成功的情况下报失败。每段独立 deadline。
+    let deadline = Date.now() + timeoutMs;
+    const phaseExpired = (): boolean => timedOut || Date.now() >= deadline;
     try {
       const before = new Set(this.service.list({}, "titleAsc", true).map((entry) => entry.book.id));
       await this.raceWithTimeout(this.service.addAllToLibrary(), timeoutMs, "confirmAddAll.addAllToLibrary");
-      if (timedOut) throw new Error("addAllToLibrary 超时");
+      if (phaseExpired()) throw new Error("addAllToLibrary 超时");
       const newlyAdded = this.service
         .list({}, "titleAsc", true)
         .filter((entry) => !before.has(entry.book.id))
         .map((entry) => entry.book);
+      deadline = Date.now() + timeoutMs;
       await this.raceWithTimeout(this.extractCoversFor(newlyAdded), timeoutMs, "confirmAddAll.extractCoversFor");
-      if (timedOut) throw new Error("extractCoversFor 超时");
+      if (phaseExpired()) throw new Error("extractCoversFor 超时");
     } catch (error) {
       console.error("[ez-reader] confirmAddAll failed", error);
       const message = error instanceof Error ? error.message : String(error);

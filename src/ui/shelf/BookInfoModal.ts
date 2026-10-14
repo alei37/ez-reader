@@ -6,6 +6,7 @@ import { statusLabel } from "./shelfFormatters";
 import type { BookInfo } from "../../core/entities/BookInfo";
 import type { DailyReadingTime, ReadingSession } from "../../core/entities/ReadingSession";
 import type { ReadingStatus } from "../../core/entities/ReadingState";
+import { bookIdTag, sanitizeFileBase } from "../../adapters/obsidian/ObsidianLibraryWriter";
 
 /**
  * v0.3.0: Book detail modal. Shows everything EzReader knows about one book:
@@ -91,19 +92,21 @@ const formatReadingLong = (ms: number): string => {
 };
 
 /**
- * Sanitize a title for use inside an Obsidian wiki link filename
- * (`[[<safeTitle>-<id>]]`). Matches the library's file-naming policy so the
- * link actually points to the same file the plugin would have written.
+ * Per-book filename, derived from the *same* helpers `ObsidianLibraryWriter`
+ * uses to create the file.
+ *
+ * This used to be a local `sanitizeWikiTitle` plus `bookId.slice(0, 8)`.
+ * The sanitizer was character-for-character identical to the writer's, but
+ * the id half was not: the writer tags files with `bookIdTag(bookId)` (SHA-1
+ * hex, 10 chars) since 0.3.x, while the modal kept slicing the raw bookId to
+ * 8. Two unrelated schemes, so 📝 / 📊 / 🔗 all pointed at files that never
+ * existed — and since bookId IS the vault path, `slice(0,8)` could even
+ * contain a `/`, producing a nested path like `ezreader/notes/标题-books/fo.md`.
+ *
+ * Delegating both halves keeps the two in lockstep by construction.
  */
-const sanitizeWikiTitle = (raw: string): string => {
-  const cleaned = raw
-    .replace(/[\\/:*?"<>|]/g, "-")
-    .replace(/\s+/g, "-")
-    .replace(/[^\p{L}\p{N}\-_]+/gu, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  return cleaned || "untitled";
-};
+const bookFileStem = (title: string, bookId: string): string =>
+  `${sanitizeFileBase(title)}-${bookIdTag(bookId)}`;
 
 /** Status chip label + marker for progress section. */
 const statusBadge = (status: ReadingStatus): { label: string; cls: string } => {
@@ -308,9 +311,7 @@ export class BookInfoModal extends Modal {
    */
   private async copyWikiLink(rich: RichLibraryEntry, btn: HTMLElement): Promise<void> {
     const title = rich.bookInfo?.title ?? rich.entry.book.metadata?.title ?? rich.entry.book.locator.path;
-    const safeTitle = sanitizeWikiTitle(title);
-    const idTag = rich.entry.book.id.slice(0, 8);
-    const link = `[[${safeTitle}-${idTag}]]`;
+    const link = `[[${bookFileStem(title, rich.entry.book.id)}]]`;
     try {
       if (navigator?.clipboard?.writeText) {
         await navigator.clipboard.writeText(link);
@@ -574,7 +575,7 @@ export class BookInfoModal extends Modal {
   private renderFooter(root: HTMLElement, info: BookInfo): void {
     const footer = root.createDiv({ cls: "ez-reader__book-info-footer" });
 
-    const basePath = `ezreader/notes/${sanitizeWikiTitle(info.title)}-${info.bookId.slice(0, 8)}.md`;
+    const basePath = `ezreader/notes/${bookFileStem(info.title, info.bookId)}.md`;
     const notesBtn = footer.createEl("button", {
       text: "📝 打开 notes.md",
       attr: { type: "button" }
@@ -584,7 +585,7 @@ export class BookInfoModal extends Modal {
       this.close();
     };
 
-    const infoPath = `ezreader/info/${sanitizeWikiTitle(info.title)}-${info.bookId.slice(0, 8)}.md`;
+    const infoPath = `ezreader/info/${bookFileStem(info.title, info.bookId)}.md`;
     const infoBtn = footer.createEl("button", {
       text: "📊 打开 info.md",
       attr: { type: "button" }
