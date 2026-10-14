@@ -16204,7 +16204,7 @@ var FoliateBookReader = class {
     const onTransformData = (event) => {
       const detail = event.detail;
       if (!detail) return;
-      if (!/text\/(x?html)/i.test(detail.type ?? "")) return;
+      if (!/^(?:application|text)\/(?:xhtml\+xml|html)$/i.test(detail.type ?? "")) return;
       detail.data = Promise.resolve(detail.data).then(async (data) => {
         const source = data instanceof Blob ? await data.text() : String(data);
         return sanitizeBookContent(source);
@@ -16219,19 +16219,29 @@ var FoliateBookReader = class {
     if (transformTarget) {
       transformTarget.addEventListener("data", onTransformData);
     }
+    let lastLoaded = null;
+    const captureLoad = (event) => {
+      const detail = event.detail;
+      if (!detail || !detail.doc || typeof detail.index !== "number") return;
+      lastLoaded = { doc: detail.doc, index: detail.index };
+    };
+    view.addEventListener("load", captureLoad);
     try {
       await view.open(parsed);
     } catch (error) {
       view.remove();
+      view.removeEventListener("load", captureLoad);
       if (transformTarget) transformTarget.removeEventListener("data", onTransformData);
+      destroyParsedBook(parsed, "open-failed");
       throw error;
     }
-    const session = new FoliateSession(view, onTransformData, transformTarget, parsed);
+    const session = new FoliateSession(view, onTransformData, transformTarget, parsed, () => lastLoaded);
     try {
       await session.applyAppearance(appearance);
     } catch (error) {
       view.remove();
-      if (transformTarget) transformTarget.removeEventListener("data", onTransformData);
+      view.removeEventListener("load", captureLoad);
+      await session.close();
       throw error;
     }
     const directionClasses = [
@@ -16346,6 +16356,18 @@ var loadEpubFile = async (book, loader, makeBook2) => {
   return makeBook2(file);
 };
 var FoliateSession = class {
+  constructor(view, transformListener, transformTarget, parsedBook, lastLoaded) {
+    this.lastLoaded = lastLoaded;
+    this.view = view;
+    this.parsedBook = parsedBook;
+    this.getLastLoaded = lastLoaded;
+    this.element = view;
+    this.transformCleanup = () => {
+      if (transformTarget) {
+        transformTarget.removeEventListener("data", transformListener);
+      }
+    };
+  }
   element;
   view;
   /** Parsed foliate book — `destroy()` releases its blob URLs. See ctor. */
@@ -16363,6 +16385,8 @@ var FoliateSession = class {
    *  ReaderView.onClose 直接 await session.close 不先 offSelect, load
    *  listener 还在 view 上). 把 handle 提到实例字段让 close() 能拿到. */
   selectionLoadListener;
+  /** 见构造器 `lastLoaded` 参数。 */
+  getLastLoaded;
   /**
    * 上次导航方向, 供 `load` 事件读取以决定翻页动画的方向 class。
    * - "initial"  — 首次加载 + TOC / 进度条 / 书签跳转 (直接淡入)
@@ -16378,16 +16402,6 @@ var FoliateSession = class {
   findQuery = null;
   findMatches = [];
   findCursor = 0;
-  constructor(view, transformListener, transformTarget, parsedBook) {
-    this.view = view;
-    this.parsedBook = parsedBook;
-    this.element = view;
-    this.transformCleanup = () => {
-      if (transformTarget) {
-        transformTarget.removeEventListener("data", transformListener);
-      }
-    };
-  }
   /** ReaderView 注册的 keyboard 转发 — 在 foliate iframe.contentDocument 挂
    *  keydown listener (跨 iframe 边界事件不会自动 bubble 到 parent). */
   setOnIframeKeydown(handler) {
@@ -16733,6 +16747,10 @@ var FoliateSession = class {
     };
     this.view.addEventListener("load", loadListener);
     this.selectionLoadListener = loadListener;
+    const alreadyLoaded = this.getLastLoaded?.();
+    if (alreadyLoaded) {
+      attach(alreadyLoaded.doc, alreadyLoaded.index);
+    }
     return off;
   }
 };

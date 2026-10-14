@@ -105,7 +105,14 @@ export class FoliateBookReader implements BookReader {
     const onTransformData = (event: Event) => {
       const detail = (event as CustomEvent<{ data?: unknown; type?: string }>).detail;
       if (!detail) return;
-      if (!/text\/(x?html)/i.test(detail.type ?? "")) return;
+      // P0-1 修复: 原来的 `/text\/(x?html)/i` 匹配不到 EPUB 的真实
+      // MIME。foliate 的常量是 `application/xhtml+xml`(epub.js:19),
+      // EPUB 2/3 的 spine 内容文档全是这个 —— 也就是说这个净化钩子
+      // 从来没在真实 EPUB 上执行过, `sanitizeBookContent` 是死代码,
+      // 剥 <script>/<iframe>/on*/javascript: 的只有 pnpm patch。patch
+      // 一旦失效(重装依赖 / foliate 升版), 暴露面 100% 打开。
+      // `text/html` 只在 XHTML 解析失败回退时才出现, 一起放行。
+      if (!/^(?:application|text)\/(?:xhtml\+xml|html)$/i.test(detail.type ?? "")) return;
       detail.data = Promise.resolve(detail.data).then(async (data) => {
         const source = data instanceof Blob ? await data.text() : String(data);
         return sanitizeBookContent(source);
@@ -123,6 +130,27 @@ export class FoliateBookReader implements BookReader {
     if (transformTarget) {
       transformTarget.addEventListener("data", onTransformData);
     }
+    // P0 修复(选词): foliate 在 `view.open()` 期间就把第一个 section 渲染
+    // 完并派发了 `load`, 但 ReaderView 要等 open() 返回后才
+    // `session.on("selection-change", …)` → `bindSelectionChange` 才挂自己的
+    // `load` listener。第一次的 `load` 事件因此永久丢失, `attach()` 从没跑过,
+    // iframe document 上一个 selection listener 都没有。
+    //
+    // 表现:刚打开的书怎么划词都不弹浮窗, 翻一页之后就好了 —— 用户报的就是
+    // 这个。之前只挂了 `load` listener 等"下一次"事件, 而下一次可能永远不来
+    // (用户就在第一页慢慢读)。
+    //
+    // 这里提前挂一个 capture 钩子, 只记录最近一次 load 的 {doc, index};
+    // `bindSelectionChange` 建立时拿它补挂一次。不去问 renderer 要 document,
+    // 因为 fixed-layout 用 closed shadow DOM 根本取不到 iframe, 而 foliate
+    // 的 `load` 事件两种 renderer 都会派发。
+    let lastLoaded: { doc: Document; index: number } | null = null;
+    const captureLoad = (event: Event): void => {
+      const detail = (event as CustomEvent<{ doc?: Document; index?: number }>).detail;
+      if (!detail || !detail.doc || typeof detail.index !== "number") return;
+      lastLoaded = { doc: detail.doc, index: detail.index };
+    };
+    view.addEventListener("load", captureLoad);
     try {
       await view.open(parsed);
     } catch (error) {
@@ -130,11 +158,15 @@ export class FoliateBookReader implements BookReader {
       // 的 transformTarget 可能是 shared EventTarget — 旧 listener 会泄漏
       // 到下一次 open(). 失败时也清掉.
       view.remove();
+      view.removeEventListener("load", captureLoad);
       if (transformTarget) transformTarget.removeEventListener("data", onTransformData);
+      // P0-3: view.open() 抛错时 foliate book 已经解包完成但没渲染, 同样
+      // 要 destroy 回收全部 blob URL。之前这条路径一次都没清理过。
+      destroyParsedBook(parsed, "open-failed");
       throw error;
     }
 
-    const session = new FoliateSession(view, onTransformData, transformTarget, parsed);
+    const session = new FoliateSession(view, onTransformData, transformTarget, parsed, () => lastLoaded);
     try {
       await session.applyAppearance(appearance);
     } catch (error) {
@@ -143,7 +175,15 @@ export class FoliateBookReader implements BookReader {
       // (shared EventTarget 跨书复用, 旧 listener 干扰下一次 open).
       // 现在跟 view.open 失败路径对称清理.
       view.remove();
-      if (transformTarget) transformTarget.removeEventListener("data", onTransformData);
+      view.removeEventListener("load", captureLoad);
+      // P0-3 修复: 这条路径之前只做了 view.remove() + listener 摘除, 没回收
+      // 已解包的 foliate book。`makeBook()` 把整本 EPUB 的每个资源都变成
+      // blob URL, 只有 `book.destroy()` 会逐个 revoke —— blob URL 不受 GC 管。
+      // `session.close()` 内部已经做了 transformCleanup + view.close() +
+      // book.destroy(), 所以这里不再重复摘 listener。extractCover /
+      // readMetadata 都有 finally destroy, 唯独最常走的 open() 没有; 书架批量
+      // 加书或反复重试一本坏 EPUB 会按"整本解包体积"持续泄漏, 移动端尤其致命。
+      await session.close();
       throw error;
     }
 
@@ -325,6 +365,8 @@ class FoliateSession implements ReaderSession {
    *  ReaderView.onClose 直接 await session.close 不先 offSelect, load
    *  listener 还在 view 上). 把 handle 提到实例字段让 close() 能拿到. */
   private selectionLoadListener: ((event: Event) => void) | undefined;
+  /** 见构造器 `lastLoaded` 参数。 */
+  private readonly getLastLoaded: (() => { doc: Document; index: number } | null) | undefined;
   /**
    * 上次导航方向, 供 `load` 事件读取以决定翻页动画的方向 class。
    * - "initial"  — 首次加载 + TOC / 进度条 / 书签跳转 (直接淡入)
@@ -355,10 +397,22 @@ class FoliateSession implements ReaderSession {
      * Twenty books, or a `refreshMetadata` sweep over a large shelf, is
      * hundreds of megabytes of retained ArrayBuffers — fatal on mobile.
      */
-    parsedBook?: unknown
+    parsedBook?: unknown,
+    /**
+     * 打开期间捕获到的、最近一次 foliate `load` 的 {doc, index}。
+     *
+     * `view.open()` 在返回前已经把第一个 section 渲染完并派发了 `load`，
+     * 而 `bindSelectionChange` 是 open() 返回之后才被调用的 —— 那一次事件
+     * 永远等不到下一个。没有这个 getter 的话，刚打开的书划词没有任何
+     * listener 在跑，浮窗不弹；翻一页后才会好。
+     *
+     * 用 getter 而不是值：`lastLoaded` 在闭包里会被后续翻页重新赋值。
+     */
+    readonly lastLoaded?: () => { doc: Document; index: number } | null
   ) {
     this.view = view;
     this.parsedBook = parsedBook;
+    this.getLastLoaded = lastLoaded;
     this.element = view;
     // P0 修复: 之前 transformTarget 上的 data listener 永不被移除, foliate
     // 的 transformTarget 在 parsed book 上持有, 不移除意味着 listener 跟着
@@ -804,6 +858,16 @@ class FoliateSession implements ReaderSession {
     // closure 持有 attach 闭包 (含 docListeners / view 引用).
     this.selectionLoadListener = loadListener;
 
+    // P0 修复(选词): 第一次的 `load` 在 open() 期间就发完了, 等下一次是
+    // 等不到的 —— 用户就在第一页慢慢读, 下一次翻页可能几分钟后才来。拿
+    // open() 期间捕获到的 {doc, index} 立刻补挂一次, 让"刚打开就能划词"
+    // 成为默认行为。拿不到(理论上不会, open 返回时至少渲染过一页)就
+    // 退回等下一次 load, 跟之前行为一致。
+    const alreadyLoaded = this.getLastLoaded?.();
+    if (alreadyLoaded) {
+      attach(alreadyLoaded.doc, alreadyLoaded.index);
+    }
+
     return off;
   }
 }
@@ -861,7 +925,14 @@ const extractTextFromSection = (payload: string | Document): string => {
  * meta-refresh redirects, inline event handlers. Algorithm adapted from
  * obsidian-pdf-plus (MIT, see LICENSES/obsidian-pdf-plus-MIT.txt).
  */
-const sanitizeBookContent = (source: string): string =>
+/**
+ * 剥掉 EPUB section HTML 里所有可执行内容。
+ *
+ * 之前这个函数是死代码 —— 上游的 MIME 判断 `/text\/(x?html)/i` 匹配不到
+ * foliate 实际传的 `application/xhtml+xml`,所以真实 EPUB 从来没走过这里。
+ * 导出出来是为了让它能被测试锁住,否则下次改 MIME 判断又静默失效没人知道。
+ */
+export const sanitizeBookContent = (source: string): string =>
   source
     .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
     .replace(/<script\b[^>]*\/?>/gi, "")
