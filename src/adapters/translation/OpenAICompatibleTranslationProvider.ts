@@ -115,6 +115,20 @@ export class OpenAICompatibleTranslationProvider extends BaseTranslationProvider
 
   async translate(rawConfig: string, request: TranslationRequest): Promise<TranslationResult> {
     const config = this.parseConfig(rawConfig) ?? OPENAI_COMPATIBLE_DEFAULTS;
+    // P0 安全修复: 之前这个校验只存在于 `validateKey()`, 而生产代码里
+    // **没有任何地方调用 validateKey**(只有抽象声明 + 各 provider 的实现)。
+    // 设置页的 baseUrl 输入框是 `onChange → 一个字符一个字符直接落盘`,
+    // 全程零校验。于是 data.json 里存着 `http://…`(用户手填, 或从别的
+    // vault 同步进来)时, 下一行拼出的 endpoint 会让
+    // `Authorization: Bearer <apiKey>` 连同用户划的原文一起**明文发到任意
+    // 主机**; requestUrl 走 Obsidian 主进程, 还能打到 127.0.0.1 和内网地址。
+    // 这里是最后一道闸门 —— 必须抛出, 否则用户只看到"翻译失败", 完全
+    // 不知道密钥已经发出去过。
+    if (!this.isValidHttpUrl(config.baseUrl)) {
+      throw new Error(
+        `API 基础地址必须是 https://(当前: "${config.baseUrl}")。为避免 API key 明文外发, 已拒绝发送。`
+      );
+    }
     const baseUrl = config.baseUrl.replace(/\/+$/, "");
     const endpoint = `${baseUrl}/chat/completions`;
 

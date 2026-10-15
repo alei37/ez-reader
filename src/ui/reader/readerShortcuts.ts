@@ -120,6 +120,22 @@ export const routeShortcut = (
     case "End":
       return "last";
   }
+  // P1 修复: 裸 `f`(小写)跟 foliate 自身的查找 (find in book) 冲突, 所以
+  // 小写 f 永远不能匹配本快捷键。
+  //
+  // P0 修复: 这条判断之前是下面 `case "F"` 的形式, 放在
+  // `if (event.shiftKey) { … return null; }` **之后** —— 每一个带 Shift 的
+  // 组合键都在那里被 `return null` 吃掉, 所以 Shift+F 根本走不到那个 case。
+  // 注释和 ShortcutHelpModal 都写着「按 F 切沉浸」, 实际按什么都不发生,
+  // 只有工具栏按钮能用。必须提到那个 shift 闸门之前。
+  //
+  // 浏览器里 `event.key` 有两种会给到大写 "F" 的情况: 按住 Shift, 或开了
+  // Caps Lock。两者都接受, 小写 f 不接受 —— 既恢复了文档承诺的 Shift+F,
+  // 又不破坏之前 Caps+F 就能用的行为。
+  if (event.key === "F") {
+    return "toggleImmersive";
+  }
+
   if (event.shiftKey) {
     if (event.key === " ") return "prev";
     return null;
@@ -127,10 +143,6 @@ export const routeShortcut = (
   switch (event.key) {
     case " ":
       return "next";
-    // P1 修复: 之前裸 `f` 跟 foliate 自身的查找 (find in book) 冲突.
-    // 强制需要 Shift+F 才能切沉浸, 跟其他 fixed shortcut 一致.
-    case "F":
-      return "toggleImmersive";
     case "?":
       return "showHelp";
     case "c":

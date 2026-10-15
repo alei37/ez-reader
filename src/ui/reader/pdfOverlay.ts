@@ -166,6 +166,12 @@ export class PdfOverlay {
   private targetLocale = "zh-CN";
   private mounted = false;
   /**
+   * P0 修复: 翻译结果 stale 守卫。每次 runTranslation 自增, await 之后只有
+   * generation 仍然匹配才写 UI。旧请求不取消网络, 只是不让它覆盖新译文。
+   * 与 `TranslationDrawer.translateGeneration` 同一套写法 —— PDF 侧之前漏了。
+   */
+  private translateGeneration = 0;
+  /**
    * Marks the highlight layer as needing a reposition on the next animation
    * frame. Assigned in `mount()` once the rAF loop's closure exists; until
    * then it is a no-op so `mount()`-time callers are safe.
@@ -842,6 +848,9 @@ export class PdfOverlay {
   unmount(): void {
     if (!this.mounted) return;
     this.mounted = false;
+    // 作废在途翻译 — 否则 unmount 之后到达的响应仍会往已 detach 的 popover
+    // 写 DOM(跟 TranslationDrawer.hide() 里 bump generation 同一个理由)。
+    this.translateGeneration += 1;
     // P2 polish: 关 viewer 前 flush 当前阅读时长 session — flushActiveSession
     // 内部 idempotent (activeSinceMs === null 时 no-op), 即便 onLeafChange
     // 已经 flush 过也无副作用。
@@ -922,16 +931,35 @@ export class PdfOverlay {
     void this.opts.app.workspace.openLinkText(`${this.opts.bookPath}${locator}`, "", false);
   }
 
-  private async handleTranslate(): Promise<void> {
-    if (!this.pendingSelection) return;
+  private handleTranslate(): Promise<void> {
+    if (!this.pendingSelection) return Promise.resolve();
     const text = this.pendingSelection.text;
     const rect = this.pendingSelection.rect;
-    this.hideMenu();
+    return this.runTranslation(text, rect);
+  }
+
+  /**
+   * Translate + render, with a generation guard.
+   *
+   * P0 修复: `handleTranslate` 和 `handleCycleTranslationTarget` 之前各自
+   * `await this.opts.translation.translate(...)` 然后无条件 render。快速
+   * 划两次词各点一次翻译时, 先发的请求后到 → **旧译文盖掉新的**, 原文框和
+   * 译文对不上。`handleCycleTranslationTarget` 更糟: 它在 await 之前就改了
+   * `this.targetLocale`, 竞态下连显示的目标语言都跟译文不是一回事。
+   *
+   * `TranslationDrawer.translate()` 一直是对的(`translateGeneration` token,
+   * result 和 error 两条路径都判), 这里搬同一套过来。旧请求不取消网络,
+   * 只是不让它再写 UI。
+   */
+  private async runTranslation(text: string, rect: DOMRect): Promise<void> {
+    const generation = ++this.translateGeneration;
     this.showTranslationPopover(text, rect);
     try {
       const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
+      if (generation !== this.translateGeneration) return; // stale result
       this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
     } catch (error) {
+      if (generation !== this.translateGeneration) return; // stale error
       const message = error instanceof Error ? error.message : String(error);
       this.renderTranslationError(text, message);
     }
@@ -1098,22 +1126,17 @@ export class PdfOverlay {
   }
 
   /** Popover 内「换语言重译」按钮 — cycle 目标语言后复用 showTranslationPopover。 */
-  private async handleCycleTranslationTarget(): Promise<void> {
-    if (!this.pendingSelection) return;
+  private handleCycleTranslationTarget(): Promise<void> {
+    if (!this.pendingSelection) return Promise.resolve();
     const cycle: Locale[] = ["zh-CN", "en", "ja", "ko", "fr", "de"];
     const currentIdx = cycle.indexOf(this.targetLocale);
     const next = cycle[(currentIdx + 1) % cycle.length] ?? "zh-CN";
     this.targetLocale = next;
     const text = this.pendingSelection.text;
     const rect = this.pendingSelection.rect;
-    this.showTranslationPopover(text, rect);
-    try {
-      const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
-      this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.renderTranslationError(text, message);
-    }
+    // locale 先改再翻译, runTranslation 内部读到的是新值 —— 与旧代码一致,
+    // 但 generation 守卫保证旧 locale 的在途请求不会再写 UI。
+    return this.runTranslation(text, rect);
   }
 
   private async handleExcerpt(): Promise<void> {

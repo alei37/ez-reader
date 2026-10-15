@@ -109,6 +109,15 @@ export class AnthropicCompatibleTranslationProvider extends BaseTranslationProvi
     if (!config) {
       throw new Error("Anthropic 兼容 provider 配置缺失或损坏,请在插件设置重新填写。");
     }
+    // P0 安全修复: 同 OpenAICompatible。`validateKey()` 在生产代码里零调用,
+    // 设置页的 baseUrl 逐字符落盘零校验 —— 没有这道闸门的话,
+    // `x-api-key: <apiKey>` 会连同用户划的原文一起明文发到任意主机
+    // (requestUrl 走主进程, 127.0.0.1 / 内网也打得通)。
+    if (!this.isValidHttpUrl(config.baseUrl)) {
+      throw new Error(
+        `API 基础地址必须是 https://(当前: "${config.baseUrl}")。为避免 API key 明文外发, 已拒绝发送。`
+      );
+    }
     const baseUrl = config.baseUrl.replace(/\/+$/, "");
     const endpoint = `${baseUrl}/v1/messages`;
 

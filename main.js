@@ -12687,6 +12687,12 @@ var init_pdfOverlay = __esm({
       targetLocale = "zh-CN";
       mounted = false;
       /**
+       * P0 修复: 翻译结果 stale 守卫。每次 runTranslation 自增, await 之后只有
+       * generation 仍然匹配才写 UI。旧请求不取消网络, 只是不让它覆盖新译文。
+       * 与 `TranslationDrawer.translateGeneration` 同一套写法 —— PDF 侧之前漏了。
+       */
+      translateGeneration = 0;
+      /**
        * Marks the highlight layer as needing a reposition on the next animation
        * frame. Assigned in `mount()` once the rAF loop's closure exists; until
        * then it is a no-op so `mount()`-time callers are safe.
@@ -13227,6 +13233,7 @@ var init_pdfOverlay = __esm({
       unmount() {
         if (!this.mounted) return;
         this.mounted = false;
+        this.translateGeneration += 1;
         this.flushPdfActiveSession();
         for (const d2 of this.disposers) {
           try {
@@ -13297,16 +13304,34 @@ var init_pdfOverlay = __esm({
         if (!locator) return;
         void this.opts.app.workspace.openLinkText(`${this.opts.bookPath}${locator}`, "", false);
       }
-      async handleTranslate() {
-        if (!this.pendingSelection) return;
+      handleTranslate() {
+        if (!this.pendingSelection) return Promise.resolve();
         const text = this.pendingSelection.text;
         const rect = this.pendingSelection.rect;
-        this.hideMenu();
+        return this.runTranslation(text, rect);
+      }
+      /**
+       * Translate + render, with a generation guard.
+       *
+       * P0 修复: `handleTranslate` 和 `handleCycleTranslationTarget` 之前各自
+       * `await this.opts.translation.translate(...)` 然后无条件 render。快速
+       * 划两次词各点一次翻译时, 先发的请求后到 → **旧译文盖掉新的**, 原文框和
+       * 译文对不上。`handleCycleTranslationTarget` 更糟: 它在 await 之前就改了
+       * `this.targetLocale`, 竞态下连显示的目标语言都跟译文不是一回事。
+       *
+       * `TranslationDrawer.translate()` 一直是对的(`translateGeneration` token,
+       * result 和 error 两条路径都判), 这里搬同一套过来。旧请求不取消网络,
+       * 只是不让它再写 UI。
+       */
+      async runTranslation(text, rect) {
+        const generation = ++this.translateGeneration;
         this.showTranslationPopover(text, rect);
         try {
           const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
+          if (generation !== this.translateGeneration) return;
           this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
         } catch (error) {
+          if (generation !== this.translateGeneration) return;
           const message = error instanceof Error ? error.message : String(error);
           this.renderTranslationError(text, message);
         }
@@ -13444,22 +13469,15 @@ var init_pdfOverlay = __esm({
         }
       }
       /** Popover 内「换语言重译」按钮 — cycle 目标语言后复用 showTranslationPopover。 */
-      async handleCycleTranslationTarget() {
-        if (!this.pendingSelection) return;
+      handleCycleTranslationTarget() {
+        if (!this.pendingSelection) return Promise.resolve();
         const cycle = ["zh-CN", "en", "ja", "ko", "fr", "de"];
         const currentIdx = cycle.indexOf(this.targetLocale);
         const next = cycle[(currentIdx + 1) % cycle.length] ?? "zh-CN";
         this.targetLocale = next;
         const text = this.pendingSelection.text;
         const rect = this.pendingSelection.rect;
-        this.showTranslationPopover(text, rect);
-        try {
-          const result = await this.opts.translation.translate(text, "auto", this.targetLocale);
-          this.renderTranslationResult(text, result.text, result.detectedSource, result.providerId);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.renderTranslationError(text, message);
-        }
+        return this.runTranslation(text, rect);
       }
       async handleExcerpt() {
         if (!this.pendingSelection || !this.bookId) return;
@@ -18743,6 +18761,11 @@ var OpenAICompatibleTranslationProvider = class extends BaseTranslationProvider 
   }
   async translate(rawConfig, request) {
     const config = this.parseConfig(rawConfig) ?? OPENAI_COMPATIBLE_DEFAULTS;
+    if (!this.isValidHttpUrl(config.baseUrl)) {
+      throw new Error(
+        `API \u57FA\u7840\u5730\u5740\u5FC5\u987B\u662F https://(\u5F53\u524D: "${config.baseUrl}")\u3002\u4E3A\u907F\u514D API key \u660E\u6587\u5916\u53D1, \u5DF2\u62D2\u7EDD\u53D1\u9001\u3002`
+      );
+    }
     const baseUrl = config.baseUrl.replace(/\/+$/, "");
     const endpoint = `${baseUrl}/chat/completions`;
     const targetLabel = toLocaleLabel(request.target);
@@ -18916,6 +18939,11 @@ var AnthropicCompatibleTranslationProvider = class extends BaseTranslationProvid
     const config = this.parseConfig(rawConfig);
     if (!config) {
       throw new Error("Anthropic \u517C\u5BB9 provider \u914D\u7F6E\u7F3A\u5931\u6216\u635F\u574F,\u8BF7\u5728\u63D2\u4EF6\u8BBE\u7F6E\u91CD\u65B0\u586B\u5199\u3002");
+    }
+    if (!this.isValidHttpUrl(config.baseUrl)) {
+      throw new Error(
+        `API \u57FA\u7840\u5730\u5740\u5FC5\u987B\u662F https://(\u5F53\u524D: "${config.baseUrl}")\u3002\u4E3A\u907F\u514D API key \u660E\u6587\u5916\u53D1, \u5DF2\u62D2\u7EDD\u53D1\u9001\u3002`
+      );
     }
     const baseUrl = config.baseUrl.replace(/\/+$/, "");
     const endpoint = `${baseUrl}/v1/messages`;
@@ -24022,6 +24050,9 @@ var routeShortcut = (event, shortcuts, enabled = true) => {
     case "End":
       return "last";
   }
+  if (event.key === "F") {
+    return "toggleImmersive";
+  }
   if (event.shiftKey) {
     if (event.key === " ") return "prev";
     return null;
@@ -24029,10 +24060,6 @@ var routeShortcut = (event, shortcuts, enabled = true) => {
   switch (event.key) {
     case " ":
       return "next";
-    // P1 修复: 之前裸 `f` 跟 foliate 自身的查找 (find in book) 冲突.
-    // 强制需要 Shift+F 才能切沉浸, 跟其他 fixed shortcut 一致.
-    case "F":
-      return "toggleImmersive";
     case "?":
       return "showHelp";
     case "c":
