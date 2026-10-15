@@ -104,8 +104,23 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   /** Wrap a mutation so it serializes through `writeChain`. */
   private async mutate(fn: () => Promise<AnnotationSnapshot>): Promise<void> {
     const next = this.writeChain.then(fn).then(async (snapshot) => {
-      this.cache = snapshot;
+      // P1 修复: 之前是 `this.cache = snapshot;` 然后才 `await saveData`。
+      // saveData 抛错时(磁盘满 / vault 只读 / data.json 被锁)cache 已经推进,
+      // 而 `load()` 的 `if (this.cache) return this.cache` 从此**永不回读磁盘**
+      // —— 内存态和 data.json 在这个 session 内永久分叉。更糟的是下一次成功的
+      // mutate 会把这段"从未落过盘"的 delta 一起写回去,把失败彻底掩盖掉:
+      // 用户看到的全是正常值, 重启后才发现改动回滚了。
+      //
+      // 改成落盘成功后才推进 cache。失败时 cache 保持旧值(与磁盘一致),
+      // rejection 继续往上抛给调用方。
+      //
+      // 顺带: 所有"已经是这个状态"的分支都 `return snapshot`(同一个引用),
+      // 所以引用相等即代表无变化 —— 直接跳过写盘。addToLibrary /
+      // setAddedAt / markOnboardingDismissed / setMigratedToV030 / patchReading
+      // 的 no-op 分支原本每次都会把整份 data.json 重写一遍。
+      if (snapshot === this.cache) return;
       await this.plugin.saveData(snapshot);
+      this.cache = snapshot;
     });
     // Keep the chain alive even on errors — next caller still runs.
     this.writeChain = next.then(
@@ -261,6 +276,20 @@ export class ObsidianAnnotationStore implements AnnotationStore {
       const snapshot = await this.load();
       const next = [...snapshot.reading.filter((s) => s.bookId !== state.bookId), state];
       return { ...snapshot, reading: next };
+    });
+  }
+
+  async patchReading(
+    bookId: BookId,
+    patch: (current: ReadingState | undefined) => ReadingState | null
+  ): Promise<void> {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.reading.find((s) => s.bookId === bookId);
+      const next = patch(current);
+      if (next === null) return snapshot;
+      const rest = snapshot.reading.filter((s) => s.bookId !== bookId);
+      return { ...snapshot, reading: [...rest, next] };
     });
   }
 

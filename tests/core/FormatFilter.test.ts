@@ -75,6 +75,13 @@ class InMemoryStore implements AnnotationStore {
     /* no-op */
   }
 
+  async patchReading(
+    _bookId: string,
+    patch: (current: undefined) => unknown
+  ): Promise<void> {
+    patch(undefined);
+  }
+
   async listBookmarks() {
     return [];
   }

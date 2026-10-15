@@ -14383,1004 +14383,10 @@ var collectPolyfillReport = () => {
 var import_obsidian20 = require("obsidian");
 
 // src/adapters/obsidian/CoverCache.ts
-var import_obsidian = require("obsidian");
-var CoverCache = class {
-  coversDir;
-  app;
-  plugin;
-  library;
-  /**
-   * Adapter map keyed by format. PDF is intentionally absent — Obsidian's
-   * built-in viewer handles PDF cover rendering on its own.
-   */
-  readers;
-  annotations;
-  inFlight = /* @__PURE__ */ new Set();
-  constructor(app, plugin, library, readers, annotations) {
-    this.app = app;
-    this.plugin = plugin;
-    this.library = library;
-    this.readers = readers;
-    this.annotations = annotations;
-    this.coversDir = (0, import_obsidian.normalizePath)(`${app.vault.configDir}/plugins/${plugin.manifest.id}/data/covers`);
-  }
-  /**
-   * Extract a cover for a book and write it to disk. Idempotent and
-   * concurrent-safe: a single book is extracted at most once per session
-   * even if multiple callers race here.
-   *
-   * Format routing:
-   *   - EPUB → foliate-js `getCover()`.
-   *   - MOBI / AZW3 → `@lingo-reader/mobi-parser` cover blob URL.
-   *   - TXT → no entry in `readers` → shelf uses placeholder.
-   *   - PDF → not handled here (Obsidian built-in viewer).
-   *
-   * If a reader throws on this format (e.g. a corrupted MOBI), we warn
-   * and leave `coverPath` null — same fallback as before.
-   *
-   * P0 修复: 给 reader.extractCover 加 15s 超时. 之前损坏的 EPUB / MOBI 让
-   * foliate.getCover() 或 mobi.initMobiFile 永远不 resolve, ensureCoverFor
-   * 永不退出, inFlight 永不 delete, 所有后续的 ensureCoverFor 调用全部
-   * hit cache 但 modal.confirmSelection 等 ensureCoversBatch 完成 — 整个
-   * "加入所选" 卡死, 按钮永远不能再次点击. 加超时后 hang 也只是 warn + 跳过,
-   * inFlight.delete 让其他并发路径仍能尝试重新提取.
-   */
-  async ensureCoverFor(book, loader) {
-    if (book.coverPath) return;
-    if (this.inFlight.has(book.id)) return;
-    this.inFlight.add(book.id);
-    try {
-      const reader = this.readers[book.locator.format];
-      if (!reader) {
-        return;
-      }
-      let extracted;
-      try {
-        extracted = await this.raceWithTimeout(
-          reader.extractCover(book, loader),
-          COVER_EXTRACT_TIMEOUT_MS,
-          `extractCover(${book.locator.format})`
-        );
-      } catch (error) {
-        console.warn(`[ez-reader] extractCover failed for ${book.locator.format} ${book.locator.path}`, error);
-        return;
-      }
-      if (!extracted) return;
-      const path = await this.writeCover(book, extracted.bytes, extracted.mimeType);
-      await this.annotations.patchCoverPaths((current) => ({ ...current, [book.id]: path }));
-      this.library.setCoverPath(book.id, path);
-    } catch (error) {
-      console.warn(`[ez-reader] cover extraction failed for ${book.locator.path}`, error);
-    } finally {
-      this.inFlight.delete(book.id);
-    }
-  }
-  /**
-   * 跟 AddToLibraryModal.raceWithTimeout 同样的语义. 返回 undefined 表示超时
-   * 或失败 — 调用方要据此放弃这条记录. Promise 自身不 reject, 避免在
-   * Promise.all 里被一个超时拖崩所有其他并发路径.
-   */
-  raceWithTimeout(promise, ms, label) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const timer = window.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        console.warn(`[ez-reader] ${label} exceeded ${ms}ms \u2014 abandoning`);
-        resolve(void 0);
-      }, ms);
-      promise.then(
-        (value) => {
-          if (settled) return;
-          settled = true;
-          window.clearTimeout(timer);
-          resolve(value);
-        },
-        (error) => {
-          if (settled) return;
-          settled = true;
-          window.clearTimeout(timer);
-          console.warn(`[ez-reader] ${label} rejected`, error);
-          resolve(void 0);
-        }
-      );
-    });
-  }
-  /**
-   * Extract covers for a batch of books in parallel. Concurrency is
-   * capped at 3 to avoid saturating the render thread when the user
-   * imports a large library.
-   */
-  async ensureCoversBatch(books, loader) {
-    const queue = books.filter((b3) => !b3.coverPath);
-    let index = 0;
-    const workers = Array.from({ length: 3 }, async () => {
-      while (index < queue.length) {
-        const book = queue[index++];
-        await this.ensureCoverFor(book, loader);
-      }
-    });
-    await Promise.all(workers);
-  }
-  async writeCover(book, bytes, mimeType) {
-    if (!await this.app.vault.adapter.exists(this.coversDir)) {
-      try {
-        await this.app.vault.adapter.mkdir(this.coversDir);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!await this.app.vault.adapter.exists(this.coversDir)) {
-          throw new Error(`mkdir(${this.coversDir}) failed: ${message}`);
-        }
-      }
-    }
-    const extension = extensionForMime(mimeType);
-    const safeId = book.id.replace(/[^A-Za-z0-9._-]/g, "_");
-    const target = (0, import_obsidian.normalizePath)(`${this.coversDir}/${safeId}${extension}`);
-    await this.app.vault.adapter.writeBinary(target, bytes);
-    return this.app.vault.adapter.getResourcePath(target);
-  }
-  /**
-   * Recover cover paths for every book in the library. The source of
-   * truth is the covers directory on disk: we list it and ask Obsidian
-   * for a fresh resource path for each file. The persisted snapshot is
-   * only used as a hint for which bookId a given slug corresponds to.
-   *
-   * We deliberately do not reuse the `app://...?token` URLs stored in
-   * the snapshot — those tokens are session-scoped and Chrome refuses
-   * to load them after the original session ends.
-   */
-  async hydrateCovers() {
-    if (!await this.app.vault.adapter.exists(this.coversDir)) {
-      console.info(`[ez-reader] hydrateCovers: covers dir missing: ${this.coversDir}`);
-      return;
-    }
-    const listing = await this.app.vault.adapter.list(this.coversDir);
-    console.info(`[ez-reader] hydrateCovers: found ${listing.files.length} file(s) in ${this.coversDir}`);
-    if (listing.files.length === 0) return;
-    const slugToBookId = this.buildSlugIndex();
-    for (const filePath of listing.files) {
-      const fileName = filePath.split("/").pop() ?? "";
-      const slug = fileName.replace(/\.[^.]+$/, "");
-      if (!slug) {
-        console.warn(`[ez-reader] hydrateCovers: cannot extract slug from ${filePath}`);
-        continue;
-      }
-      const bookId = slugToBookId.get(slug);
-      if (!bookId) {
-        console.info(`[ez-reader] hydrateCovers: no matching book for slug: ${slug} (orphan, ignored)`);
-        continue;
-      }
-      const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
-      this.library.setCoverPath(bookId, resourcePath);
-      console.info(`[ez-reader] hydrateCovers: hydrated ${bookId}`);
-    }
-  }
-  /**
-   * Build a slug → bookId index once per hydration. LibraryService 的
-   * `list()` 是已 sort 过 titleAsc 的快照 — 同样 N 本书同样的 safeId 派生,
-   * 用 Map 一次 O(N) 建表后, M 个 cover 文件的查找变 O(M).
-   */
-  buildSlugIndex() {
-    const map = /* @__PURE__ */ new Map();
-    for (const entry of this.library.list({}, "titleAsc", true)) {
-      const safeId = entry.book.id.replace(/[^A-Za-z0-9._-]/g, "_");
-      if (!map.has(safeId)) map.set(safeId, entry.book.id);
-    }
-    return map;
-  }
-};
-var extensionForMime = (mime) => {
-  if (mime === "image/png") return ".png";
-  if (mime === "image/jpeg" || mime === "image/jpg") return ".jpg";
-  if (mime === "image/webp") return ".webp";
-  if (mime === "image/gif") return ".gif";
-  return ".img";
-};
-var COVER_EXTRACT_TIMEOUT_MS = 15e3;
-
-// src/core/types/ReaderSettings.ts
-var DEFAULT_READER_APPEARANCE = Object.freeze({
-  fontSize: 100,
-  lineHeight: 1.6,
-  margin: 32,
-  theme: "system",
-  flow: "paginated",
-  twoPages: false,
-  immersive: false,
-  fontFamily: "serif",
-  letterSpacing: 0,
-  maxWidth: 720
-});
-var READER_FONT_FAMILY_STACKS = Object.freeze({
-  sans: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
-  serif: '"Source Serif Pro", "Iowan Old Style", "Apple Garamond", Georgia, "Times New Roman", "Songti SC", "STSong", serif',
-  mono: '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-  song: '"Songti SC", "STSong", "SimSun", "Source Han Serif SC", serif',
-  kai: '"Kaiti SC", "STKaiti", "BiauKai", "Noto Serif CJK TC", serif'
-});
-var READER_FONT_FAMILY_LABELS = Object.freeze({
-  sans: "\u65E0\u886C\u7EBF",
-  serif: "\u886C\u7EBF",
-  mono: "\u7B49\u5BBD",
-  song: "\u5B8B\u4F53",
-  kai: "\u6977\u4F53"
-});
-var SHELF_DENSITIES = ["compact", "default", "spacious", "large"];
-var SHELF_DENSITY_LABELS = Object.freeze({
-  compact: "\u7D27\u51D1",
-  default: "\u9ED8\u8BA4",
-  spacious: "\u5BBD\u677E",
-  large: "\u8D85\u5927"
-});
-var DEFAULT_KEYBOARD_SHORTCUTS = Object.freeze({
-  prev: "ArrowLeft",
-  next: "ArrowRight",
-  toggleSidebar: "s",
-  toggleToc: "t",
-  translate: "T",
-  highlight: "h",
-  find: "/"
-});
-var DEFAULT_PLUGIN_SETTINGS = Object.freeze({
-  uiLocale: "zh-CN",
-  translation: null,
-  defaultAppearance: DEFAULT_READER_APPEARANCE,
-  // v0.3.0: 不再有 notesDirectory 配置项;默认 unset,迁移用 hardcoded
-  // 默认值兜底 (见 Plugin.runV030Migration)。
-  researchDirectory: "ezreader-notes/\u4E3B\u9898\u7814\u7A76",
-  libraryOwnerName: "",
-  defaultNoteTemplate: "# {{title}}\n",
-  readerOpenMode: "tab",
-  twoPagesByDefault: false,
-  immersiveOnTablet: false,
-  keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
-  rememberProgress: true,
-  shelfDensity: "default",
-  migratedToV030: false
-});
-
-// src/core/utils/renameSnapshot.ts
-var rekeyArray = (items, fromBookId, toBookId) => items.map((item) => item.bookId === fromBookId ? { ...item, bookId: toBookId } : item);
-var rekeyMap = (map, fromBookId, toBookId) => {
-  if (!map || !(fromBookId in map)) return map;
-  const next = {};
-  for (const [key, value] of Object.entries(map)) {
-    if (key === fromBookId) continue;
-    next[key] = value;
-  }
-  if (!(toBookId in map)) {
-    next[toBookId] = map[fromBookId];
-  }
-  return next;
-};
-var dedupeReading = (states) => {
-  const byBookId = /* @__PURE__ */ new Map();
-  for (const state of states) byBookId.set(state.bookId, state);
-  return [...byBookId.values()];
-};
-var renameInSnapshot = (snapshot, fromBookId, toBookId) => {
-  if (fromBookId === toBookId) return snapshot;
-  let destinationSeen = snapshot.library.includes(toBookId);
-  const library = [];
-  for (const id of snapshot.library) {
-    if (id !== fromBookId) {
-      library.push(id);
-      continue;
-    }
-    if (destinationSeen) continue;
-    destinationSeen = true;
-    library.push(toBookId);
-  }
-  return {
-    ...snapshot,
-    library,
-    reading: dedupeReading(rekeyArray(snapshot.reading, fromBookId, toBookId)),
-    bookmarks: rekeyArray(snapshot.bookmarks, fromBookId, toBookId),
-    excerpts: rekeyArray(snapshot.excerpts, fromBookId, toBookId),
-    coverPaths: rekeyMap(snapshot.coverPaths, fromBookId, toBookId),
-    addedAtByBookId: rekeyMap(snapshot.addedAtByBookId, fromBookId, toBookId),
-    pinnedAtByBookId: rekeyMap(snapshot.pinnedAtByBookId, fromBookId, toBookId),
-    richMetadataByBookId: rekeyMap(snapshot.richMetadataByBookId, fromBookId, toBookId),
-    visitedTocIdsByBookId: rekeyMap(snapshot.visitedTocIdsByBookId, fromBookId, toBookId)
-  };
-};
-
-// src/adapters/obsidian/ObsidianAnnotationStore.ts
-var ObsidianAnnotationStore = class {
-  constructor(plugin) {
-    this.plugin = plugin;
-  }
-  cache = null;
-  // Serialize all writes through this chain. loadData/saveData use the
-  // file system; two concurrent addBookmark/addExcerpt calls would
-  // otherwise each read the same base snapshot, both build a delta on
-  // top, and the later save would clobber the earlier one.
-  writeChain = Promise.resolve();
-  /**
-   * Called after every settings mutation (saveSettings / patchSettings)
-   * with the freshly-persisted PluginSettings. Used by Plugin to bust
-   * downstream caches (e.g. TranslationCoordinator's 30s settings TTL).
-   */
-  settingsListeners = /* @__PURE__ */ new Set();
-  /**
-   * Subscribe to settings changes. Returns a disposer that unsubscribes.
-   * Used by Plugin to wire TranslationCoordinator.invalidate() and other
-   * downstream caches without making them part of the AnnotationStore port.
-   */
-  onSettingsChanged(listener) {
-    this.settingsListeners.add(listener);
-    return () => this.settingsListeners.delete(listener);
-  }
-  notifySettingsChanged(settings) {
-    for (const listener of this.settingsListeners) {
-      try {
-        listener(settings);
-      } catch (error) {
-        console.warn("[ez-reader] settings change listener threw", error);
-      }
-    }
-  }
-  async load() {
-    if (this.cache) return this.cache;
-    const raw = await this.plugin.loadData();
-    const settings = this.normalizeSettings(raw?.settings);
-    this.cache = {
-      version: 1,
-      settings,
-      library: this.sanitizeStringArray(raw?.library),
-      reading: this.sanitizeReadingArray(raw?.reading),
-      bookmarks: this.sanitizeBookmarkArray(raw?.bookmarks),
-      excerpts: this.sanitizeExcerptArray(raw?.excerpts),
-      coverPaths: this.sanitizeRecord(raw?.coverPaths),
-      addedAtByBookId: this.sanitizeAddedAtMap(raw?.addedAtByBookId),
-      // 镜像 sanitizeAddedAtMap 的逻辑: 数字映射, 过滤非有限正值.
-      pinnedAtByBookId: this.sanitizeAddedAtMap(raw?.pinnedAtByBookId),
-      // P0-2: rich metadata 从 EPUB OPF / MOBI EXTH 解析, 持久化避免每次
-      // open 都重新解析 (MOBI parser 阻塞主线程 2-5s). sanitize 失败时
-      // 静默丢, 让 caller 重试下一次 open.
-      richMetadataByBookId: this.sanitizeRichMetadataMap(raw?.richMetadataByBookId),
-      // P0 修复: 之前漏读 onboardingDismissed, hasOnboardingBeenDismissed
-      // 永远返回 false, modal 每次启动都弹. markOnboardingDismissed 写的
-      // 标志其实在 data.json 里, 只是 load() 没拷到 cache.
-      onboardingDismissed: raw?.onboardingDismissed === true,
-      // P2: 跟 pinnedAtByBookId / addedAtByBookId 同样的 fallback 模式 —
-      // 旧 data.json 没这个字段就给空 map, 不会因为 undefined 让
-      // loadVisitedTocIds 炸掉.
-      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId),
-      // v0.3.0: 一次性迁移完成标记. sanitize boolean — 老 data.json
-      // 没这个字段 → false → Plugin.runV030Migration 跑一次。
-      //
-      // P1 fix: `Plugin.runV030Migration` wrote this flag via
-      // `patchSettings`, which lands it at `data.json.settings.migratedToV030`,
-      // while this read looks at the TOP level. The guard therefore never
-      // tripped and the legacy-notes migration re-ran on every launch,
-      // re-listing and re-reading the whole old folder each time. Read
-      // both, so a flag written by the buggy build is still honored.
-      migratedToV030: raw?.migratedToV030 === true || raw?.settings?.migratedToV030 === true,
-      // Retry counter for a failed migration. Absent → 0 attempts so far.
-      migratedToV030Attempts: typeof raw?.migratedToV030Attempts === "number" && Number.isFinite(raw.migratedToV030Attempts) ? raw.migratedToV030Attempts : 0
-    };
-    return this.cache;
-  }
-  /** Wrap a mutation so it serializes through `writeChain`. */
-  async mutate(fn) {
-    const next = this.writeChain.then(fn).then(async (snapshot) => {
-      this.cache = snapshot;
-      await this.plugin.saveData(snapshot);
-    });
-    this.writeChain = next.then(
-      () => void 0,
-      () => void 0
-    );
-    await next;
-  }
-  sanitizeStringArray(input) {
-    return Array.isArray(input) ? input.filter((x3) => typeof x3 === "string") : [];
-  }
-  sanitizeReadingArray(input) {
-    if (!Array.isArray(input)) return [];
-    return input.filter((x3) => {
-      if (!x3 || typeof x3 !== "object") return false;
-      const r3 = x3;
-      return typeof r3.bookId === "string" && (r3.status === "unread" || r3.status === "reading" || r3.status === "finished" || r3.status === "abandoned");
-    });
-  }
-  sanitizeBookmarkArray(input) {
-    if (!Array.isArray(input)) return [];
-    return input.filter((x3) => {
-      if (!x3 || typeof x3 !== "object") return false;
-      const b3 = x3;
-      return typeof b3.id === "string" && typeof b3.bookId === "string" && typeof b3.label === "string";
-    });
-  }
-  sanitizeExcerptArray(input) {
-    if (!Array.isArray(input)) return [];
-    return input.filter((x3) => {
-      if (!x3 || typeof x3 !== "object") return false;
-      const e3 = x3;
-      return typeof e3.id === "string" && typeof e3.bookId === "string" && typeof e3.text === "string" && e3.locator !== null && typeof e3.locator === "object";
-    });
-  }
-  sanitizeRecord(input) {
-    if (!input || typeof input !== "object") return {};
-    const out = {};
-    for (const [k3, v3] of Object.entries(input)) {
-      if (typeof v3 === "string") out[k3] = v3;
-    }
-    return out;
-  }
-  sanitizeAddedAtMap(input) {
-    if (!input || typeof input !== "object") return {};
-    const out = {};
-    for (const [k3, v3] of Object.entries(input)) {
-      if (typeof v3 === "number" && Number.isFinite(v3) && v3 > 0) out[k3] = v3;
-    }
-    return out;
-  }
-  /**
-   * Validate the per-book rich metadata map. Each entry must be a plain
-   * object with a non-empty `title` string; everything else (authors,
-   * publisher, etc.) is optional and falls back to empty. Invalid entries
-   * are dropped silently so a corrupt data.json never crashes the shelf.
-   */
-  sanitizeRichMetadataMap(input) {
-    if (!input || typeof input !== "object") return {};
-    const out = {};
-    for (const [k3, v3] of Object.entries(input)) {
-      if (!v3 || typeof v3 !== "object") continue;
-      const m3 = v3;
-      if (typeof m3.title !== "string" || !m3.title.trim()) continue;
-      const authors = Array.isArray(m3.authors) ? m3.authors.filter((a3) => typeof a3 === "string" && a3.trim().length > 0).map((a3) => a3.trim()) : [];
-      const cachedAt = typeof m3.cachedAt === "number" && Number.isFinite(m3.cachedAt) && m3.cachedAt > 0 ? m3.cachedAt : Date.now();
-      out[k3] = {
-        title: m3.title.trim(),
-        authors,
-        languages: [],
-        cachedAt
-      };
-    }
-    return out;
-  }
-  /**
-   * P2: 验证 visited toc ids map. 每本书的 value 是 string array; 元素
-   * 不是 string 过滤掉, 整个 entry 损坏 (非 array) 也丢, 不让坏数据
-   * 整个阻塞 load.
-   */
-  sanitizeVisitedTocIdsMap(input) {
-    if (!input || typeof input !== "object") return {};
-    const out = {};
-    for (const [k3, v3] of Object.entries(input)) {
-      if (!Array.isArray(v3)) continue;
-      const ids = [];
-      const seen = /* @__PURE__ */ new Set();
-      for (const id of v3) {
-        if (typeof id !== "string" || !id) continue;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        ids.push(id);
-      }
-      if (ids.length > 0) out[k3] = ids;
-    }
-    return out;
-  }
-  async save(snapshot) {
-    await this.mutate(async () => snapshot);
-  }
-  async listLibrary() {
-    const snapshot = await this.load();
-    return snapshot.library;
-  }
-  async addToLibrary(bookId) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      if (snapshot.library.includes(bookId)) return snapshot;
-      return { ...snapshot, library: [...snapshot.library, bookId] };
-    });
-  }
-  async removeFromLibrary(bookId) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      return {
-        ...snapshot,
-        library: snapshot.library.filter((id) => id !== bookId)
-      };
-    });
-  }
-  async listReading() {
-    const snapshot = await this.load();
-    return snapshot.reading;
-  }
-  async upsertReading(state) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const next = [...snapshot.reading.filter((s3) => s3.bookId !== state.bookId), state];
-      return { ...snapshot, reading: next };
-    });
-  }
-  async renameBookId(fromBookId, toBookId) {
-    if (fromBookId === toBookId) return;
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      return renameInSnapshot(snapshot, fromBookId, toBookId);
-    });
-  }
-  async listBookmarks(bookId) {
-    const snapshot = await this.load();
-    return snapshot.bookmarks.filter((bookmark) => bookmark.bookId === bookId);
-  }
-  async addBookmark(bookmark) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      if (snapshot.bookmarks.some((b3) => b3.id === bookmark.id)) return snapshot;
-      return { ...snapshot, bookmarks: [...snapshot.bookmarks, bookmark] };
-    });
-  }
-  async removeBookmark(bookId, bookmarkId) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      return {
-        ...snapshot,
-        bookmarks: snapshot.bookmarks.filter((b3) => !(b3.bookId === bookId && b3.id === bookmarkId))
-      };
-    });
-  }
-  async listExcerpts(bookId) {
-    const snapshot = await this.load();
-    return snapshot.excerpts.filter((excerpt) => excerpt.bookId === bookId);
-  }
-  async addExcerpt(excerpt) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      if (snapshot.excerpts.some((e3) => e3.id === excerpt.id)) return snapshot;
-      return { ...snapshot, excerpts: [...snapshot.excerpts, excerpt] };
-    });
-  }
-  async removeExcerpt(bookId, excerptId) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      return {
-        ...snapshot,
-        excerpts: snapshot.excerpts.filter((e3) => !(e3.bookId === bookId && e3.id === excerptId))
-      };
-    });
-  }
-  async updateExcerptNote(bookId, excerptId, patch) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const next = snapshot.excerpts.map((e3) => {
-        if (e3.bookId !== bookId || e3.id !== excerptId) return e3;
-        return {
-          ...e3,
-          ...patch.note !== void 0 ? { note: patch.note } : {},
-          ...patch.tags !== void 0 ? { tags: patch.tags } : {}
-        };
-      });
-      return { ...snapshot, excerpts: next };
-    });
-  }
-  async listSettings() {
-    const snapshot = await this.load();
-    return snapshot.settings;
-  }
-  async saveSettings(settings) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      return { ...snapshot, settings };
-    });
-    this.notifySettingsChanged(settings);
-  }
-  /**
-   * Atomic settings update. The read-modify-write runs inside the write
-   * chain so two concurrent patches can't both read the same base and
-   * overwrite each other's fields. Use this from any debounced caller
-   * (slider drag, text input) to avoid the read-modify-write race that
-   * `listSettings()` + `saveSettings()` would create.
-   */
-  async patchSettings(patch) {
-    let nextSettings;
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      nextSettings = patch(snapshot.settings);
-      return { ...snapshot, settings: nextSettings };
-    });
-    if (nextSettings) this.notifySettingsChanged(nextSettings);
-  }
-  async loadCoverPaths() {
-    const snapshot = await this.load();
-    return snapshot.coverPaths ?? {};
-  }
-  async saveCoverPaths(coverPaths) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      return { ...snapshot, coverPaths };
-    });
-  }
-  /**
-   * P0-3 修复: 原子地 read-modify-write coverPaths map. 旧 `saveCoverPaths`
-   * 是 caller 先 loadCoverPaths (读 cache) 再 saveCoverPaths (写) — 两个
-   * 并发 caller 都可能在 T1-T2 之间读到同一份旧 map, 然后后写的覆盖先写
-   * 的, 丢 coverPath. 现在 patch callback 在 mutate 内部读最新 cache 再 merge,
-   * 串行化在 writeChain 上 — 跟 patchSettings 同样的语义.
-   */
-  async patchCoverPaths(patch) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const current = snapshot.coverPaths ?? {};
-      return { ...snapshot, coverPaths: patch(current) };
-    });
-  }
-  async markOnboardingDismissed() {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      if (snapshot.onboardingDismissed === true) return snapshot;
-      return { ...snapshot, onboardingDismissed: true };
-    });
-  }
-  /**
-   * P1 fix: record the v0.3.0 migration outcome at the TOP level of
-   * `data.json`, which is where `load()` looks. Writing it through
-   * `patchSettings` put it under `settings.*` instead, so the migration
-   * re-ran on every launch. `passed` records whether the run actually
-   * finished; `Plugin` retries a failed run a bounded number of times.
-   */
-  async setMigratedToV030(passed, attempts) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      if (snapshot.migratedToV030 === passed && snapshot.migratedToV030Attempts === attempts) {
-        return snapshot;
-      }
-      return {
-        ...snapshot,
-        migratedToV030: passed,
-        ...attempts === void 0 ? {} : { migratedToV030Attempts: attempts }
-      };
-    });
-  }
-  async getAddedAt(bookId) {
-    const snapshot = await this.load();
-    return snapshot.addedAtByBookId?.[bookId] ?? null;
-  }
-  async setAddedAt(bookId, addedAt) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const current = snapshot.addedAtByBookId ?? {};
-      if (current[bookId] !== void 0 && current[bookId] <= addedAt) return snapshot;
-      return { ...snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
-    });
-  }
-  async getPinnedAt(bookId) {
-    const snapshot = await this.load();
-    return snapshot.pinnedAtByBookId?.[bookId] ?? null;
-  }
-  async setPinnedAt(bookId, pinnedAt) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const current = snapshot.pinnedAtByBookId ?? {};
-      const next = { ...current };
-      if (pinnedAt === null) {
-        delete next[bookId];
-      } else {
-        next[bookId] = pinnedAt;
-      }
-      return { ...snapshot, pinnedAtByBookId: next };
-    });
-  }
-  /**
-   * P0-2 配套: 持久化从 EPUB/MOBI 解析的真 metadata, 避免每次 vault 重启
-   * 都重新解压解析 (MOBI 大文件阻塞主线程 2-5s). overwrite 不 merge —
-   * 真 metadata 应该是 ground truth, 不会比之前解析的还差.
-   */
-  async saveRichMetadata(bookId, metadata) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const current = snapshot.richMetadataByBookId ?? {};
-      return { ...snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };
-    });
-  }
-  async loadRichMetadata(bookId) {
-    const snapshot = await this.load();
-    return snapshot.richMetadataByBookId?.[bookId] ?? null;
-  }
-  /**
-   * P0 修复: 之前 `Promise.all([...addToLibrary, ...setAddedAt])` 让每个
-   * book 都触发 2 个串行 mutate (writeChain 串行化). 100 本书 = 200 个
-   * saveData, 用户报告"加入所选"体感 ~10s 甚至卡死. 现在 1 个 mutate
-   * 把所有 ids 一起加上 + 一起 stamp, 一次 saveData 落盘.
-   */
-  async addToLibraryBatchWithStamp(bookIds, addedAt) {
-    if (bookIds.length === 0) return;
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const existingLibrary = new Set(snapshot.library);
-      const existingAddedAt = snapshot.addedAtByBookId ?? {};
-      const newIds = bookIds.filter((id) => !existingLibrary.has(id));
-      if (newIds.length === 0) return snapshot;
-      const library = [...snapshot.library, ...newIds];
-      const addedAtByBookId = { ...existingAddedAt };
-      for (const id of newIds) {
-        const current = addedAtByBookId[id];
-        if (typeof current === "number" && current >= addedAt) continue;
-        addedAtByBookId[id] = addedAt;
-      }
-      return { ...snapshot, library, addedAtByBookId };
-    });
-  }
-  async hasOnboardingBeenDismissed() {
-    const snapshot = await this.load();
-    return snapshot.onboardingDismissed === true;
-  }
-  /**
-   * P2: 读 visited toc ids. 旧 data.json 没 visitedTocIdsByBookId 字段
-   * 时 load() 已 fallback 到空 map, 这里直接读.
-   */
-  async loadVisitedTocIds(bookId) {
-    const snapshot = await this.load();
-    return snapshot.visitedTocIdsByBookId?.[bookId] ?? [];
-  }
-  /**
-   * P2: 写 visited toc ids. 在 write chain 内做 (跟 setPinnedAt 同样的
-   * mutate 模式) — 避免两个并发 caller (relocate 触发多个 chapter
-   * visited) 各 load 一份旧 array 后互相覆盖. caller 自己负责去重
-   * (ReaderView.schedulePersistVisited 维护本地 Set).
-   */
-  async saveVisitedTocIds(bookId, ids) {
-    await this.mutate(async () => {
-      const snapshot = await this.load();
-      const current = snapshot.visitedTocIdsByBookId ?? {};
-      const next = { ...current, [bookId]: [...ids] };
-      return { ...snapshot, visitedTocIdsByBookId: next };
-    });
-  }
-  normalizeSettings(input) {
-    if (!input) return DEFAULT_PLUGIN_SETTINGS;
-    return { ...DEFAULT_PLUGIN_SETTINGS, ...input };
-  }
-};
-
-// src/adapters/obsidian/ObsidianBookSource.ts
 var import_obsidian2 = require("obsidian");
 
-// src/core/entities/Book.ts
-var SUPPORTED_BOOK_FORMATS = /* @__PURE__ */ new Set([
-  "epub",
-  "mobi",
-  "azw",
-  "azw3",
-  "txt",
-  "pdf"
-]);
-var READER_CAPABLE_FORMATS = /* @__PURE__ */ new Set([
-  "epub",
-  "pdf",
-  "txt",
-  "mobi",
-  "azw3"
-]);
-var mimeTypeFor = (format) => {
-  switch (format) {
-    case "epub":
-      return "application/epub+zip";
-    case "pdf":
-      return "application/pdf";
-    case "txt":
-      return "text/plain";
-    case "mobi":
-    case "azw":
-    case "azw3":
-      return "application/x-mobipocket-ebook";
-  }
-};
-
-// src/adapters/obsidian/ObsidianBookSource.ts
-var METADATA_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
-var ObsidianBookSource = class {
-  constructor(app) {
-    this.app = app;
-  }
-  /** Filename-derived metadata cache keyed by path. */
-  metadataCache = /* @__PURE__ */ new Map();
-  /**
-   * Walk the vault using the file-system adapter so we discover files
-   * Obsidian hasn't surfaced in the file explorer yet (PDF, EPUB, etc.).
-   * `vault.getFiles()` only returns files Obsidian has loaded; using
-   * `adapter.list()` is more reliable for "everything in the Vault".
-   */
-  async *scan(formats) {
-    const wanted = formats.size === 0 ? SUPPORTED_BOOK_FORMATS : formats;
-    const seenPaths = /* @__PURE__ */ new Set();
-    let totalFromGetFiles = 0;
-    for (const file of this.app.vault.getFiles()) {
-      if (!(file instanceof import_obsidian2.TFile)) continue;
-      totalFromGetFiles += 1;
-      if (seenPaths.has(file.path)) continue;
-      const format = extensionToFormat(file.extension);
-      if (!format || !wanted.has(format)) continue;
-      seenPaths.add(file.path);
-      yield makeLocator(file, format);
-    }
-    let acceptedFromAdapter = 0;
-    const adapterFolders = [""];
-    const visited = /* @__PURE__ */ new Set();
-    let head = 0;
-    while (head < adapterFolders.length) {
-      const folder = adapterFolders[head++] ?? "";
-      let entries;
-      try {
-        entries = await this.app.vault.adapter.list(folder);
-      } catch (error) {
-        console.warn(`[ez-reader] adapter.list failed for ${folder || "/"}`, error);
-        continue;
-      }
-      for (const filePath of entries.files) {
-        if (seenPaths.has(filePath)) continue;
-        const abstract = this.app.vault.getAbstractFileByPath(filePath);
-        if (!(abstract instanceof import_obsidian2.TFile)) continue;
-        const format = extensionToFormat(abstract.extension);
-        if (!format || !wanted.has(format)) continue;
-        seenPaths.add(filePath);
-        acceptedFromAdapter += 1;
-        yield makeLocator(abstract, format);
-      }
-      for (const subFolder of entries.folders) {
-        if (visited.has(subFolder)) continue;
-        visited.add(subFolder);
-        adapterFolders.push(subFolder);
-      }
-    }
-    console.info(
-      `[ez-reader] Scan: vault.getFiles()=${totalFromGetFiles}, adapter additions=${acceptedFromAdapter}, total seen=${seenPaths.size}.`
-    );
-  }
-  async read(locator) {
-    const file = this.app.vault.getAbstractFileByPath(locator.path);
-    if (!(file instanceof import_obsidian2.TFile)) {
-      throw new Error(`Book file no longer exists: ${locator.path}`);
-    }
-    return this.app.vault.readBinary(file);
-  }
-  /**
-   * Filename-derived metadata. The foliate reader populates richer metadata
-   * (real title / authors / cover) the first time the user opens the book;
-   * until then this fallback is what the shelf shows.
-   */
-  async readMetadata(locator) {
-    const cached = this.metadataCache.get(locator.path);
-    if (cached && Date.now() - cached.cachedAt < METADATA_CACHE_TTL_MS) {
-      return cached;
-    }
-    const file = this.app.vault.getAbstractFileByPath(locator.path);
-    if (!(file instanceof import_obsidian2.TFile)) return null;
-    const base = {
-      title: file.basename,
-      authors: extractAuthorFromName(file.basename),
-      languages: [],
-      identifier: void 0,
-      publisher: void 0,
-      published: void 0,
-      description: void 0,
-      cachedAt: Date.now()
-    };
-    this.metadataCache.set(locator.path, base);
-    return base;
-  }
-  /** Point lookup so LibraryService.refreshBook doesn't re-walk the vault. */
-  async lookup(path) {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof import_obsidian2.TFile)) return null;
-    const format = extensionToFormat(file.extension);
-    if (!format) return null;
-    return makeLocator(file, format);
-  }
-  /** Used by CoverCache — extracts the cover image bytes from the book file. */
-  async readCover(locator) {
-    const file = this.app.vault.getAbstractFileByPath(locator.path);
-    if (!(file instanceof import_obsidian2.TFile)) return null;
-    const bytes = await this.app.vault.readBinary(file);
-    return {
-      bookId: this.resolveId(locator),
-      bytes,
-      mimeType: mimeTypeForFormat(locator.format)
-    };
-  }
-  watch(handler) {
-    const refRename = this.app.vault.on("rename", (file, oldPath) => {
-      if (!(file instanceof import_obsidian2.TFile)) return;
-      const format = extensionToFormat(file.extension);
-      const previous = typeof oldPath === "string" ? oldPath : void 0;
-      const previousFormat = previous ? extensionToFormat(previous.split(".").pop() ?? "") : null;
-      if (format) {
-        handler({
-          kind: "renamed",
-          path: file.path,
-          format,
-          ...previous ? { oldPath: previous } : {}
-        });
-      } else if (previous && previousFormat) {
-        handler({ kind: "removed", path: previous, format: previousFormat });
-      }
-    });
-    const refCreate = this.app.vault.on("create", (file) => {
-      if (file instanceof import_obsidian2.TFile) {
-        const format = extensionToFormat(file.extension);
-        if (format) handler({ kind: "added", path: file.path, format });
-      }
-    });
-    const refModify = this.app.vault.on("modify", (file) => {
-      if (file instanceof import_obsidian2.TFile) {
-        const format = extensionToFormat(file.extension);
-        if (format) handler({ kind: "modified", path: file.path, format });
-      }
-    });
-    const refDelete = this.app.vault.on("delete", (file) => {
-      if (file instanceof import_obsidian2.TFile) {
-        const format = extensionToFormat(file.extension);
-        if (format) handler({ kind: "removed", path: file.path, format });
-      }
-    });
-    return {
-      dispose: () => {
-        this.app.vault.offref(refRename);
-        this.app.vault.offref(refCreate);
-        this.app.vault.offref(refModify);
-        this.app.vault.offref(refDelete);
-      }
-    };
-  }
-  resolveId(locator) {
-    return locator.path;
-  }
-  async resolveLocator(id) {
-    return this.lookup(id);
-  }
-};
-var extensionToFormat = (extension) => {
-  switch (extension.toLowerCase()) {
-    case "epub":
-      return "epub";
-    case "pdf":
-      return "pdf";
-    case "txt":
-      return "txt";
-    case "mobi":
-      return "mobi";
-    case "azw":
-      return "azw";
-    case "azw3":
-      return "azw3";
-    default:
-      return null;
-  }
-};
-var mimeTypeForFormat = (format) => {
-  switch (format) {
-    case "epub":
-      return "application/epub+zip";
-    case "pdf":
-      return "application/pdf";
-    case "txt":
-      return "text/plain";
-    case "mobi":
-    case "azw":
-    case "azw3":
-      return "application/x-mobipocket-ebook";
-  }
-};
-var makeLocator = (file, format) => ({
-  path: file.path,
-  format,
-  sizeBytes: file.stat.size,
-  modifiedAt: file.stat.mtime
-});
-var extractAuthorFromName = (basename) => {
-  const paren = basename.match(/[((]([^()（）]{1,40})[)）]/);
-  if (paren && paren[1]) return [paren[1].trim()];
-  const dash = basename.split(/\s+[-—–]\s+/);
-  if (dash.length >= 2 && dash[1]) return [dash[1].trim()];
-  return [];
-};
-
 // src/adapters/obsidian/ObsidianLibraryWriter.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian = require("obsidian");
 
 // src/core/entities/BookInfo.ts
 var BOOK_INFO_SCHEMA_VERSION = 1;
@@ -15667,10 +14673,10 @@ var ObsidianLibraryWriter = class {
     await this.ensureDirectory(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}`);
     const safeTitle = sanitizeFileBase(input.bookTitle || input.bookPath.split("/").pop() || input.bookId);
     const fileBase = await this.resolveFileBase(input.bookId, safeTitle);
-    const notesPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
-    const infoPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}/${fileBase}.md`);
-    const sessionsPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`);
-    if (!(this.app.vault.getAbstractFileByPath(notesPath) instanceof import_obsidian3.TFile)) {
+    const notesPath = (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
+    const infoPath = (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}/${fileBase}.md`);
+    const sessionsPath = (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${SESSIONS_SUBDIR}/${fileBase}.jsonl`);
+    if (!(this.app.vault.getAbstractFileByPath(notesPath) instanceof import_obsidian.TFile)) {
       const header = renderNotesHeader(input);
       await this.app.vault.create(notesPath, header);
     }
@@ -15712,7 +14718,7 @@ var ObsidianLibraryWriter = class {
     if (!legacyTag.includes("/")) {
       const legacyBase = `${safeTitle}-${legacyTag}`;
       const legacyNotes = `${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${legacyBase}.md`;
-      if (this.app.vault.getAbstractFileByPath(legacyNotes) instanceof import_obsidian3.TFile) {
+      if (this.app.vault.getAbstractFileByPath(legacyNotes) instanceof import_obsidian.TFile) {
         return legacyBase;
       }
     }
@@ -15730,7 +14736,7 @@ var ObsidianLibraryWriter = class {
    * are tried. Returns `undefined` when nothing matches.
    */
   async findPathByIdTag(bookId, subdir, ext) {
-    const dir = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}`);
+    const dir = (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}`);
     let files;
     try {
       files = (await this.app.vault.adapter.list(dir)).files;
@@ -15764,14 +14770,14 @@ var ObsidianLibraryWriter = class {
         missing.push(`${LIBRARY_BASE_DIR}/${subdir}/<unknown>.${ext}`);
         continue;
       }
-      const newPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}/${newBase}.${ext}`);
+      const newPath = (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}/${newBase}.${ext}`);
       if (oldPath === newPath) continue;
       const file = this.app.vault.getAbstractFileByPath(oldPath);
-      if (!(file instanceof import_obsidian3.TFile)) {
+      if (!(file instanceof import_obsidian.TFile)) {
         missing.push(oldPath);
         continue;
       }
-      if (this.app.vault.getAbstractFileByPath(newPath) instanceof import_obsidian3.TFile) {
+      if (this.app.vault.getAbstractFileByPath(newPath) instanceof import_obsidian.TFile) {
         missing.push(oldPath);
         continue;
       }
@@ -15787,7 +14793,7 @@ var ObsidianLibraryWriter = class {
   async appendExcerpt(ref, input) {
     return this.enqueueWrite(ref.notesPath, async () => {
       const file = this.app.vault.getAbstractFileByPath(ref.notesPath);
-      if (!(file instanceof import_obsidian3.TFile)) return;
+      if (!(file instanceof import_obsidian.TFile)) return;
       const blockIdRegex = new RegExp(`(^|\\n)\\^${escapeRegExp(input.excerptId)}\\s*$`, "m");
       const existing = await this.app.vault.read(file);
       if (blockIdRegex.test(existing)) return;
@@ -15801,7 +14807,7 @@ ${block}`);
   async appendThought(ref, input) {
     return this.enqueueWrite(ref.notesPath, async () => {
       const file = this.app.vault.getAbstractFileByPath(ref.notesPath);
-      if (!(file instanceof import_obsidian3.TFile)) return;
+      if (!(file instanceof import_obsidian.TFile)) return;
       const blockId = `thought-${input.thoughtId}`;
       const blockIdRegex = new RegExp(`(^|\\n)\\^${escapeRegExp(blockId)}\\s*$`, "m");
       const existing = await this.app.vault.read(file);
@@ -15819,7 +14825,7 @@ ${block}`);
     await this.enqueueWrite(ref.infoPath, async () => {
       const existing = this.app.vault.getAbstractFileByPath(ref.infoPath);
       let preservedBody;
-      if (existing instanceof import_obsidian3.TFile) {
+      if (existing instanceof import_obsidian.TFile) {
         try {
           const raw = await this.app.vault.read(existing);
           const parsed = parseFrontmatter(raw);
@@ -15835,7 +14841,7 @@ ${block}`);
       }
       const body = preservedBody ?? void 0;
       const serialized = serializeBookInfo(info, body);
-      if (existing instanceof import_obsidian3.TFile) {
+      if (existing instanceof import_obsidian.TFile) {
         await this.app.vault.modify(existing, serialized);
       } else {
         await this.app.vault.create(ref.infoPath, serialized);
@@ -15849,7 +14855,7 @@ ${block}`);
   }
   async readBookInfoFromPath(path, bookId) {
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (!(file instanceof import_obsidian3.TFile)) return null;
+    if (!(file instanceof import_obsidian.TFile)) return null;
     try {
       const raw = await this.app.vault.read(file);
       const parsed = parseFrontmatter(raw);
@@ -15870,13 +14876,13 @@ ${block}`);
     }
   }
   async findAndReadBookInfo(bookId) {
-    const dirPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}`);
+    const dirPath = (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${INFO_SUBDIR}`);
     try {
       const listed = await this.app.vault.adapter.list(dirPath);
       for (const filePath of listed.files) {
         if (!filePath.endsWith(".md")) continue;
         const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!(file instanceof import_obsidian3.TFile)) continue;
+        if (!(file instanceof import_obsidian.TFile)) continue;
         try {
           const raw = await this.app.vault.read(file);
           const parsed = parseFrontmatter(raw);
@@ -15941,7 +14947,7 @@ ${block}`);
     }
     if (!sessionsPath) return [];
     const file = this.app.vault.getAbstractFileByPath(sessionsPath);
-    if (!(file instanceof import_obsidian3.TFile)) return [];
+    if (!(file instanceof import_obsidian.TFile)) return [];
     let raw;
     try {
       raw = await this.app.vault.read(file);
@@ -16013,7 +15019,7 @@ ${block}`);
     for (const filePath of listed.files) {
       if (!filePath.endsWith(".md")) continue;
       const file = this.app.vault.getAbstractFileByPath(filePath);
-      if (!(file instanceof import_obsidian3.TFile)) continue;
+      if (!(file instanceof import_obsidian.TFile)) continue;
       let bookId;
       try {
         const raw = await this.app.vault.read(file);
@@ -16031,11 +15037,11 @@ ${block}`);
       }
       const safeTitle = file.basename.split("-").slice(0, -1).join("-") || file.basename;
       const fileBase = `${sanitizeFileBase(safeTitle)}-${bookId.slice(0, 8)}`;
-      const newPath = (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
+      const newPath = (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${NOTES_SUBDIR}/${fileBase}.md`);
       try {
         const raw = await this.app.vault.read(file);
         const existing = this.app.vault.getAbstractFileByPath(newPath);
-        if (existing instanceof import_obsidian3.TFile) {
+        if (existing instanceof import_obsidian.TFile) {
           console.warn(`[ez-reader] migrateLegacyNotes: ${newPath} already exists, skipping ${filePath}`);
           continue;
         }
@@ -16068,7 +15074,7 @@ ${block}`);
     let acc = "";
     for (const part of parts) {
       acc = acc ? `${acc}/${part}` : part;
-      const here = (0, import_obsidian3.normalizePath)(acc);
+      const here = (0, import_obsidian.normalizePath)(acc);
       if (!await this.app.vault.adapter.exists(here)) {
         try {
           await this.app.vault.adapter.mkdir(here);
@@ -16139,10 +15145,10 @@ var renderThoughtBlock = (input, blockId, protocol) => {
   ];
   return lines.join("\n");
 };
-var sanitizeDir = (raw) => (0, import_obsidian3.normalizePath)(raw.trim().replace(/^\/+/, ""));
+var sanitizeDir = (raw) => (0, import_obsidian.normalizePath)(raw.trim().replace(/^\/+/, ""));
 var siblingPath = (infoPath, subdir, ext) => {
   const base = infoPath.split("/").pop()?.replace(/\.md$/i, "") ?? "";
-  return (0, import_obsidian3.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}/${base}${ext}`);
+  return (0, import_obsidian.normalizePath)(`${LIBRARY_BASE_DIR}/${subdir}/${base}${ext}`);
 };
 var bookIdTag = (bookId) => hexFromBuffer(sha1Bytes(new TextEncoder().encode(bookId))).slice(0, 10);
 var sanitizeFileBase = (raw) => {
@@ -16151,6 +15157,1020 @@ var sanitizeFileBase = (raw) => {
 };
 var escapeRegExp = (s3) => s3.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 var escapeWikiLink = (s3) => s3.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+
+// src/adapters/obsidian/CoverCache.ts
+var coverFileStem = (bookId) => bookIdTag(bookId);
+var CoverCache = class {
+  coversDir;
+  app;
+  plugin;
+  library;
+  /**
+   * Adapter map keyed by format. PDF is intentionally absent — Obsidian's
+   * built-in viewer handles PDF cover rendering on its own.
+   */
+  readers;
+  annotations;
+  inFlight = /* @__PURE__ */ new Set();
+  constructor(app, plugin, library, readers, annotations) {
+    this.app = app;
+    this.plugin = plugin;
+    this.library = library;
+    this.readers = readers;
+    this.annotations = annotations;
+    this.coversDir = (0, import_obsidian2.normalizePath)(`${app.vault.configDir}/plugins/${plugin.manifest.id}/data/covers`);
+  }
+  /**
+   * Extract a cover for a book and write it to disk. Idempotent and
+   * concurrent-safe: a single book is extracted at most once per session
+   * even if multiple callers race here.
+   *
+   * Format routing:
+   *   - EPUB → foliate-js `getCover()`.
+   *   - MOBI / AZW3 → `@lingo-reader/mobi-parser` cover blob URL.
+   *   - TXT → no entry in `readers` → shelf uses placeholder.
+   *   - PDF → not handled here (Obsidian built-in viewer).
+   *
+   * If a reader throws on this format (e.g. a corrupted MOBI), we warn
+   * and leave `coverPath` null — same fallback as before.
+   *
+   * P0 修复: 给 reader.extractCover 加 15s 超时. 之前损坏的 EPUB / MOBI 让
+   * foliate.getCover() 或 mobi.initMobiFile 永远不 resolve, ensureCoverFor
+   * 永不退出, inFlight 永不 delete, 所有后续的 ensureCoverFor 调用全部
+   * hit cache 但 modal.confirmSelection 等 ensureCoversBatch 完成 — 整个
+   * "加入所选" 卡死, 按钮永远不能再次点击. 加超时后 hang 也只是 warn + 跳过,
+   * inFlight.delete 让其他并发路径仍能尝试重新提取.
+   */
+  async ensureCoverFor(book, loader) {
+    if (book.coverPath) return;
+    if (this.inFlight.has(book.id)) return;
+    this.inFlight.add(book.id);
+    try {
+      const reader = this.readers[book.locator.format];
+      if (!reader) {
+        return;
+      }
+      let extracted;
+      try {
+        extracted = await this.raceWithTimeout(
+          reader.extractCover(book, loader),
+          COVER_EXTRACT_TIMEOUT_MS,
+          `extractCover(${book.locator.format})`
+        );
+      } catch (error) {
+        console.warn(`[ez-reader] extractCover failed for ${book.locator.format} ${book.locator.path}`, error);
+        return;
+      }
+      if (!extracted) return;
+      const path = await this.writeCover(book, extracted.bytes, extracted.mimeType);
+      await this.annotations.patchCoverPaths((current) => ({ ...current, [book.id]: path }));
+      this.library.setCoverPath(book.id, path);
+    } catch (error) {
+      console.warn(`[ez-reader] cover extraction failed for ${book.locator.path}`, error);
+    } finally {
+      this.inFlight.delete(book.id);
+    }
+  }
+  /**
+   * 跟 AddToLibraryModal.raceWithTimeout 同样的语义. 返回 undefined 表示超时
+   * 或失败 — 调用方要据此放弃这条记录. Promise 自身不 reject, 避免在
+   * Promise.all 里被一个超时拖崩所有其他并发路径.
+   */
+  raceWithTimeout(promise, ms, label) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.warn(`[ez-reader] ${label} exceeded ${ms}ms \u2014 abandoning`);
+        resolve(void 0);
+      }, ms);
+      promise.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          window.clearTimeout(timer);
+          console.warn(`[ez-reader] ${label} rejected`, error);
+          resolve(void 0);
+        }
+      );
+    });
+  }
+  /**
+   * Extract covers for a batch of books in parallel. Concurrency is
+   * capped at 3 to avoid saturating the render thread when the user
+   * imports a large library.
+   */
+  async ensureCoversBatch(books, loader) {
+    const queue = books.filter((b3) => !b3.coverPath);
+    let index = 0;
+    const workers = Array.from({ length: 3 }, async () => {
+      while (index < queue.length) {
+        const book = queue[index++];
+        await this.ensureCoverFor(book, loader);
+      }
+    });
+    await Promise.all(workers);
+  }
+  async writeCover(book, bytes, mimeType) {
+    if (!await this.app.vault.adapter.exists(this.coversDir)) {
+      try {
+        await this.app.vault.adapter.mkdir(this.coversDir);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!await this.app.vault.adapter.exists(this.coversDir)) {
+          throw new Error(`mkdir(${this.coversDir}) failed: ${message}`);
+        }
+      }
+    }
+    const extension = extensionForMime(mimeType);
+    const safeId = coverFileStem(book.id);
+    const target = (0, import_obsidian2.normalizePath)(`${this.coversDir}/${safeId}${extension}`);
+    await this.app.vault.adapter.writeBinary(target, bytes);
+    return this.app.vault.adapter.getResourcePath(target);
+  }
+  /**
+   * Recover cover paths for every book in the library. The source of
+   * truth is the covers directory on disk: we list it and ask Obsidian
+   * for a fresh resource path for each file. The persisted snapshot is
+   * only used as a hint for which bookId a given slug corresponds to.
+   *
+   * We deliberately do not reuse the `app://...?token` URLs stored in
+   * the snapshot — those tokens are session-scoped and Chrome refuses
+   * to load them after the original session ends.
+   */
+  async hydrateCovers() {
+    if (!await this.app.vault.adapter.exists(this.coversDir)) {
+      console.info(`[ez-reader] hydrateCovers: covers dir missing: ${this.coversDir}`);
+      return;
+    }
+    const listing = await this.app.vault.adapter.list(this.coversDir);
+    console.info(`[ez-reader] hydrateCovers: found ${listing.files.length} file(s) in ${this.coversDir}`);
+    if (listing.files.length === 0) return;
+    const slugToBookId = this.buildSlugIndex();
+    for (const filePath of listing.files) {
+      const fileName = filePath.split("/").pop() ?? "";
+      const slug = fileName.replace(/\.[^.]+$/, "");
+      if (!slug) {
+        console.warn(`[ez-reader] hydrateCovers: cannot extract slug from ${filePath}`);
+        continue;
+      }
+      const bookId = slugToBookId.get(slug);
+      if (!bookId) {
+        console.info(`[ez-reader] hydrateCovers: no matching book for slug: ${slug} (orphan, ignored)`);
+        continue;
+      }
+      const resourcePath = this.app.vault.adapter.getResourcePath(filePath);
+      this.library.setCoverPath(bookId, resourcePath);
+      console.info(`[ez-reader] hydrateCovers: hydrated ${bookId}`);
+    }
+  }
+  /**
+   * Build a cover-file-stem → bookId index once per hydration.
+   *
+   * LibraryService 的 `list()` 是已 sort 过 titleAsc 的快照 —— 同样 N 本书
+   * 同样的 stem 派生, 用 Map 一次 O(N) 建表后, M 个 cover 文件的查找变 O(M)。
+   *
+   * 注意: 这个 Map 现在**不可能**再出现两个 bookId 撞到同一个 stem
+   * (`coverFileStem` 是 SHA-1 前 10 位)。`if (!map.has(...))` 保留纯粹作为
+   * 防御 —— 万一将来 stem 算法变了, 至少第二个 book 会退化成"没有封面"
+   * 而不是"两个 book 共用一张图, 后写的字节覆盖先写的"。
+   */
+  buildSlugIndex() {
+    const map = /* @__PURE__ */ new Map();
+    for (const entry of this.library.list({}, "titleAsc", true)) {
+      const safeId = coverFileStem(entry.book.id);
+      if (!map.has(safeId)) map.set(safeId, entry.book.id);
+    }
+    return map;
+  }
+};
+var extensionForMime = (mime) => {
+  if (mime === "image/png") return ".png";
+  if (mime === "image/jpeg" || mime === "image/jpg") return ".jpg";
+  if (mime === "image/webp") return ".webp";
+  if (mime === "image/gif") return ".gif";
+  return ".img";
+};
+var COVER_EXTRACT_TIMEOUT_MS = 15e3;
+
+// src/core/types/ReaderSettings.ts
+var DEFAULT_READER_APPEARANCE = Object.freeze({
+  fontSize: 100,
+  lineHeight: 1.6,
+  margin: 32,
+  theme: "system",
+  flow: "paginated",
+  twoPages: false,
+  immersive: false,
+  fontFamily: "serif",
+  letterSpacing: 0,
+  maxWidth: 720
+});
+var READER_FONT_FAMILY_STACKS = Object.freeze({
+  sans: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif',
+  serif: '"Source Serif Pro", "Iowan Old Style", "Apple Garamond", Georgia, "Times New Roman", "Songti SC", "STSong", serif',
+  mono: '"JetBrains Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+  song: '"Songti SC", "STSong", "SimSun", "Source Han Serif SC", serif',
+  kai: '"Kaiti SC", "STKaiti", "BiauKai", "Noto Serif CJK TC", serif'
+});
+var READER_FONT_FAMILY_LABELS = Object.freeze({
+  sans: "\u65E0\u886C\u7EBF",
+  serif: "\u886C\u7EBF",
+  mono: "\u7B49\u5BBD",
+  song: "\u5B8B\u4F53",
+  kai: "\u6977\u4F53"
+});
+var SHELF_DENSITIES = ["compact", "default", "spacious", "large"];
+var SHELF_DENSITY_LABELS = Object.freeze({
+  compact: "\u7D27\u51D1",
+  default: "\u9ED8\u8BA4",
+  spacious: "\u5BBD\u677E",
+  large: "\u8D85\u5927"
+});
+var DEFAULT_KEYBOARD_SHORTCUTS = Object.freeze({
+  prev: "ArrowLeft",
+  next: "ArrowRight",
+  toggleSidebar: "s",
+  toggleToc: "t",
+  translate: "T",
+  highlight: "h",
+  find: "/"
+});
+var DEFAULT_PLUGIN_SETTINGS = Object.freeze({
+  uiLocale: "zh-CN",
+  translation: null,
+  defaultAppearance: DEFAULT_READER_APPEARANCE,
+  // v0.3.0: 不再有 notesDirectory 配置项;默认 unset,迁移用 hardcoded
+  // 默认值兜底 (见 Plugin.runV030Migration)。
+  researchDirectory: "ezreader-notes/\u4E3B\u9898\u7814\u7A76",
+  libraryOwnerName: "",
+  defaultNoteTemplate: "# {{title}}\n",
+  readerOpenMode: "tab",
+  twoPagesByDefault: false,
+  immersiveOnTablet: false,
+  keyboardShortcuts: DEFAULT_KEYBOARD_SHORTCUTS,
+  rememberProgress: true,
+  shelfDensity: "default",
+  migratedToV030: false
+});
+
+// src/core/utils/renameSnapshot.ts
+var rekeyArray = (items, fromBookId, toBookId) => items.map((item) => item.bookId === fromBookId ? { ...item, bookId: toBookId } : item);
+var rekeyMap = (map, fromBookId, toBookId) => {
+  if (!map || !(fromBookId in map)) return map;
+  const next = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (key === fromBookId) continue;
+    next[key] = value;
+  }
+  if (!(toBookId in map)) {
+    next[toBookId] = map[fromBookId];
+  }
+  return next;
+};
+var dedupeReading = (states) => {
+  const byBookId = /* @__PURE__ */ new Map();
+  for (const state of states) byBookId.set(state.bookId, state);
+  return [...byBookId.values()];
+};
+var renameInSnapshot = (snapshot, fromBookId, toBookId) => {
+  if (fromBookId === toBookId) return snapshot;
+  let destinationSeen = snapshot.library.includes(toBookId);
+  const library = [];
+  for (const id of snapshot.library) {
+    if (id !== fromBookId) {
+      library.push(id);
+      continue;
+    }
+    if (destinationSeen) continue;
+    destinationSeen = true;
+    library.push(toBookId);
+  }
+  return {
+    ...snapshot,
+    library,
+    reading: dedupeReading(rekeyArray(snapshot.reading, fromBookId, toBookId)),
+    bookmarks: rekeyArray(snapshot.bookmarks, fromBookId, toBookId),
+    excerpts: rekeyArray(snapshot.excerpts, fromBookId, toBookId),
+    coverPaths: rekeyMap(snapshot.coverPaths, fromBookId, toBookId),
+    addedAtByBookId: rekeyMap(snapshot.addedAtByBookId, fromBookId, toBookId),
+    pinnedAtByBookId: rekeyMap(snapshot.pinnedAtByBookId, fromBookId, toBookId),
+    richMetadataByBookId: rekeyMap(snapshot.richMetadataByBookId, fromBookId, toBookId),
+    visitedTocIdsByBookId: rekeyMap(snapshot.visitedTocIdsByBookId, fromBookId, toBookId)
+  };
+};
+
+// src/adapters/obsidian/ObsidianAnnotationStore.ts
+var ObsidianAnnotationStore = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+  }
+  cache = null;
+  // Serialize all writes through this chain. loadData/saveData use the
+  // file system; two concurrent addBookmark/addExcerpt calls would
+  // otherwise each read the same base snapshot, both build a delta on
+  // top, and the later save would clobber the earlier one.
+  writeChain = Promise.resolve();
+  /**
+   * Called after every settings mutation (saveSettings / patchSettings)
+   * with the freshly-persisted PluginSettings. Used by Plugin to bust
+   * downstream caches (e.g. TranslationCoordinator's 30s settings TTL).
+   */
+  settingsListeners = /* @__PURE__ */ new Set();
+  /**
+   * Subscribe to settings changes. Returns a disposer that unsubscribes.
+   * Used by Plugin to wire TranslationCoordinator.invalidate() and other
+   * downstream caches without making them part of the AnnotationStore port.
+   */
+  onSettingsChanged(listener) {
+    this.settingsListeners.add(listener);
+    return () => this.settingsListeners.delete(listener);
+  }
+  notifySettingsChanged(settings) {
+    for (const listener of this.settingsListeners) {
+      try {
+        listener(settings);
+      } catch (error) {
+        console.warn("[ez-reader] settings change listener threw", error);
+      }
+    }
+  }
+  async load() {
+    if (this.cache) return this.cache;
+    const raw = await this.plugin.loadData();
+    const settings = this.normalizeSettings(raw?.settings);
+    this.cache = {
+      version: 1,
+      settings,
+      library: this.sanitizeStringArray(raw?.library),
+      reading: this.sanitizeReadingArray(raw?.reading),
+      bookmarks: this.sanitizeBookmarkArray(raw?.bookmarks),
+      excerpts: this.sanitizeExcerptArray(raw?.excerpts),
+      coverPaths: this.sanitizeRecord(raw?.coverPaths),
+      addedAtByBookId: this.sanitizeAddedAtMap(raw?.addedAtByBookId),
+      // 镜像 sanitizeAddedAtMap 的逻辑: 数字映射, 过滤非有限正值.
+      pinnedAtByBookId: this.sanitizeAddedAtMap(raw?.pinnedAtByBookId),
+      // P0-2: rich metadata 从 EPUB OPF / MOBI EXTH 解析, 持久化避免每次
+      // open 都重新解析 (MOBI parser 阻塞主线程 2-5s). sanitize 失败时
+      // 静默丢, 让 caller 重试下一次 open.
+      richMetadataByBookId: this.sanitizeRichMetadataMap(raw?.richMetadataByBookId),
+      // P0 修复: 之前漏读 onboardingDismissed, hasOnboardingBeenDismissed
+      // 永远返回 false, modal 每次启动都弹. markOnboardingDismissed 写的
+      // 标志其实在 data.json 里, 只是 load() 没拷到 cache.
+      onboardingDismissed: raw?.onboardingDismissed === true,
+      // P2: 跟 pinnedAtByBookId / addedAtByBookId 同样的 fallback 模式 —
+      // 旧 data.json 没这个字段就给空 map, 不会因为 undefined 让
+      // loadVisitedTocIds 炸掉.
+      visitedTocIdsByBookId: this.sanitizeVisitedTocIdsMap(raw?.visitedTocIdsByBookId),
+      // v0.3.0: 一次性迁移完成标记. sanitize boolean — 老 data.json
+      // 没这个字段 → false → Plugin.runV030Migration 跑一次。
+      //
+      // P1 fix: `Plugin.runV030Migration` wrote this flag via
+      // `patchSettings`, which lands it at `data.json.settings.migratedToV030`,
+      // while this read looks at the TOP level. The guard therefore never
+      // tripped and the legacy-notes migration re-ran on every launch,
+      // re-listing and re-reading the whole old folder each time. Read
+      // both, so a flag written by the buggy build is still honored.
+      migratedToV030: raw?.migratedToV030 === true || raw?.settings?.migratedToV030 === true,
+      // Retry counter for a failed migration. Absent → 0 attempts so far.
+      migratedToV030Attempts: typeof raw?.migratedToV030Attempts === "number" && Number.isFinite(raw.migratedToV030Attempts) ? raw.migratedToV030Attempts : 0
+    };
+    return this.cache;
+  }
+  /** Wrap a mutation so it serializes through `writeChain`. */
+  async mutate(fn) {
+    const next = this.writeChain.then(fn).then(async (snapshot) => {
+      if (snapshot === this.cache) return;
+      await this.plugin.saveData(snapshot);
+      this.cache = snapshot;
+    });
+    this.writeChain = next.then(
+      () => void 0,
+      () => void 0
+    );
+    await next;
+  }
+  sanitizeStringArray(input) {
+    return Array.isArray(input) ? input.filter((x3) => typeof x3 === "string") : [];
+  }
+  sanitizeReadingArray(input) {
+    if (!Array.isArray(input)) return [];
+    return input.filter((x3) => {
+      if (!x3 || typeof x3 !== "object") return false;
+      const r3 = x3;
+      return typeof r3.bookId === "string" && (r3.status === "unread" || r3.status === "reading" || r3.status === "finished" || r3.status === "abandoned");
+    });
+  }
+  sanitizeBookmarkArray(input) {
+    if (!Array.isArray(input)) return [];
+    return input.filter((x3) => {
+      if (!x3 || typeof x3 !== "object") return false;
+      const b3 = x3;
+      return typeof b3.id === "string" && typeof b3.bookId === "string" && typeof b3.label === "string";
+    });
+  }
+  sanitizeExcerptArray(input) {
+    if (!Array.isArray(input)) return [];
+    return input.filter((x3) => {
+      if (!x3 || typeof x3 !== "object") return false;
+      const e3 = x3;
+      return typeof e3.id === "string" && typeof e3.bookId === "string" && typeof e3.text === "string" && e3.locator !== null && typeof e3.locator === "object";
+    });
+  }
+  sanitizeRecord(input) {
+    if (!input || typeof input !== "object") return {};
+    const out = {};
+    for (const [k3, v3] of Object.entries(input)) {
+      if (typeof v3 === "string") out[k3] = v3;
+    }
+    return out;
+  }
+  sanitizeAddedAtMap(input) {
+    if (!input || typeof input !== "object") return {};
+    const out = {};
+    for (const [k3, v3] of Object.entries(input)) {
+      if (typeof v3 === "number" && Number.isFinite(v3) && v3 > 0) out[k3] = v3;
+    }
+    return out;
+  }
+  /**
+   * Validate the per-book rich metadata map. Each entry must be a plain
+   * object with a non-empty `title` string; everything else (authors,
+   * publisher, etc.) is optional and falls back to empty. Invalid entries
+   * are dropped silently so a corrupt data.json never crashes the shelf.
+   */
+  sanitizeRichMetadataMap(input) {
+    if (!input || typeof input !== "object") return {};
+    const out = {};
+    for (const [k3, v3] of Object.entries(input)) {
+      if (!v3 || typeof v3 !== "object") continue;
+      const m3 = v3;
+      if (typeof m3.title !== "string" || !m3.title.trim()) continue;
+      const authors = Array.isArray(m3.authors) ? m3.authors.filter((a3) => typeof a3 === "string" && a3.trim().length > 0).map((a3) => a3.trim()) : [];
+      const cachedAt = typeof m3.cachedAt === "number" && Number.isFinite(m3.cachedAt) && m3.cachedAt > 0 ? m3.cachedAt : Date.now();
+      out[k3] = {
+        title: m3.title.trim(),
+        authors,
+        languages: [],
+        cachedAt
+      };
+    }
+    return out;
+  }
+  /**
+   * P2: 验证 visited toc ids map. 每本书的 value 是 string array; 元素
+   * 不是 string 过滤掉, 整个 entry 损坏 (非 array) 也丢, 不让坏数据
+   * 整个阻塞 load.
+   */
+  sanitizeVisitedTocIdsMap(input) {
+    if (!input || typeof input !== "object") return {};
+    const out = {};
+    for (const [k3, v3] of Object.entries(input)) {
+      if (!Array.isArray(v3)) continue;
+      const ids = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const id of v3) {
+        if (typeof id !== "string" || !id) continue;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+      if (ids.length > 0) out[k3] = ids;
+    }
+    return out;
+  }
+  async save(snapshot) {
+    await this.mutate(async () => snapshot);
+  }
+  async listLibrary() {
+    const snapshot = await this.load();
+    return snapshot.library;
+  }
+  async addToLibrary(bookId) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.library.includes(bookId)) return snapshot;
+      return { ...snapshot, library: [...snapshot.library, bookId] };
+    });
+  }
+  async removeFromLibrary(bookId) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return {
+        ...snapshot,
+        library: snapshot.library.filter((id) => id !== bookId)
+      };
+    });
+  }
+  async listReading() {
+    const snapshot = await this.load();
+    return snapshot.reading;
+  }
+  async upsertReading(state) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const next = [...snapshot.reading.filter((s3) => s3.bookId !== state.bookId), state];
+      return { ...snapshot, reading: next };
+    });
+  }
+  async patchReading(bookId, patch) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.reading.find((s3) => s3.bookId === bookId);
+      const next = patch(current);
+      if (next === null) return snapshot;
+      const rest = snapshot.reading.filter((s3) => s3.bookId !== bookId);
+      return { ...snapshot, reading: [...rest, next] };
+    });
+  }
+  async renameBookId(fromBookId, toBookId) {
+    if (fromBookId === toBookId) return;
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return renameInSnapshot(snapshot, fromBookId, toBookId);
+    });
+  }
+  async listBookmarks(bookId) {
+    const snapshot = await this.load();
+    return snapshot.bookmarks.filter((bookmark) => bookmark.bookId === bookId);
+  }
+  async addBookmark(bookmark) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.bookmarks.some((b3) => b3.id === bookmark.id)) return snapshot;
+      return { ...snapshot, bookmarks: [...snapshot.bookmarks, bookmark] };
+    });
+  }
+  async removeBookmark(bookId, bookmarkId) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return {
+        ...snapshot,
+        bookmarks: snapshot.bookmarks.filter((b3) => !(b3.bookId === bookId && b3.id === bookmarkId))
+      };
+    });
+  }
+  async listExcerpts(bookId) {
+    const snapshot = await this.load();
+    return snapshot.excerpts.filter((excerpt) => excerpt.bookId === bookId);
+  }
+  async addExcerpt(excerpt) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.excerpts.some((e3) => e3.id === excerpt.id)) return snapshot;
+      return { ...snapshot, excerpts: [...snapshot.excerpts, excerpt] };
+    });
+  }
+  async removeExcerpt(bookId, excerptId) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return {
+        ...snapshot,
+        excerpts: snapshot.excerpts.filter((e3) => !(e3.bookId === bookId && e3.id === excerptId))
+      };
+    });
+  }
+  async updateExcerptNote(bookId, excerptId, patch) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const next = snapshot.excerpts.map((e3) => {
+        if (e3.bookId !== bookId || e3.id !== excerptId) return e3;
+        return {
+          ...e3,
+          ...patch.note !== void 0 ? { note: patch.note } : {},
+          ...patch.tags !== void 0 ? { tags: patch.tags } : {}
+        };
+      });
+      return { ...snapshot, excerpts: next };
+    });
+  }
+  async listSettings() {
+    const snapshot = await this.load();
+    return snapshot.settings;
+  }
+  async saveSettings(settings) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return { ...snapshot, settings };
+    });
+    this.notifySettingsChanged(settings);
+  }
+  /**
+   * Atomic settings update. The read-modify-write runs inside the write
+   * chain so two concurrent patches can't both read the same base and
+   * overwrite each other's fields. Use this from any debounced caller
+   * (slider drag, text input) to avoid the read-modify-write race that
+   * `listSettings()` + `saveSettings()` would create.
+   */
+  async patchSettings(patch) {
+    let nextSettings;
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      nextSettings = patch(snapshot.settings);
+      return { ...snapshot, settings: nextSettings };
+    });
+    if (nextSettings) this.notifySettingsChanged(nextSettings);
+  }
+  async loadCoverPaths() {
+    const snapshot = await this.load();
+    return snapshot.coverPaths ?? {};
+  }
+  async saveCoverPaths(coverPaths) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      return { ...snapshot, coverPaths };
+    });
+  }
+  /**
+   * P0-3 修复: 原子地 read-modify-write coverPaths map. 旧 `saveCoverPaths`
+   * 是 caller 先 loadCoverPaths (读 cache) 再 saveCoverPaths (写) — 两个
+   * 并发 caller 都可能在 T1-T2 之间读到同一份旧 map, 然后后写的覆盖先写
+   * 的, 丢 coverPath. 现在 patch callback 在 mutate 内部读最新 cache 再 merge,
+   * 串行化在 writeChain 上 — 跟 patchSettings 同样的语义.
+   */
+  async patchCoverPaths(patch) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.coverPaths ?? {};
+      return { ...snapshot, coverPaths: patch(current) };
+    });
+  }
+  async markOnboardingDismissed() {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.onboardingDismissed === true) return snapshot;
+      return { ...snapshot, onboardingDismissed: true };
+    });
+  }
+  /**
+   * P1 fix: record the v0.3.0 migration outcome at the TOP level of
+   * `data.json`, which is where `load()` looks. Writing it through
+   * `patchSettings` put it under `settings.*` instead, so the migration
+   * re-ran on every launch. `passed` records whether the run actually
+   * finished; `Plugin` retries a failed run a bounded number of times.
+   */
+  async setMigratedToV030(passed, attempts) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      if (snapshot.migratedToV030 === passed && snapshot.migratedToV030Attempts === attempts) {
+        return snapshot;
+      }
+      return {
+        ...snapshot,
+        migratedToV030: passed,
+        ...attempts === void 0 ? {} : { migratedToV030Attempts: attempts }
+      };
+    });
+  }
+  async getAddedAt(bookId) {
+    const snapshot = await this.load();
+    return snapshot.addedAtByBookId?.[bookId] ?? null;
+  }
+  async setAddedAt(bookId, addedAt) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.addedAtByBookId ?? {};
+      if (current[bookId] !== void 0 && current[bookId] <= addedAt) return snapshot;
+      return { ...snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
+    });
+  }
+  async getPinnedAt(bookId) {
+    const snapshot = await this.load();
+    return snapshot.pinnedAtByBookId?.[bookId] ?? null;
+  }
+  async setPinnedAt(bookId, pinnedAt) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.pinnedAtByBookId ?? {};
+      const next = { ...current };
+      if (pinnedAt === null) {
+        delete next[bookId];
+      } else {
+        next[bookId] = pinnedAt;
+      }
+      return { ...snapshot, pinnedAtByBookId: next };
+    });
+  }
+  /**
+   * P0-2 配套: 持久化从 EPUB/MOBI 解析的真 metadata, 避免每次 vault 重启
+   * 都重新解压解析 (MOBI 大文件阻塞主线程 2-5s). overwrite 不 merge —
+   * 真 metadata 应该是 ground truth, 不会比之前解析的还差.
+   */
+  async saveRichMetadata(bookId, metadata) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.richMetadataByBookId ?? {};
+      return { ...snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };
+    });
+  }
+  async loadRichMetadata(bookId) {
+    const snapshot = await this.load();
+    return snapshot.richMetadataByBookId?.[bookId] ?? null;
+  }
+  /**
+   * P0 修复: 之前 `Promise.all([...addToLibrary, ...setAddedAt])` 让每个
+   * book 都触发 2 个串行 mutate (writeChain 串行化). 100 本书 = 200 个
+   * saveData, 用户报告"加入所选"体感 ~10s 甚至卡死. 现在 1 个 mutate
+   * 把所有 ids 一起加上 + 一起 stamp, 一次 saveData 落盘.
+   */
+  async addToLibraryBatchWithStamp(bookIds, addedAt) {
+    if (bookIds.length === 0) return;
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const existingLibrary = new Set(snapshot.library);
+      const existingAddedAt = snapshot.addedAtByBookId ?? {};
+      const newIds = bookIds.filter((id) => !existingLibrary.has(id));
+      if (newIds.length === 0) return snapshot;
+      const library = [...snapshot.library, ...newIds];
+      const addedAtByBookId = { ...existingAddedAt };
+      for (const id of newIds) {
+        const current = addedAtByBookId[id];
+        if (typeof current === "number" && current >= addedAt) continue;
+        addedAtByBookId[id] = addedAt;
+      }
+      return { ...snapshot, library, addedAtByBookId };
+    });
+  }
+  async hasOnboardingBeenDismissed() {
+    const snapshot = await this.load();
+    return snapshot.onboardingDismissed === true;
+  }
+  /**
+   * P2: 读 visited toc ids. 旧 data.json 没 visitedTocIdsByBookId 字段
+   * 时 load() 已 fallback 到空 map, 这里直接读.
+   */
+  async loadVisitedTocIds(bookId) {
+    const snapshot = await this.load();
+    return snapshot.visitedTocIdsByBookId?.[bookId] ?? [];
+  }
+  /**
+   * P2: 写 visited toc ids. 在 write chain 内做 (跟 setPinnedAt 同样的
+   * mutate 模式) — 避免两个并发 caller (relocate 触发多个 chapter
+   * visited) 各 load 一份旧 array 后互相覆盖. caller 自己负责去重
+   * (ReaderView.schedulePersistVisited 维护本地 Set).
+   */
+  async saveVisitedTocIds(bookId, ids) {
+    await this.mutate(async () => {
+      const snapshot = await this.load();
+      const current = snapshot.visitedTocIdsByBookId ?? {};
+      const next = { ...current, [bookId]: [...ids] };
+      return { ...snapshot, visitedTocIdsByBookId: next };
+    });
+  }
+  normalizeSettings(input) {
+    if (!input) return DEFAULT_PLUGIN_SETTINGS;
+    return { ...DEFAULT_PLUGIN_SETTINGS, ...input };
+  }
+};
+
+// src/adapters/obsidian/ObsidianBookSource.ts
+var import_obsidian3 = require("obsidian");
+
+// src/core/entities/Book.ts
+var SUPPORTED_BOOK_FORMATS = /* @__PURE__ */ new Set([
+  "epub",
+  "mobi",
+  "azw",
+  "azw3",
+  "txt",
+  "pdf"
+]);
+var READER_CAPABLE_FORMATS = /* @__PURE__ */ new Set([
+  "epub",
+  "pdf",
+  "txt",
+  "mobi",
+  "azw3"
+]);
+var mimeTypeFor = (format) => {
+  switch (format) {
+    case "epub":
+      return "application/epub+zip";
+    case "pdf":
+      return "application/pdf";
+    case "txt":
+      return "text/plain";
+    case "mobi":
+    case "azw":
+    case "azw3":
+      return "application/x-mobipocket-ebook";
+  }
+};
+
+// src/adapters/obsidian/ObsidianBookSource.ts
+var METADATA_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
+var ObsidianBookSource = class {
+  constructor(app) {
+    this.app = app;
+  }
+  /** Filename-derived metadata cache keyed by path. */
+  metadataCache = /* @__PURE__ */ new Map();
+  /**
+   * Walk the vault using the file-system adapter so we discover files
+   * Obsidian hasn't surfaced in the file explorer yet (PDF, EPUB, etc.).
+   * `vault.getFiles()` only returns files Obsidian has loaded; using
+   * `adapter.list()` is more reliable for "everything in the Vault".
+   */
+  async *scan(formats) {
+    const wanted = formats.size === 0 ? SUPPORTED_BOOK_FORMATS : formats;
+    const seenPaths = /* @__PURE__ */ new Set();
+    let totalFromGetFiles = 0;
+    for (const file of this.app.vault.getFiles()) {
+      if (!(file instanceof import_obsidian3.TFile)) continue;
+      totalFromGetFiles += 1;
+      if (seenPaths.has(file.path)) continue;
+      const format = extensionToFormat(file.extension);
+      if (!format || !wanted.has(format)) continue;
+      seenPaths.add(file.path);
+      yield makeLocator(file, format);
+    }
+    let acceptedFromAdapter = 0;
+    const adapterFolders = [""];
+    const visited = /* @__PURE__ */ new Set();
+    let head = 0;
+    while (head < adapterFolders.length) {
+      const folder = adapterFolders[head++] ?? "";
+      let entries;
+      try {
+        entries = await this.app.vault.adapter.list(folder);
+      } catch (error) {
+        console.warn(`[ez-reader] adapter.list failed for ${folder || "/"}`, error);
+        continue;
+      }
+      for (const filePath of entries.files) {
+        if (seenPaths.has(filePath)) continue;
+        const abstract = this.app.vault.getAbstractFileByPath(filePath);
+        if (!(abstract instanceof import_obsidian3.TFile)) continue;
+        const format = extensionToFormat(abstract.extension);
+        if (!format || !wanted.has(format)) continue;
+        seenPaths.add(filePath);
+        acceptedFromAdapter += 1;
+        yield makeLocator(abstract, format);
+      }
+      for (const subFolder of entries.folders) {
+        if (visited.has(subFolder)) continue;
+        visited.add(subFolder);
+        adapterFolders.push(subFolder);
+      }
+    }
+    console.info(
+      `[ez-reader] Scan: vault.getFiles()=${totalFromGetFiles}, adapter additions=${acceptedFromAdapter}, total seen=${seenPaths.size}.`
+    );
+  }
+  async read(locator) {
+    const file = this.app.vault.getAbstractFileByPath(locator.path);
+    if (!(file instanceof import_obsidian3.TFile)) {
+      throw new Error(`Book file no longer exists: ${locator.path}`);
+    }
+    return this.app.vault.readBinary(file);
+  }
+  /**
+   * Filename-derived metadata. The foliate reader populates richer metadata
+   * (real title / authors / cover) the first time the user opens the book;
+   * until then this fallback is what the shelf shows.
+   */
+  async readMetadata(locator) {
+    const cached = this.metadataCache.get(locator.path);
+    if (cached && Date.now() - cached.cachedAt < METADATA_CACHE_TTL_MS) {
+      return cached;
+    }
+    const file = this.app.vault.getAbstractFileByPath(locator.path);
+    if (!(file instanceof import_obsidian3.TFile)) return null;
+    const base = {
+      title: file.basename,
+      authors: extractAuthorFromName(file.basename),
+      languages: [],
+      identifier: void 0,
+      publisher: void 0,
+      published: void 0,
+      description: void 0,
+      cachedAt: Date.now()
+    };
+    this.metadataCache.set(locator.path, base);
+    return base;
+  }
+  /** Point lookup so LibraryService.refreshBook doesn't re-walk the vault. */
+  async lookup(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof import_obsidian3.TFile)) return null;
+    const format = extensionToFormat(file.extension);
+    if (!format) return null;
+    return makeLocator(file, format);
+  }
+  /** Used by CoverCache — extracts the cover image bytes from the book file. */
+  async readCover(locator) {
+    const file = this.app.vault.getAbstractFileByPath(locator.path);
+    if (!(file instanceof import_obsidian3.TFile)) return null;
+    const bytes = await this.app.vault.readBinary(file);
+    return {
+      bookId: this.resolveId(locator),
+      bytes,
+      mimeType: mimeTypeForFormat(locator.format)
+    };
+  }
+  watch(handler) {
+    const refRename = this.app.vault.on("rename", (file, oldPath) => {
+      if (!(file instanceof import_obsidian3.TFile)) return;
+      const format = extensionToFormat(file.extension);
+      const previous = typeof oldPath === "string" ? oldPath : void 0;
+      const previousFormat = previous ? extensionToFormat(previous.split(".").pop() ?? "") : null;
+      if (format) {
+        handler({
+          kind: "renamed",
+          path: file.path,
+          format,
+          ...previous ? { oldPath: previous } : {}
+        });
+      } else if (previous && previousFormat) {
+        handler({ kind: "removed", path: previous, format: previousFormat });
+      }
+    });
+    const refCreate = this.app.vault.on("create", (file) => {
+      if (file instanceof import_obsidian3.TFile) {
+        const format = extensionToFormat(file.extension);
+        if (format) handler({ kind: "added", path: file.path, format });
+      }
+    });
+    const refModify = this.app.vault.on("modify", (file) => {
+      if (file instanceof import_obsidian3.TFile) {
+        const format = extensionToFormat(file.extension);
+        if (format) handler({ kind: "modified", path: file.path, format });
+      }
+    });
+    const refDelete = this.app.vault.on("delete", (file) => {
+      if (file instanceof import_obsidian3.TFile) {
+        const format = extensionToFormat(file.extension);
+        if (format) handler({ kind: "removed", path: file.path, format });
+      }
+    });
+    return {
+      dispose: () => {
+        this.app.vault.offref(refRename);
+        this.app.vault.offref(refCreate);
+        this.app.vault.offref(refModify);
+        this.app.vault.offref(refDelete);
+      }
+    };
+  }
+  resolveId(locator) {
+    return locator.path;
+  }
+  async resolveLocator(id) {
+    return this.lookup(id);
+  }
+};
+var extensionToFormat = (extension) => {
+  switch (extension.toLowerCase()) {
+    case "epub":
+      return "epub";
+    case "pdf":
+      return "pdf";
+    case "txt":
+      return "txt";
+    case "mobi":
+      return "mobi";
+    case "azw":
+      return "azw";
+    case "azw3":
+      return "azw3";
+    default:
+      return null;
+  }
+};
+var mimeTypeForFormat = (format) => {
+  switch (format) {
+    case "epub":
+      return "application/epub+zip";
+    case "pdf":
+      return "application/pdf";
+    case "txt":
+      return "text/plain";
+    case "mobi":
+    case "azw":
+    case "azw3":
+      return "application/x-mobipocket-ebook";
+  }
+};
+var makeLocator = (file, format) => ({
+  path: file.path,
+  format,
+  sizeBytes: file.stat.size,
+  modifiedAt: file.stat.mtime
+});
+var extractAuthorFromName = (basename) => {
+  const paren = basename.match(/[((]([^()（）]{1,40})[)）]/);
+  if (paren && paren[1]) return [paren[1].trim()];
+  const dash = basename.split(/\s+[-—–]\s+/);
+  if (dash.length >= 2 && dash[1]) return [dash[1].trim()];
+  return [];
+};
 
 // src/core/utils/themeColors.ts
 var themeColors = (theme) => {
@@ -19687,39 +19707,65 @@ var ReadingService = class {
     const all = await this.annotations.listReading();
     return all.find((state) => state.bookId === bookId) ?? defaultReadingState(bookId);
   }
+  /**
+   * Apply `patch` to one book's ReadingState atomically, inside the store's
+   * write chain, and return the persisted result.
+   *
+   * P0 修复: 这个类之前每个方法都是 `getState()` → 造一条**完整**的
+   * ReadingState → `upsertReading()` 整条替换。`upsertReading` 看起来是原子的,
+   * 但 `mutate()` 的 writeChain 只串行化**写盘**, `getState()` 那次**读发生在
+   * 链外** —— 于是两个并发 caller 读到同一份 base, 后写的赢, 先写的字段凭空
+   * 消失。
+   *
+   * 这在生产里是天天发生的:ReaderView 的 `flushReadingTime` → `addReadingTime`
+   * 和 relocate 的 `updatePosition` 是两条互不等待的路径。实测(修复前):
+   * 20 次并发 flush 只记下 1 次(1000ms 而不是 20000ms)。
+   *
+   * 端口上已经有 `patchSettings` / `patchCoverPaths` 这个形状, ReadingState
+   * 当时只是没迁移过去。
+   */
+  async patchState(bookId, patch, now = Date.now()) {
+    let result;
+    await this.annotations.patchReading(bookId, (current) => {
+      const base = current ?? defaultReadingState(bookId, now);
+      const next = patch(base);
+      result = next;
+      return next;
+    });
+    return result ?? defaultReadingState(bookId, now);
+  }
   /** Mark a book as currently being read and bump the lastOpenedAt. */
   async openBook(bookId, now = Date.now()) {
-    const state = await this.getState(bookId);
-    const next = {
-      ...state,
-      lastOpenedAt: now,
-      status: state.status === "unread" ? "reading" : state.status
-    };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(
+      bookId,
+      (state) => ({
+        ...state,
+        lastOpenedAt: now,
+        status: state.status === "unread" ? "reading" : state.status
+      }),
+      now
+    );
     await this.fireChange(next);
     return next;
   }
   /** Persist a new position and re-classify status if needed. */
   async updatePosition(bookId, position) {
-    const state = await this.getState(bookId);
     const fraction = computeFraction(position);
-    const status = inferStatus(state.status, fraction);
-    const next = { ...state, position, status };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(bookId, (state) => ({
+      ...state,
+      position,
+      status: inferStatus(state.status, fraction)
+    }));
     await this.fireChange(next);
     return next;
   }
   async setStatus(bookId, status) {
-    const state = await this.getState(bookId);
-    const next = { ...state, status };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(bookId, (state) => ({ ...state, status }));
     await this.fireChange(next);
     return next;
   }
   async toggleFavorite(bookId) {
-    const state = await this.getState(bookId);
-    const next = { ...state, favorite: !state.favorite };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(bookId, (state) => ({ ...state, favorite: !state.favorite }));
     await this.fireChange(next);
     return next;
   }
@@ -19727,16 +19773,17 @@ var ReadingService = class {
    * P1: 累加阅读时长. 通过 ReaderView 的 active-leaf 监听器触发,
    * deltaMs 来自"上次 active 到这次 inactive"的间隔。
    * 不触发 onChange (shelf 不需要立即 re-render — 累计是后台行为)。
+   *
+   * P0: 之前这里是 lost update 最严重的一处 —— 它跟 `updatePosition` 落在
+   * 同一个 tick 时, 整个 delta 会被 position 那次写覆盖掉。现在两者都走
+   * `patchState`, 在同一条 writeChain 上排队, 互不干扰。
    */
   async addReadingTime(bookId, deltaMs) {
     if (deltaMs <= 0) return this.getState(bookId);
-    const state = await this.getState(bookId);
-    const next = {
+    return this.patchState(bookId, (state) => ({
       ...state,
       totalReadingMs: (state.totalReadingMs ?? 0) + deltaMs
-    };
-    await this.annotations.upsertReading(next);
-    return next;
+    }));
   }
   /** Fire onChange (if registered), swallowing errors so a listener
    *  failure doesn't break the write that already succeeded. */

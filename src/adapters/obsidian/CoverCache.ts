@@ -3,6 +3,34 @@ import type { Plugin } from "obsidian";
 import type { Book, BookFormat } from "../../core/entities/Book";
 import type { BookReader } from "../../core/ports/BookReader";
 import type { LibraryService } from "../../core/services/LibraryService";
+import { bookIdTag } from "./ObsidianLibraryWriter";
+
+/**
+ * Stable, collision-free filename stem for a book's cover.
+ *
+ * P0 修复: 之前是 `book.id.replace(/[^A-Za-z0-9._-]/g, "_")` —— 每个非 ASCII
+ * 字符都折成**同一个** `_`。于是:
+ *
+ *     "书 名.epub"            → "___名.epub"
+ *     "书_名.epub"            → "___名.epub"
+ *     "深入理解计算机系统.pdf" → "__________.pdf"
+ *     "深入理解操作系统.pdf"   → "__________.pdf"   ← 同样 9 个字, 同一个文件
+ *
+ * 对一个中文书库来说这不是边角情况,而是**任意两个等长中文书名共用一个封面
+ * 文件**。`writeBinary` 是覆盖式写, 后写的字节直接盖掉先写的, 第一张图永久
+ * 丢失;`buildSlugIndex` 又只保留第一个映射, 所以另一本连路径都拿不到。
+ *
+ * 复用 `ObsidianLibraryWriter.bookIdTag` —— SHA-1 前 10 位, 路径安全且无碰撞。
+ * 顺带把两处重复的推导式收敛成一个函数, 以后不会再各自漂移。
+ */
+const coverFileStem = (bookId: string): string => bookIdTag(bookId);
+
+/**
+ * Same function, exported for tests. The collision this fixes is invisible to
+ * a unit test that only exercises happy paths — you need two *different* book
+ * ids that used to derive the same filename to prove the hash is in use.
+ */
+export const coverFileStemForTests = coverFileStem;
 
 /**
  * Adapter map keyed by the formats each reader supports. A format with
@@ -185,7 +213,7 @@ export class CoverCache {
       }
     }
     const extension = extensionForMime(mimeType);
-    const safeId = book.id.replace(/[^A-Za-z0-9._-]/g, "_");
+    const safeId = coverFileStem(book.id);
     const target = normalizePath(`${this.coversDir}/${safeId}${extension}`);
     // 直接覆盖式写到 target — vault adapter.writeBinary 是单文件写,
     // 失败时 target 保留旧内容(或完全没写过), 不会留下半成品 .writing-* 临时文件.
@@ -242,16 +270,20 @@ export class CoverCache {
   }
 
   /**
-   * Build a slug → bookId index once per hydration. LibraryService 的
-   * `list()` 是已 sort 过 titleAsc 的快照 — 同样 N 本书同样的 safeId 派生,
-   * 用 Map 一次 O(N) 建表后, M 个 cover 文件的查找变 O(M).
+   * Build a cover-file-stem → bookId index once per hydration.
+   *
+   * LibraryService 的 `list()` 是已 sort 过 titleAsc 的快照 —— 同样 N 本书
+   * 同样的 stem 派生, 用 Map 一次 O(N) 建表后, M 个 cover 文件的查找变 O(M)。
+   *
+   * 注意: 这个 Map 现在**不可能**再出现两个 bookId 撞到同一个 stem
+   * (`coverFileStem` 是 SHA-1 前 10 位)。`if (!map.has(...))` 保留纯粹作为
+   * 防御 —— 万一将来 stem 算法变了, 至少第二个 book 会退化成"没有封面"
+   * 而不是"两个 book 共用一张图, 后写的字节覆盖先写的"。
    */
   private buildSlugIndex(): Map<string, string> {
     const map = new Map<string, string>();
     for (const entry of this.library.list({}, "titleAsc", true)) {
-      const safeId = entry.book.id.replace(/[^A-Za-z0-9._-]/g, "_");
-      // 多个 book 算出同 safeId 时, 取第一个 — 这是幂等行为, 之前
-      // slugToBookId 顺序遍历也是返回第一个匹配的.
+      const safeId = coverFileStem(entry.book.id);
       if (!map.has(safeId)) map.set(safeId, entry.book.id);
     }
     return map;

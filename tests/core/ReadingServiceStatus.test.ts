@@ -57,6 +57,19 @@ class InMemoryStore implements AnnotationStore {
       reading: [...this.snapshot.reading.filter((r) => r.bookId !== state.bookId), state]
     };
   }
+
+  async patchReading(
+    bookId: string,
+    patch: (current: ReadingState | undefined) => ReadingState | null
+  ): Promise<void> {
+    const current = this.snapshot.reading.find((r) => r.bookId === bookId);
+    const next = patch(current);
+    if (next === null) return;
+    this.snapshot = {
+      ...this.snapshot,
+      reading: [...this.snapshot.reading.filter((r) => r.bookId !== bookId), next]
+    };
+  }
   async listBookmarks(): Promise<ReadonlyArray<unknown>> { return []; }
   async addBookmark(): Promise<void> {}
   async removeBookmark(): Promise<void> {}

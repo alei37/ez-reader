@@ -41,6 +41,13 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async removeFromLibrary(): Promise<void> {}
   async listReading(): Promise<ReadonlyArray<never>> { return []; }
   async upsertReading(): Promise<void> {}
+  async patchReading(
+    _bookId: string,
+    patch: (current: undefined) => unknown
+  ): Promise<void> {
+    patch(undefined);
+  }
+
   async listBookmarks(): Promise<ReadonlyArray<never>> { return []; }
   async addBookmark(): Promise<void> {}
   async removeBookmark(): Promise<void> {}

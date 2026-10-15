@@ -79,7 +79,40 @@ export interface AnnotationStore {
   removeFromLibrary(bookId: BookId): Promise<void>;
 
   listReading(): Promise<ReadonlyArray<ReadingState>>;
+  /**
+   * Replace the whole ReadingState for `bookId`.
+   *
+   * ⚠️ Not composable with itself. Two callers that both read via
+   * `listReading()`, mutate their copy, then call this will each write a
+   * complete state built from the same base — the later write silently drops
+   * whatever the earlier one changed.
+   *
+   * That is not hypothetical: `ReaderView` calls `addReadingTime` from its
+   * reading-time flush and `updatePosition` from the relocate handler, and
+   * those fire independently. Measured on the shipped code, 20 concurrent
+   * flushes collapsed to a single 1000 ms entry.
+   *
+   * Use {@link patchReading} for any caller that changes a subset of fields.
+   */
   upsertReading(state: ReadingState): Promise<void>;
+  /**
+   * Atomically read-modify-write one book's ReadingState.
+   *
+   * `patch` receives the state as it is *inside* the store's write chain, so
+   * two concurrent patches cannot both read the same base and clobber each
+   * other's fields. Return the state to persist, or `null` to skip the write
+   * entirely (nothing changed).
+   *
+   * This is the shape `patchSettings` and `patchCoverPaths` already have —
+   * ReadingState was simply never migrated.
+   *
+   * @param patch receives `undefined` when the book has no stored state yet,
+   *             so the caller can seed defaults without a separate read.
+   */
+  patchReading(
+    bookId: BookId,
+    patch: (current: ReadingState | undefined) => ReadingState | null
+  ): Promise<void>;
 
   /**
    * Re-key every piece of per-book state from `fromBookId` to `toBookId`.

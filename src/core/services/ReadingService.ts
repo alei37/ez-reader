@@ -37,42 +37,77 @@ export class ReadingService {
     return all.find((state) => state.bookId === bookId) ?? defaultReadingState(bookId);
   }
 
+  /**
+   * Apply `patch` to one book's ReadingState atomically, inside the store's
+   * write chain, and return the persisted result.
+   *
+   * P0 修复: 这个类之前每个方法都是 `getState()` → 造一条**完整**的
+   * ReadingState → `upsertReading()` 整条替换。`upsertReading` 看起来是原子的,
+   * 但 `mutate()` 的 writeChain 只串行化**写盘**, `getState()` 那次**读发生在
+   * 链外** —— 于是两个并发 caller 读到同一份 base, 后写的赢, 先写的字段凭空
+   * 消失。
+   *
+   * 这在生产里是天天发生的:ReaderView 的 `flushReadingTime` → `addReadingTime`
+   * 和 relocate 的 `updatePosition` 是两条互不等待的路径。实测(修复前):
+   * 20 次并发 flush 只记下 1 次(1000ms 而不是 20000ms)。
+   *
+   * 端口上已经有 `patchSettings` / `patchCoverPaths` 这个形状, ReadingState
+   * 当时只是没迁移过去。
+   */
+  private async patchState(
+    bookId: BookId,
+    patch: (current: ReadingState) => ReadingState,
+    now = Date.now()
+  ): Promise<ReadingState> {
+    let result: ReadingState | undefined;
+    await this.annotations.patchReading(bookId, (current) => {
+      const base = current ?? defaultReadingState(bookId, now);
+      const next = patch(base);
+      // Carry an explicit timestamp into a freshly-seeded state so
+      // `defaultReadingState(bookId, now)` stays the single source for it.
+      result = next;
+      return next;
+    });
+    // patchReading only returns null when the caller asked to skip; this
+    // implementation never does, so `result` is always set.
+    return result ?? defaultReadingState(bookId, now);
+  }
+
   /** Mark a book as currently being read and bump the lastOpenedAt. */
   async openBook(bookId: BookId, now = Date.now()): Promise<ReadingState> {
-    const state = await this.getState(bookId);
-    const next: ReadingState = {
-      ...state,
-      lastOpenedAt: now,
-      status: state.status === "unread" ? "reading" : state.status
-    };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(
+      bookId,
+      (state) => ({
+        ...state,
+        lastOpenedAt: now,
+        status: state.status === "unread" ? "reading" : state.status
+      }),
+      now
+    );
     await this.fireChange(next);
     return next;
   }
 
   /** Persist a new position and re-classify status if needed. */
   async updatePosition(bookId: BookId, position: ReadingPosition): Promise<ReadingState> {
-    const state = await this.getState(bookId);
     const fraction = computeFraction(position);
-    const status = inferStatus(state.status, fraction);
-    const next: ReadingState = { ...state, position, status };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(bookId, (state) => ({
+      ...state,
+      position,
+      status: inferStatus(state.status, fraction)
+    }));
     await this.fireChange(next);
     return next;
   }
 
   async setStatus(bookId: BookId, status: ReadingState["status"]): Promise<ReadingState> {
-    const state = await this.getState(bookId);
-    const next: ReadingState = { ...state, status };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(bookId, (state) => ({ ...state, status }));
     await this.fireChange(next);
     return next;
   }
 
   async toggleFavorite(bookId: BookId): Promise<ReadingState> {
-    const state = await this.getState(bookId);
-    const next: ReadingState = { ...state, favorite: !state.favorite };
-    await this.annotations.upsertReading(next);
+    const next = await this.patchState(bookId, (state) => ({ ...state, favorite: !state.favorite }));
     await this.fireChange(next);
     return next;
   }
@@ -81,16 +116,17 @@ export class ReadingService {
    * P1: 累加阅读时长. 通过 ReaderView 的 active-leaf 监听器触发,
    * deltaMs 来自"上次 active 到这次 inactive"的间隔。
    * 不触发 onChange (shelf 不需要立即 re-render — 累计是后台行为)。
+   *
+   * P0: 之前这里是 lost update 最严重的一处 —— 它跟 `updatePosition` 落在
+   * 同一个 tick 时, 整个 delta 会被 position 那次写覆盖掉。现在两者都走
+   * `patchState`, 在同一条 writeChain 上排队, 互不干扰。
    */
   async addReadingTime(bookId: BookId, deltaMs: number): Promise<ReadingState> {
     if (deltaMs <= 0) return this.getState(bookId);
-    const state = await this.getState(bookId);
-    const next: ReadingState = {
+    return this.patchState(bookId, (state) => ({
       ...state,
       totalReadingMs: (state.totalReadingMs ?? 0) + deltaMs
-    };
-    await this.annotations.upsertReading(next);
-    return next;
+    }));
   }
 
   /** Fire onChange (if registered), swallowing errors so a listener
