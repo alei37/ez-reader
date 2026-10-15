@@ -1,5 +1,6 @@
-import { Notice, PluginSettingTab, Setting } from "obsidian";
+import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type { App, Plugin } from "obsidian";
+import { ConfirmModal } from "../reader/ConfirmModal";
 import type { AnnotationStore } from "../../core/ports/AnnotationStore";
 import type { TranslationProvider } from "../../core/ports/TranslationProvider";
 import { isUiLocale, UI_LOCALES, type UiLocale } from "../../core/types/Locale";
@@ -842,8 +843,34 @@ export class SettingsTab extends PluginSettingTab {
       parsed as unknown as Record<string, unknown>,
       (await this.annotations.load()) as unknown as Record<string, unknown>
     );
-    await this.annotations.save(merged as never);
-        const counts = parsed as { excerpts: unknown[]; bookmarks: unknown[]; library: unknown[] };
+    const counts = parsed as { excerpts: unknown[]; bookmarks: unknown[]; library: unknown[] };
+
+        // P0 安全修复: 到这一步为止**什么都还没写**, 是最后一道闸门。
+        // 之前的流程是 `save(merged)` 直接整份覆盖 data.json, 然后弹
+        // 「数据已导入」—— 没有二次确认, 没有备份, 没有 undo。校验只看
+        // 6 个字段名在不在, 所以任何"字段齐全但内容不是 ez-reader 数据"的
+        // JSON(另一份同样结构的备份、手改过的导出、从 Git 里挑错的文件)
+        // 都会被整份写进去, 而用户全部的书架 / 进度 / 书签 / 摘录就此消失。
+        // 弹窗文案还写着"导入", 更像追加而不是替换。
+        const ok = await new ConfirmModal(
+          this.app,
+          "导入数据",
+          `将用该文件**整份替换**当前数据:\n\n` +
+            `  书 ${counts.library.length} · 摘录 ${counts.excerpts.length} · 书签 ${counts.bookmarks.length}\n\n` +
+            `现有的书架 / 阅读进度 / 书签 / 摘录会被覆盖, 无法撤销。\n` +
+            `继续前会先把当前数据备份一份到插件目录。`,
+          "覆盖导入",
+          "取消"
+        ).openAndWait();
+        if (!ok) {
+          new Notice("已取消导入");
+          return;
+        }
+
+        // 备份。写盘之前先留一份, 万一文件本身有问题还能捞回来。
+        await this.backupCurrentData();
+
+        await this.annotations.save(merged as never);
         new Notice(`数据已导入 (${counts.excerpts.length} 摘录, ${counts.bookmarks.length} 书签, ${counts.library.length} 书)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -852,5 +879,32 @@ export class SettingsTab extends PluginSettingTab {
       }
     };
     input.click();
+  }
+
+  /**
+   * Write the current `data.json` aside before a destructive import.
+   *
+   * Uses `adapter.writeBinary` on a timestamped path under the plugin's own
+   * folder, so it never touches the user's notes and never routes through the
+   * AnnotationStore (whose `mutate` is exactly what we are about to disturb).
+   * A backup that cannot be written downgrades to a warning rather than
+   * blocking the import — the confirm modal already carries the warning.
+   */
+  private async backupCurrentData(): Promise<void> {
+    try {
+      const snapshot = await this.annotations.load();
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const dir = "ezreader/backups";
+      const target = normalizePath(`${dir}/data-${stamp}.json`);
+      await this.app.vault.adapter.mkdir(dir);
+      await this.app.vault.adapter.writeBinary(
+        target,
+        new TextEncoder().encode(JSON.stringify(snapshot, null, 2)).buffer as ArrayBuffer
+      );
+      console.info(`[ez-reader] pre-import backup written to ${target}`);
+    } catch (error) {
+      console.warn("[ez-reader] pre-import backup failed", error);
+      new Notice("⚠️ 备份失败,导入仍会继续");
+    }
   }
 }

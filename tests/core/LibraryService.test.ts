@@ -186,6 +186,15 @@ class InMemoryAnnotationStore implements AnnotationStore {
     else next[bookId] = pinnedAt;
     this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
   }
+
+  async patchPinnedAt(bookId: string, patch: (current: number | null) => number | null): Promise<void> {
+    const currentMap = this.snapshot.pinnedAtByBookId ?? {};
+    const nextValue = patch(currentMap[bookId] ?? null);
+    const next = { ...currentMap };
+    if (nextValue === null) delete next[bookId];
+    else next[bookId] = nextValue;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
   // P0-2: 测试 mock 也实现 rich metadata 接口, 让 doInitialize 走
   // filename-fallback (mock 默认没 rich metadata) 路径保持原行为.
   async saveRichMetadata(bookId: string, metadata: BookMetadata): Promise<void> {
@@ -346,15 +355,38 @@ test("LibraryService.list applies recency bucket", async () => {
 });
 
 test("LibraryService.list sorts by addedDesc by default", async () => {
-  const old = { locator: { ...makeLocator("old.epub"), modifiedAt: 1 }, metadata: makeMetadata("Old") };
-  const recent = { locator: { ...makeLocator("new.epub"), modifiedAt: 2 }, metadata: makeMetadata("New") };
+  // Fixture note: this used to vary `modifiedAt` and call it "recent", which
+  // asserted the bug — `addedDesc` was sorting by file mtime, so touching a
+  // file reordered the shelf under a "最近添加" label. It now varies the
+  // actual add timestamps, and there is a separate test below pinning the
+  // mtime-independence.
+  const old = { locator: { ...makeLocator("old.epub"), modifiedAt: 9_000 }, metadata: makeMetadata("Old") };
+  const recent = { locator: { ...makeLocator("new.epub"), modifiedAt: 1_000 }, metadata: makeMetadata("New") };
   const service = new LibraryService(new FakeBookSource([old, recent]), new InMemoryAnnotationStore());
   await service.initialize();
-  await service.addAllToLibrary();
+  await service.addToLibrary("old.epub", 1_000);
+  await service.addToLibrary("new.epub", 2_000);
 
   const entries = service.list();
   assert.equal(entries[0]?.book.locator.path, "new.epub");
   assert.equal(entries[1]?.book.locator.path, "old.epub");
+});
+
+test("LibraryService addedDesc ignores the file's mtime", async () => {
+  // old.epub was added first but its file was touched most recently. The two
+  // orderings disagree, which is the whole point.
+  const old = { locator: { ...makeLocator("old.epub"), modifiedAt: 9_000 }, metadata: makeMetadata("Old") };
+  const recent = { locator: { ...makeLocator("new.epub"), modifiedAt: 1_000 }, metadata: makeMetadata("New") };
+  const service = new LibraryService(new FakeBookSource([old, recent]), new InMemoryAnnotationStore());
+  await service.initialize();
+  await service.addToLibrary("old.epub", 1_000);
+  await service.addToLibrary("new.epub", 2_000);
+
+  assert.deepEqual(
+    service.list(undefined, "addedDesc").map((e) => e.book.locator.path),
+    ["new.epub", "old.epub"],
+    "「最近添加」must reflect when the book joined the library, not when the file changed"
+  );
 });
 
 test("LibraryService.subscribe fires after updateReading", async () => {

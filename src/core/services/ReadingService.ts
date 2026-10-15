@@ -254,8 +254,10 @@ export class ReadingService {
       console.warn("[ez-reader] getDailyReadingTime: loadReadingSessions failed", bookId, error);
       return [];
     }
-    // Lazy import to keep the dep graph one-way (core/ → adapters/, never back).
-    const { aggregateDailyReadingTime } = await import("../../adapters/obsidian/dailyReadingTime");
+    // P1 分层修复: 之前是 `await import("../../adapters/obsidian/dailyReadingTime")`
+    // —— core/ 反向依赖 adapters/, 而注释恰好声称 "keep the dep graph one-way"。
+    // 它本来就只用 Date 加一个 type-only import, 是纯函数, 已移到 core/utils。
+    const { aggregateDailyReadingTime } = await import("../utils/dailyReadingTime");
     return aggregateDailyReadingTime(sessions, days);
   }
 }

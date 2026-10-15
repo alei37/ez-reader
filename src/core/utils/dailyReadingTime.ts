@@ -1,4 +1,4 @@
-import type { DailyReadingTime, ReadingSession } from "../../core/entities/ReadingSession";
+import type { DailyReadingTime, ReadingSession } from "../entities/ReadingSession";
 
 /**
  * Aggregate a stream of reading sessions into per-day buckets.

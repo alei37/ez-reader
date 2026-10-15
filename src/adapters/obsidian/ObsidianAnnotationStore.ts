@@ -9,6 +9,7 @@ import type {
 } from "../../core/ports/AnnotationStore";
 import { DEFAULT_PLUGIN_SETTINGS, type PluginSettings } from "../../core/types/ReaderSettings";
 import { renameInSnapshot } from "../../core/utils/renameSnapshot";
+import { sanitizeBookMetadata } from "../../core/utils/metadata";
 
 /**
  * Persistence adapter for annotation data. Mirrors what the upstream plugin
@@ -185,27 +186,31 @@ export class ObsidianAnnotationStore implements AnnotationStore {
 
   /**
    * Validate the per-book rich metadata map. Each entry must be a plain
-   * object with a non-empty `title` string; everything else (authors,
-   * publisher, etc.) is optional and falls back to empty. Invalid entries
-   * are dropped silently so a corrupt data.json never crashes the shelf.
+   * object with a non-empty `title` string; every other field is normalised
+   * but **kept**. Invalid entries are dropped silently so a corrupt data.json
+   * never crashes the shelf.
+   *
+   * P0 数据丢失修复: 这个函数之前只输出 `{title, authors, languages: [],
+   * cachedAt}` —— publisher / published / identifier / description 全部丢弃,
+   * 而且 **每次 `load()` 都会重建一遍**(load 只在 cache 为空时跑, 所以实际
+   * 效果是每次重启 Obsidian 把这些字段清一遍)。后果不只是详情弹窗少几行:
+   * `LibraryService.stats()` 的语言统计恒为空 → 书架的语言筛选永远筛不出东西。
+   *
+   * 真实 vault 已经受损, 例如:
+   *   {"title":"Introduction to Seismology","authors":[],"languages":[],…}
+   * —— EPUB 里明明有出版信息, 是被这里吃掉的。
+   *
+   * 现在逐字段规范化并保留, 已存的数据下次 load 就回来了; 未知的额外字段
+   * 也透传, 这样将来 `BookMetadata` 加字段也不会再被这里静默销毁。
    */
   private sanitizeRichMetadataMap(input: unknown): Record<string, import("../../core/entities/Book").BookMetadata> {
     if (!input || typeof input !== "object") return {};
     const out: Record<string, import("../../core/entities/Book").BookMetadata> = {};
     for (const [k, v] of Object.entries(input)) {
       if (!v || typeof v !== "object") continue;
-      const m = v as { title?: unknown; authors?: unknown; cachedAt?: unknown };
+      const m = v as Record<string, unknown>;
       if (typeof m.title !== "string" || !m.title.trim()) continue;
-      const authors: string[] = Array.isArray(m.authors)
-        ? m.authors.filter((a): a is string => typeof a === "string" && a.trim().length > 0).map((a) => a.trim())
-        : [];
-      const cachedAt = typeof m.cachedAt === "number" && Number.isFinite(m.cachedAt) && m.cachedAt > 0 ? m.cachedAt : Date.now();
-      out[k] = {
-        title: m.title.trim(),
-        authors,
-        languages: [],
-        cachedAt
-      };
+      out[k] = sanitizeBookMetadata(m);
     }
     return out;
   }
@@ -482,14 +487,23 @@ export class ObsidianAnnotationStore implements AnnotationStore {
   }
 
   async setPinnedAt(bookId: BookId, pinnedAt: number | null): Promise<void> {
+    await this.patchPinnedAt(bookId, () => pinnedAt);
+  }
+
+  async patchPinnedAt(bookId: BookId, patch: (current: number | null) => number | null): Promise<void> {
     await this.mutate(async () => {
       const snapshot = await this.load();
-      const current = snapshot.pinnedAtByBookId ?? {};
-      const next = { ...current };
-      if (pinnedAt === null) {
+      const current = snapshot.pinnedAtByBookId?.[bookId] ?? null;
+      const nextValue = patch(current);
+      const next = { ...(snapshot.pinnedAtByBookId ?? {}) };
+      if (nextValue === null) {
         delete next[bookId];
       } else {
-        next[bookId] = pinnedAt;
+        next[bookId] = nextValue;
+      }
+      // Nothing changed → hand back the same reference so mutate() skips the write.
+      if (nextValue === current && (snapshot.pinnedAtByBookId ?? {})[bookId] === nextValue) {
+        return snapshot;
       }
       return { ...snapshot, pinnedAtByBookId: next };
     });

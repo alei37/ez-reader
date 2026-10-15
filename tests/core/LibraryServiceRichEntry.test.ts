@@ -160,6 +160,15 @@ class InMemoryAnnotationStore implements AnnotationStore {
     else next[bookId] = pinnedAt;
     this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
   }
+
+  async patchPinnedAt(bookId: string, patch: (current: number | null) => number | null): Promise<void> {
+    const currentMap = this.snapshot.pinnedAtByBookId ?? {};
+    const nextValue = patch(currentMap[bookId] ?? null);
+    const next = { ...currentMap };
+    if (nextValue === null) delete next[bookId];
+    else next[bookId] = nextValue;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
   async saveRichMetadata(bookId: string, metadata: BookMetadata): Promise<void> {
     const current = this.snapshot.richMetadataByBookId ?? {};
     this.snapshot = { ...this.snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };

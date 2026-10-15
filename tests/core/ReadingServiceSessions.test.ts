@@ -64,6 +64,11 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async setAddedAt(): Promise<void> {}
   async getPinnedAt(): Promise<number | null> { return null; }
   async setPinnedAt(): Promise<void> {}
+
+  async patchPinnedAt(_bookId: string, patch: (current: null) => null): Promise<void> {
+    patch(null);
+  }
+
   async saveRichMetadata(): Promise<void> {}
   async loadRichMetadata(): Promise<null> { return null; }
   async addToLibraryBatchWithStamp(): Promise<void> {}

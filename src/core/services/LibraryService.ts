@@ -81,6 +81,8 @@ export class LibraryService {
   // serialise on a single promise so the second caller awaits the
   // first then no-ops if the entries are already populated.
   private initializeInFlight: Promise<void> | null = null;
+  /** True once `doInitialize` has registered the source watch. See initialize(). */
+  private initialized = false;
 
   constructor(
     private readonly source: BookSource,
@@ -111,7 +113,15 @@ export class LibraryService {
     // Re-entrancy guard: a second call while the first is mid-flight
     // simply awaits it. Subsequent calls after a completed initial scan
     // are a no-op (the entries map is already populated).
-    if (this.entries.size > 0 && this.initializeInFlight === null) return;
+    //
+    // P1 泄漏修复: 之前的判据是 `entries.size > 0`, 所以**空 vault**(以及
+    // "扫描完又把所有书删光"的状态)下每个 'added' 事件都会重跑
+    // `doInitialize()` —— 而它每次都会 push 一个新的 `source.watch()`,
+    // 也就是再注册 4 个 vault listener。加书→删书的循环每轮泄漏一次,
+    // 而且第 N 个 handler 会被调用 N 次(O(n²) 次无效 render)。
+    //
+    // 判据换成"是否已经注册过 watch",与 entries 数量无关。
+    if (this.initialized) return;
     if (this.initializeInFlight) return this.initializeInFlight;
     this.initializeInFlight = this.doInitialize();
     try {
@@ -232,6 +242,9 @@ export class LibraryService {
       })
     );
 
+    // Guard against a second registration — `initialize()` keys off this
+    // flag, and `dispose()` clears it so a fresh open re-arms.
+    this.initialized = true;
     this.emit();
   }
 
@@ -518,10 +531,12 @@ export class LibraryService {
       } catch (error) {
         console.warn("[ez-reader] getRichEntry: loadReadingSessions failed", bookId, error);
       }
-      // Lazy import to keep dep graph one-way.
+      // P1 分层修复: 之前是 `await import("../../adapters/obsidian/dailyReadingTime")`,
+      // 注释写着 "keep dep graph one-way" —— 而它就是一条 core → adapters 的边。
+      // 该模块是纯函数, 已移到 core/utils/dailyReadingTime。
       try {
         const { aggregateDailyReadingTime, readingStreakDays } = await import(
-          "../../adapters/obsidian/dailyReadingTime"
+          "../utils/dailyReadingTime"
         );
         daily = aggregateDailyReadingTime(recentSessions, 30);
         const streak = readingStreakDays(daily);
@@ -644,11 +659,20 @@ export class LibraryService {
    * re-renders exactly once.
    */
   async togglePin(bookId: string, now = Date.now()): Promise<boolean> {
-    const entry = this.entries.get(bookId);
-    if (!entry) return false;
-    const isPinned = entry.book.pinnedAt !== null;
-    const nextPinnedAt = isPinned ? null : now;
-    await this.annotations.setPinnedAt(bookId, nextPinnedAt);
+    if (!this.entries.has(bookId)) return false;
+    // P1 修复: 之前是 `entry.book.pinnedAt !== null` 决定往哪边翻, 然后
+    // `await annotations.setPinnedAt(...)`。那次**读**发生在 store 的
+    // writeChain 之外 —— 跟 ReadingService 之前那个 lost update 同一类。
+    // 双击 📌 时两次调用都读到同一个旧值, 算出同一个 nextPinnedAt, 后写的赢,
+    // 结果还是置顶; 而且两次都返回"已置顶", 用户看到两个一样的 Notice, 像
+    // 第二次点击失效。
+    //
+    // 现在翻转决策也放进 store 的原子写里, 由链上的最新值决定。
+    let nextPinnedAt: number | null = null;
+    await this.annotations.patchPinnedAt(bookId, (current) => {
+      nextPinnedAt = current === null ? now : null;
+      return nextPinnedAt;
+    });
     this.updateBook(bookId, { pinnedAt: nextPinnedAt });
     return nextPinnedAt !== null;
   }
@@ -684,6 +708,7 @@ export class LibraryService {
   dispose(): void {
     for (const d of this.sourceDisposables) d.dispose();
     this.sourceDisposables.length = 0;
+    this.initialized = false;
     this.listeners.clear();
   }
 
@@ -782,7 +807,14 @@ const compare = (a: LibraryEntry, b: LibraryEntry, sort: SortCriterion): number 
     case "authorAsc":
       return (a.book.metadata?.authors[0] ?? "").localeCompare(b.book.metadata?.authors[0] ?? "");
     case "addedDesc":
-      return b.book.sourceModifiedAt - a.book.sourceModifiedAt;
+      // P1 修复: 之前排的是 `sourceModifiedAt`(书文件的 mtime), 而 UI 标签
+      // 是「最近添加」, 存 addedToLibraryAt 的理由也写在 AnnotationStore 的
+      // 端口注释里。后果: 用户在 Obsidian 里碰一下文件, 或者用别的 app 改了
+      // 一下 mtime, 「最近添加」的顺序就变了 —— 跟"加入书架"毫无关系的事
+      // 都能改变排序。未加入书架的书没有 addedAt, 排在最后。
+      return (
+        (b.book.addedToLibraryAt ?? 0) - (a.book.addedToLibraryAt ?? 0)
+      );
     case "openedDesc":
       return (b.reading.lastOpenedAt ?? 0) - (a.reading.lastOpenedAt ?? 0);
     case "progressDesc":

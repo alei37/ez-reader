@@ -623,6 +623,23 @@ export class ReaderView extends ItemView {
     this.persistVisitedLastSnapshot = [];
     this.tocItems = [];
     this.tocPanel?.setVisited([]);
+
+    // P0 数据污染修复: 同样要清 progress 的 debounce。上一本书最后一批
+    // relocate 被 debounce 推迟时切书, 残留的 `{fraction, locator}` 会在
+    // 300ms 后触发 `persistProgress` —— 而那时 `this.entry` 已经是新书,
+    // 于是 `updatePosition(新书, {fraction: 上一本书的, cfi: 上一本书的})`,
+    // **新书的续读位置被写成另一本书的地址并落进 data.json**。
+    //
+    // 用户的表现: 打开 B, 跳到 A 那一页, 而且 CFI 指向另一个 section,
+    // foliate 解析不出就回退到开头 —— 与"重命名丢进度"同一类不可解释现象。
+    //
+    // 之前没清是因为只想到 visited(它有 snapshot 比较, 侥幸安全), 漏了
+    // progress —— 它没有任何幂等守卫。
+    if (this.persistProgressTimer !== undefined) {
+      window.clearTimeout(this.persistProgressTimer);
+      this.persistProgressTimer = undefined;
+    }
+    this.persistProgressPending = undefined;
     // Toolbar markers come from `toolbarState()` on every update; nudge it
     // so the previous book's dots disappear immediately rather than at the
     // next relocate.

@@ -235,6 +235,17 @@ export interface AnnotationStore {
    */
   setPinnedAt(bookId: BookId, pinnedAt: number | null): Promise<void>;
   /**
+   * Atomically read-modify-write the pinned-at timestamp.
+   *
+   * `patch` receives the value as it is *inside* the store's write chain and
+   * returns the value to persist (`null` clears the pin). Same shape and same
+   * reason as {@link patchReading}: `LibraryService.togglePin` used to read
+   * `entry.book.pinnedAt` — outside the chain — and then write, so two
+   * concurrent toggles both saw the same old value and both produced the same
+   * result. A double-click on the pin button cancelled nothing.
+   */
+  patchPinnedAt(bookId: BookId, patch: (current: number | null) => number | null): Promise<void>;
+  /**
    * Persist rich metadata extracted from the book file itself (EPUB OPF,
    * MOBI EXTH, etc.) — as opposed to the filename-derived fallback in
    * `BookSource.readMetadata`. Keyed by book id so the shelf can show the

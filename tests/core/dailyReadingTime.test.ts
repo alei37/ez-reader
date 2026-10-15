@@ -4,7 +4,7 @@ import {
   aggregateDailyReadingTime,
   totalReadingMsInDays,
   readingStreakDays
-} from "../../src/adapters/obsidian/dailyReadingTime";
+} from "../../src/core/utils/dailyReadingTime";
 import type { ReadingSession } from "../../src/core/entities/ReadingSession";
 
 /**

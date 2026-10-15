@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   aggregateDailyReadingTime,
   readingStreakDays
-} from "../../src/adapters/obsidian/dailyReadingTime";
+} from "../../src/core/utils/dailyReadingTime";
 import type { ReadingSession } from "../../src/core/entities/ReadingSession";
 
 /**

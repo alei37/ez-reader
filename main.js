@@ -6681,11 +6681,11 @@ var init_search = __esm({
       return { pre, match, post };
     };
     simpleSearch = function* (strs, query, options = {}) {
-      const { locales = "en", sensitivity } = options;
+      const { locales: locales2 = "en", sensitivity } = options;
       const matchCase = sensitivity === "variant";
       const haystack = strs.join("");
-      const lowerHaystack = matchCase ? haystack : haystack.toLocaleLowerCase(locales);
-      const needle = matchCase ? query : query.toLocaleLowerCase(locales);
+      const lowerHaystack = matchCase ? haystack : haystack.toLocaleLowerCase(locales2);
+      const needle = matchCase ? query : query.toLocaleLowerCase(locales2);
       const needleLength = needle.length;
       let index = -1;
       let strIndex = -1;
@@ -6706,11 +6706,11 @@ var init_search = __esm({
       } while (index > -1);
     };
     segmenterSearch = function* (strs, query, options = {}) {
-      const { locales = "en", granularity = "word", sensitivity = "base" } = options;
+      const { locales: locales2 = "en", granularity = "word", sensitivity = "base" } = options;
       let segmenter, collator;
       try {
-        segmenter = new Intl.Segmenter(locales, { usage: "search", granularity });
-        collator = new Intl.Collator(locales, { sensitivity });
+        segmenter = new Intl.Segmenter(locales2, { usage: "search", granularity });
+        collator = new Intl.Collator(locales2, { sensitivity });
       } catch (e3) {
         console.warn(e3);
         segmenter = new Intl.Segmenter("en", { usage: "search", granularity });
@@ -12139,7 +12139,7 @@ var init_index_browser2 = __esm({
   }
 });
 
-// src/adapters/obsidian/dailyReadingTime.ts
+// src/core/utils/dailyReadingTime.ts
 var dailyReadingTime_exports = {};
 __export(dailyReadingTime_exports, {
   aggregateDailyReadingTime: () => aggregateDailyReadingTime,
@@ -12148,7 +12148,7 @@ __export(dailyReadingTime_exports, {
 });
 var aggregateDailyReadingTime, totalReadingMsInDays, readingStreakDays, localDateString;
 var init_dailyReadingTime = __esm({
-  "src/adapters/obsidian/dailyReadingTime.ts"() {
+  "src/core/utils/dailyReadingTime.ts"() {
     "use strict";
     aggregateDailyReadingTime = (sessions, days, now = Date.now()) => {
       if (days <= 0) return [];
@@ -15467,6 +15467,48 @@ var renameInSnapshot = (snapshot, fromBookId, toBookId) => {
   };
 };
 
+// src/core/utils/metadata.ts
+var LOCALE_RE = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+var optionalString = (value) => typeof value === "string" && value.trim().length > 0 ? value : void 0;
+var stringArray = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string" && item.trim().length > 0);
+};
+var locales = (value) => {
+  const raw = stringArray(value).map((tag) => tag.trim());
+  const good = raw.filter((tag) => LOCALE_RE.test(tag));
+  return good;
+};
+var cachedAt = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : Date.now();
+var sanitizeBookMetadata = (input) => {
+  const known = /* @__PURE__ */ new Set([
+    "title",
+    "authors",
+    "publisher",
+    "published",
+    "languages",
+    "identifier",
+    "description",
+    "cachedAt"
+  ]);
+  const extras = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (known.has(key) || value === void 0) continue;
+    extras[key] = value;
+  }
+  return {
+    title: String(input.title).trim(),
+    authors: stringArray(input.authors),
+    languages: locales(input.languages),
+    cachedAt: cachedAt(input.cachedAt),
+    ...optionalString(input.publisher) !== void 0 ? { publisher: optionalString(input.publisher) } : {},
+    ...optionalString(input.published) !== void 0 ? { published: optionalString(input.published) } : {},
+    ...optionalString(input.identifier) !== void 0 ? { identifier: optionalString(input.identifier) } : {},
+    ...optionalString(input.description) !== void 0 ? { description: optionalString(input.description) } : {},
+    ...extras
+  };
+};
+
 // src/adapters/obsidian/ObsidianAnnotationStore.ts
 var ObsidianAnnotationStore = class {
   constructor(plugin) {
@@ -15602,9 +15644,22 @@ var ObsidianAnnotationStore = class {
   }
   /**
    * Validate the per-book rich metadata map. Each entry must be a plain
-   * object with a non-empty `title` string; everything else (authors,
-   * publisher, etc.) is optional and falls back to empty. Invalid entries
-   * are dropped silently so a corrupt data.json never crashes the shelf.
+   * object with a non-empty `title` string; every other field is normalised
+   * but **kept**. Invalid entries are dropped silently so a corrupt data.json
+   * never crashes the shelf.
+   *
+   * P0 数据丢失修复: 这个函数之前只输出 `{title, authors, languages: [],
+   * cachedAt}` —— publisher / published / identifier / description 全部丢弃,
+   * 而且 **每次 `load()` 都会重建一遍**(load 只在 cache 为空时跑, 所以实际
+   * 效果是每次重启 Obsidian 把这些字段清一遍)。后果不只是详情弹窗少几行:
+   * `LibraryService.stats()` 的语言统计恒为空 → 书架的语言筛选永远筛不出东西。
+   *
+   * 真实 vault 已经受损, 例如:
+   *   {"title":"Introduction to Seismology","authors":[],"languages":[],…}
+   * —— EPUB 里明明有出版信息, 是被这里吃掉的。
+   *
+   * 现在逐字段规范化并保留, 已存的数据下次 load 就回来了; 未知的额外字段
+   * 也透传, 这样将来 `BookMetadata` 加字段也不会再被这里静默销毁。
    */
   sanitizeRichMetadataMap(input) {
     if (!input || typeof input !== "object") return {};
@@ -15613,14 +15668,7 @@ var ObsidianAnnotationStore = class {
       if (!v3 || typeof v3 !== "object") continue;
       const m3 = v3;
       if (typeof m3.title !== "string" || !m3.title.trim()) continue;
-      const authors = Array.isArray(m3.authors) ? m3.authors.filter((a3) => typeof a3 === "string" && a3.trim().length > 0).map((a3) => a3.trim()) : [];
-      const cachedAt = typeof m3.cachedAt === "number" && Number.isFinite(m3.cachedAt) && m3.cachedAt > 0 ? m3.cachedAt : Date.now();
-      out[k3] = {
-        title: m3.title.trim(),
-        authors,
-        languages: [],
-        cachedAt
-      };
+      out[k3] = sanitizeBookMetadata(m3);
     }
     return out;
   }
@@ -15846,14 +15894,21 @@ var ObsidianAnnotationStore = class {
     return snapshot.pinnedAtByBookId?.[bookId] ?? null;
   }
   async setPinnedAt(bookId, pinnedAt) {
+    await this.patchPinnedAt(bookId, () => pinnedAt);
+  }
+  async patchPinnedAt(bookId, patch) {
     await this.mutate(async () => {
       const snapshot = await this.load();
-      const current = snapshot.pinnedAtByBookId ?? {};
-      const next = { ...current };
-      if (pinnedAt === null) {
+      const current = snapshot.pinnedAtByBookId?.[bookId] ?? null;
+      const nextValue = patch(current);
+      const next = { ...snapshot.pinnedAtByBookId ?? {} };
+      if (nextValue === null) {
         delete next[bookId];
       } else {
-        next[bookId] = pinnedAt;
+        next[bookId] = nextValue;
+      }
+      if (nextValue === current && (snapshot.pinnedAtByBookId ?? {})[bookId] === nextValue) {
+        return snapshot;
       }
       return { ...snapshot, pinnedAtByBookId: next };
     });
@@ -19108,9 +19163,11 @@ var LibraryService = class {
   // serialise on a single promise so the second caller awaits the
   // first then no-ops if the entries are already populated.
   initializeInFlight = null;
+  /** True once `doInitialize` has registered the source watch. See initialize(). */
+  initialized = false;
   /** Initial load: scan the source and join against stored reading state. */
   async initialize() {
-    if (this.entries.size > 0 && this.initializeInFlight === null) return;
+    if (this.initialized) return;
     if (this.initializeInFlight) return this.initializeInFlight;
     this.initializeInFlight = this.doInitialize();
     try {
@@ -19196,6 +19253,7 @@ var LibraryService = class {
         }
       })
     );
+    this.initialized = true;
     this.emit();
   }
   /**
@@ -19538,11 +19596,12 @@ var LibraryService = class {
    * re-renders exactly once.
    */
   async togglePin(bookId, now = Date.now()) {
-    const entry = this.entries.get(bookId);
-    if (!entry) return false;
-    const isPinned = entry.book.pinnedAt !== null;
-    const nextPinnedAt = isPinned ? null : now;
-    await this.annotations.setPinnedAt(bookId, nextPinnedAt);
+    if (!this.entries.has(bookId)) return false;
+    let nextPinnedAt = null;
+    await this.annotations.patchPinnedAt(bookId, (current) => {
+      nextPinnedAt = current === null ? now : null;
+      return nextPinnedAt;
+    });
     this.updateBook(bookId, { pinnedAt: nextPinnedAt });
     return nextPinnedAt !== null;
   }
@@ -19575,6 +19634,7 @@ var LibraryService = class {
   dispose() {
     for (const d2 of this.sourceDisposables) d2.dispose();
     this.sourceDisposables.length = 0;
+    this.initialized = false;
     this.listeners.clear();
   }
   emit() {
@@ -19655,7 +19715,7 @@ var compare = (a3, b3, sort) => {
     case "authorAsc":
       return (a3.book.metadata?.authors[0] ?? "").localeCompare(b3.book.metadata?.authors[0] ?? "");
     case "addedDesc":
-      return b3.book.sourceModifiedAt - a3.book.sourceModifiedAt;
+      return (b3.book.addedToLibraryAt ?? 0) - (a3.book.addedToLibraryAt ?? 0);
     case "openedDesc":
       return (b3.reading.lastOpenedAt ?? 0) - (a3.reading.lastOpenedAt ?? 0);
     case "progressDesc":
@@ -24540,6 +24600,11 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     this.persistVisitedLastSnapshot = [];
     this.tocItems = [];
     this.tocPanel?.setVisited([]);
+    if (this.persistProgressTimer !== void 0) {
+      window.clearTimeout(this.persistProgressTimer);
+      this.persistProgressTimer = void 0;
+    }
+    this.persistProgressPending = void 0;
     if (this.toolbar && this.entry) this.toolbar.update(this.toolbarState());
     this.markReady();
     if (this.host) {
@@ -26649,8 +26714,25 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
           parsed,
           await this.annotations.load()
         );
-        await this.annotations.save(merged);
         const counts = parsed;
+        const ok = await new ConfirmModal(
+          this.app,
+          "\u5BFC\u5165\u6570\u636E",
+          `\u5C06\u7528\u8BE5\u6587\u4EF6**\u6574\u4EFD\u66FF\u6362**\u5F53\u524D\u6570\u636E:
+
+  \u4E66 ${counts.library.length} \xB7 \u6458\u5F55 ${counts.excerpts.length} \xB7 \u4E66\u7B7E ${counts.bookmarks.length}
+
+\u73B0\u6709\u7684\u4E66\u67B6 / \u9605\u8BFB\u8FDB\u5EA6 / \u4E66\u7B7E / \u6458\u5F55\u4F1A\u88AB\u8986\u76D6, \u65E0\u6CD5\u64A4\u9500\u3002
+\u7EE7\u7EED\u524D\u4F1A\u5148\u628A\u5F53\u524D\u6570\u636E\u5907\u4EFD\u4E00\u4EFD\u5230\u63D2\u4EF6\u76EE\u5F55\u3002`,
+          "\u8986\u76D6\u5BFC\u5165",
+          "\u53D6\u6D88"
+        ).openAndWait();
+        if (!ok) {
+          new import_obsidian18.Notice("\u5DF2\u53D6\u6D88\u5BFC\u5165");
+          return;
+        }
+        await this.backupCurrentData();
+        await this.annotations.save(merged);
         new import_obsidian18.Notice(`\u6570\u636E\u5DF2\u5BFC\u5165 (${counts.excerpts.length} \u6458\u5F55, ${counts.bookmarks.length} \u4E66\u7B7E, ${counts.library.length} \u4E66)`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -26659,6 +26741,32 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
       }
     };
     input.click();
+  }
+  /**
+   * Write the current `data.json` aside before a destructive import.
+   *
+   * Uses `adapter.writeBinary` on a timestamped path under the plugin's own
+   * folder, so it never touches the user's notes and never routes through the
+   * AnnotationStore (whose `mutate` is exactly what we are about to disturb).
+   * A backup that cannot be written downgrades to a warning rather than
+   * blocking the import — the confirm modal already carries the warning.
+   */
+  async backupCurrentData() {
+    try {
+      const snapshot = await this.annotations.load();
+      const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+      const dir = "ezreader/backups";
+      const target = (0, import_obsidian18.normalizePath)(`${dir}/data-${stamp}.json`);
+      await this.app.vault.adapter.mkdir(dir);
+      await this.app.vault.adapter.writeBinary(
+        target,
+        new TextEncoder().encode(JSON.stringify(snapshot, null, 2)).buffer
+      );
+      console.info(`[ez-reader] pre-import backup written to ${target}`);
+    } catch (error) {
+      console.warn("[ez-reader] pre-import backup failed", error);
+      new import_obsidian18.Notice("\u26A0\uFE0F \u5907\u4EFD\u5931\u8D25,\u5BFC\u5165\u4ECD\u4F1A\u7EE7\u7EED");
+    }
   }
 };
 
