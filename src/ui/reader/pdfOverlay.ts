@@ -112,10 +112,12 @@ export const findPdfOverlayForLeaf = (leaf: WorkspaceLeaf): PdfOverlay | undefin
  * 这些回调都**闭包持有 view 引用**, 插件对象被卸载后它们照跑不误,
  * 而且 rAF 循环会让对应页面永远无法 GC —— 禁用一次插件泄漏一整批。
  *
- * ⚠️ 必须迭代快照而不是 `ALL_ATTACHED` 本身: `unmount()` 会同步
- * `ALL_ATTACHED.delete(this)`, 直接遍历同一个 Set 会在迭代中改动它
- * (Set 的迭代器对 delete 是容忍的, 但那样会漏掉后面的元素)。
- * `[...ALL_ATTACHED]` 先取快照再逐个卸载, 顺序无关。
+ * ⚠️ `[...ALL_ATTACHED]` 取快照再逐个卸载, 让"被遍历的集合"和"被改写的集合"
+ * 不是同一个对象。**如实说明**: 变异测试过 —— 直接 `for (const o of ALL_ATTACHED)`
+ * 在当前实现下跑出来完全一样 (Set 的迭代器容忍 delete 当前元素, 会自动走到
+ * 下一个)。所以取快照是**防御性**的, 不是在修一个已观测到的 bug; 真正的收益是
+ * 以后有人往 `unmount()` 里加 `ALL_ATTACHED.add()` 时这里不会变成死循环。
+ * 保留快照而不是"简化"回去, 是因为注释必须跟实测一致, 而快照本身零成本。
  *
  * 返回实际卸载了几个 —— 给调用方一个"有没有东西漏掉"的信号, 测试也靠它断言。
  */
@@ -318,12 +320,50 @@ export class PdfOverlay {
 
   /** Resolve bookId + title + translation locale. Must be awaited before mount. */
   async resolveBook(): Promise<void> {
-    const entry = this.opts.library.list().find((e) => e.book.locator.path === this.opts.bookPath);
-    if (entry) {
-      this.bookId = entry.book.id;
-      this.bookTitle = entry.book.metadata?.title ?? entry.book.locator.path;
+    try {
+      const entry = this.opts.library.list().find((e) => e.book.locator.path === this.opts.bookPath);
+      if (entry) {
+        this.bookId = entry.book.id;
+        this.bookTitle = entry.book.metadata?.title ?? entry.book.locator.path;
+      }
+      this.targetLocale = await this.opts.reading.getTranslationLocale();
+    } catch (error) {
+      // 构造函数的 6 个 body 级元素已经挂在 document.body 上了, 而
+      // `Plugin` 的调用顺序是 new → await resolveBook() → mount()。所以
+      // resolveBook() 自己抛异常时 `mountStarted` 还是 false, 调 `unmount()`
+      // 会被门槛直接挡住 —— 六个元素永远留在 body 上, 而且此时既不在
+      // ATTACHED 也不在 ALL_ATTACHED 里, `unmountAllPdfOverlays()` 扫不到。
+      // 真实的失败来源:`reading.getTranslationLocale()` 读 data.json 出错。
+      this.detachConstructedDom();
+      throw error;
     }
-    this.targetLocale = await this.opts.reading.getTranslationLocale();
+  }
+
+  /**
+   * 拆掉**构造函数**创建的资源(6 个 body 级 DOM 元素 + 它们上面的 listener),
+   * 不碰 `mount()` 阶段才注册的东西(observer / rAF / 30s 静默 timer)。
+   *
+   * 与 `unmount()` 的区别只有一个门槛: `unmount()` 以 `mountStarted` 为准
+   * (从没 mount 过的实例调它是 no-op,否则会去拆它还没建的 mount 阶段资源);
+   * 这个方法专门服务"构造完了但 mount 没跑"的那条路径。
+   *
+   * 幂等: DOM 的 `.remove()` 本身幂等,`disposers` 也会被清空,重复调无害。
+   */
+  private detachConstructedDom(): void {
+    for (const d of this.disposers) {
+      try {
+        d();
+      } catch (error) {
+        console.warn("[ez-reader] PdfOverlay disposer threw during teardown", error);
+      }
+    }
+    this.disposers.length = 0;
+    this.menuEl.remove();
+    this.notesBtn.remove();
+    this.notesPanel.remove();
+    this.highlightLayer.remove();
+    this.searchBar.remove();
+    this.translationPopoverEl.remove();
   }
 
   /**
@@ -969,20 +1009,11 @@ export class PdfOverlay {
     // 白跑一次 flushPdfActiveSession (虽然那时已经 no-op, 但 timer 本身
     // 会让页面多活 30 秒)。
     this.clearPdfInactivityCheck();
-    for (const d of this.disposers) {
-      try {
-        d();
-      } catch (error) {
-        console.warn("[ez-reader] PdfOverlay disposer threw", error);
-      }
-    }
-    this.disposers.length = 0;
-    this.menuEl.remove();
-    this.notesBtn.remove();
-    this.notesPanel.remove();
-    this.highlightLayer.remove();
-    this.searchBar.remove();
-    this.translationPopoverEl.remove();
+    // 6 个 body 级 DOM 元素 + 它们的 listener 在**构造函数**里就建好了,
+    // 所以这段拆卸跟 `detachConstructedDom()` 是同一件事 —— 复用而不是
+    // 各写一份。两份列表各写一遍的话,加元素时必然漏掉其中一处,
+    // 而漏掉的那处表现为"DOM 留在 body 上、什么日志都没有"。
+    this.detachConstructedDom();
     this.clearPdfSearchHighlights();
     this.pendingSelection = undefined;
     this.highlightsByExcerpt.clear();

@@ -4,7 +4,11 @@ import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { installObsidianDomHelpers } from "../stubs/obsidian-stub.mjs";
 import { codeOnly } from "./codeOnly";
-import { PdfOverlay, findPdfOverlayForLeaf } from "../../src/ui/reader/pdfOverlay";
+import {
+  PdfOverlay,
+  findPdfOverlayForLeaf,
+  unmountAllPdfOverlays
+} from "../../src/ui/reader/pdfOverlay";
 
 /**
  * PdfOverlay 生命周期回归测试。
@@ -158,7 +162,9 @@ class FakeReading {
   excerpts: FakeExcerpt[] = [];
   failListBookmarks = false;
   failRemoveExcerpt = false;
+  failRemoveBookmark = false;
   failUpdateNote = false;
+  failTranslationLocale = false;
   recordedSessions: unknown[] = [];
   noteUpdates: Array<{ id: string; note: string }> = [];
 
@@ -177,6 +183,7 @@ class FakeReading {
   }
 
   async removeBookmark(_bookId: string, id: string): Promise<void> {
+    if (this.failRemoveBookmark) throw new Error("写盘失败");
     this.bookmarks = this.bookmarks.filter((b) => b.id !== id);
   }
 
@@ -190,6 +197,11 @@ class FakeReading {
   }
 
   async getTranslationLocale(): Promise<string> {
+    // `failTranslationLocale` 用来触发 Plugin 那条
+    // `new PdfOverlay() → await resolveBook() → mount()` 调用链的失败分支:
+    // resolveBook 抛异常时 mount 永远不会跑, 构造函数挂在 body 上的 6 个元素
+    // 就无人回收(而且此时不在 ATTACHED / ALL_ATTACHED 里, unmountAll 也扫不到)。
+    if (this.failTranslationLocale) throw new Error("data.json 读不出来");
     return "zh-CN";
   }
 
@@ -238,9 +250,16 @@ interface Harness {
   reading: FakeReading;
 }
 
-/** 搭一个能跑通 mount() 的最小 PDFView 环境。 */
-const makeHarness = (excerpts: FakeExcerpt[] = []): Harness => {
-  purgeOverlayDom();
+/**
+ * 搭一个能跑通 mount() 的最小 PDFView 环境。
+ *
+ * `opts.purge` 默认 true = 先清掉上一个用例残留的 overlay DOM (见
+ * `purgeOverlayDom` 的说明)。测"多个 overlay 同时活着"的用例必须给第二个
+ * harness 传 `{ purge: false }`, 否则它会把第一个 overlay 的 DOM 先清掉,
+ * 断言 "两个 overlay × 6 个元素 = 12" 就只剩 6。
+ */
+const makeHarness = (excerpts: FakeExcerpt[] = [], opts: { purge?: boolean } = {}): Harness => {
+  if (opts.purge !== false) purgeOverlayDom();
   const container = document.createElement("div");
   container.className = "pdf-view";
   container.appendChild(document.createElement("div")).className = "pdf-viewer";
@@ -442,6 +461,35 @@ test("Bug 2: 从没 mount 过的实例 unmount() 是安全的 no-op", async () =
   await settle();
 });
 
+test("Bug 2: resolveBook 失败时构造函数挂在 body 上的 6 个元素被回收", async () => {
+  // Plugin 的调用顺序是 `new PdfOverlay(...) → await resolveBook() → mount()`。
+  // resolveBook 自己抛异常时 `mountStarted` 还是 false:
+  //   - 调 `unmount()` 会被门槛挡住(那是"从没 mount 过"的 no-op 分支)
+  //   - 实例也不在 ATTACHED / ALL_ATTACHED 里,`unmountAllPdfOverlays()` 扫不到
+  // 所以这条路径只能由 resolveBook 自己兜底。真实触发来源是
+  // `reading.getTranslationLocale()` 读 data.json 失败(权限 / 磁盘 / 同步冲突)。
+  const h = makeHarness();
+  h.reading.failTranslationLocale = true;
+  const before = overlayElementsInBody();
+  assert.equal(before, 6, "构造函数已把 6 个 overlay 元素挂上 body");
+
+  await assert.rejects(
+    () => h.overlay.resolveBook(),
+    /data.json 读不出来/,
+    "错误要原样抛出去 —— Plugin 的 catch 依赖它做日志,静默吞会变成无线索的失败"
+  );
+
+  assert.equal(
+    overlayElementsInBody(),
+    0,
+    "resolveBook 失败后 body 上不应残留任何 overlay 元素"
+  );
+  // 未挂载的实例不该出现在任何注册表里 —— 否则 unmountAll 会去拆它没建的东西。
+  assert.equal(findPdfOverlayForLeaf(h.leaf as never), undefined);
+
+  await settle();
+});
+
 test("Bug 2: 重复 unmount() 不抛, 且阅读时长 session 只被 flush 一次", async () => {
   const h = makeHarness();
   await mountOverlay(h);
@@ -523,6 +571,57 @@ test("Bug 3: 笔记面板重渲染时, 正在编辑的 inline note 文本不丢"
   }
 });
 
+test("Bug 3: 用户把想法清空后重渲染, 空文本也不能被 store 的旧值盖回去", async () => {
+  const h = makeHarness([makeExcerpt("ex-1", "之前存的想法")]);
+  await mountOverlay(h);
+  try {
+    const btn = document.body.querySelector<HTMLElement>(".ez-reader__pdf-overlay-notes-btn");
+    assert.ok(btn, "笔记按钮应已挂载");
+    btn!.click();
+    await settle();
+
+    const panel = document.body.querySelector<HTMLElement>(".ez-reader__pdf-overlay-notes-panel");
+    assert.ok(panel, "笔记面板应已挂载");
+    const noteSel = ".ez-reader__pdf-overlay-notes-panel__note";
+    const noteEl = panel!.querySelector<HTMLElement>(noteSel);
+    assert.ok(noteEl, "摘录行里应有 note 节点");
+    noteEl!.click();
+    // 用户全选删除 —— 草稿是空串。这是最容易被"非空才保护"的实现漏掉的一档:
+    // 空草稿一旦回落到 store 的旧值, 用户就看到自己刚删掉的想法又回来了。
+    noteEl!.textContent = "";
+
+    const refresh = (h.overlay as unknown as { refreshNotesPanel(): Promise<void> }).refreshNotesPanel;
+    await refresh.call(h.overlay);
+    await settle();
+
+    const after = panel!.querySelector<HTMLElement>(noteSel);
+    assert.ok(after, "重渲染后 note 节点应重新生成");
+    assert.equal(after!.textContent, "", "空草稿被 store 的旧值盖回去了 —— 用户会以为删除没生效");
+    assert.equal(after!.getAttribute("data-editing"), "1", "仍在编辑态");
+  } finally {
+    h.overlay.unmount();
+    await settle();
+  }
+});
+
+test("Bug 3: 恢复草稿时必须同时恢复 contentEditable (jsdom 观察不到, 源码级兜住)", () => {
+  // 为什么只能源码级断言: jsdom 完全没有实现 contentEditable —— 设了不落到
+  // attribute 上, `isContentEditable` 恒为 undefined (AGENTS.md §11.13 记过同款
+  // 坑)。但这一行恰恰是"用户能不能接着敲"的关键: 只恢复 data-editing 的话,
+  // 节点看着像在编辑, 实际点不进去输字。变异测试确认过: 删掉它, 本文件里
+  // 没有任何 DOM 级断言会红。
+  const src = codeOnly(readSource("src/ui/reader/pdfOverlay.ts"));
+  const start = src.indexOf("const restoreNoteDraft = ");
+  assert.ok(start > 0, "应存在 restoreNoteDraft helper");
+  const body = src.slice(start, src.indexOf("const renderNotesPanelContent =", start));
+  assert.match(
+    body,
+    /noteEl\.contentEditable = "true";/,
+    "restoreNoteDraft 必须把 contenteditable 恢复成 true, 否则重渲染后用户没法接着敲"
+  );
+  assert.match(body, /setCaretIn\(noteEl, draft\.caretOffset\)/, "光标位置也要恢复");
+});
+
 // ---------------------------------------------------------------------------
 // Bug 4: refreshNotesPanel 是 async 但调用处大多 void
 // ---------------------------------------------------------------------------
@@ -555,6 +654,56 @@ test("Bug 4: 删除摘录失败不会产生 unhandled rejection", async () => {
       unhandled,
       [],
       `fire-and-forget 的删除回调产生了 unhandled rejection: ${unhandled.map(String).join(" | ")}`
+    );
+  } finally {
+    h.overlay.unmount();
+    await settle();
+  }
+});
+
+test("Bug 4: 删除书签失败不会产生 unhandled rejection", async () => {
+  const h = makeHarness([makeExcerpt("ex-1", "")]);
+  h.reading.bookmarks = [
+    {
+      id: "bm-1",
+      bookId: "book-x",
+      label: "关键论点 · 42%",
+      locator: { position: { kind: "pdf", page: 3 }, chapter: "" },
+      createdAt: 1_700_000_000_000
+    }
+  ];
+  h.reading.failRemoveBookmark = true;
+  await mountOverlay(h);
+  try {
+    const btn = document.body.querySelector<HTMLElement>(".ez-reader__pdf-overlay-notes-btn");
+    assert.ok(btn, "笔记按钮应已挂载");
+    btn!.click();
+    await settle();
+
+    const panel = document.body.querySelector<HTMLElement>(".ez-reader__pdf-overlay-notes-panel");
+    assert.ok(panel, "笔记面板应已挂载");
+    // 书签区渲染在摘录区之前, 所以第一个 .remove 就是书签的 ×。
+    const del = panel!.querySelector<HTMLElement>(".remove");
+    assert.ok(del, "书签行应有 × 删除按钮");
+    assert.equal(
+      panel!.querySelectorAll(".remove").length,
+      2,
+      "应同时有书签和摘录各一个删除按钮"
+    );
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    del!.click();
+    await settle(5);
+    process.off("unhandledRejection", onUnhandled);
+
+    assert.deepEqual(
+      unhandled,
+      [],
+      `fire-and-forget 的书签删除产生了 unhandled rejection: ${unhandled.map(String).join(" | ")}`
     );
   } finally {
     h.overlay.unmount();
@@ -619,4 +768,58 @@ test("Bug 4: 每一个 refreshNotesPanel() 调用点都被 await 或 .catch 包�
     /private requestNotesPanelRefresh\(\): void/,
     "应有一个吞错 + Notice 的 fire-and-forget 入口"
   );
+});
+
+// ---------------------------------------------------------------------------
+// 卸载入口: unmountAllPdfOverlays()
+// ---------------------------------------------------------------------------
+
+test("unmountAllPdfOverlays: 把所有已挂载的 overlay 全部拆干净并返回个数", async () => {
+  // 先确保上一次残留不在集合里 —— makeHarness 只清 DOM, 不碰 overlay 实例。
+  unmountAllPdfOverlays();
+
+  const first = makeHarness([makeExcerpt("ex-1", "第一条书")]);
+  const firstLeaf = first.leaf;
+  await mountOverlay(first);
+  const second = makeHarness([makeExcerpt("ex-2", "第二条书")], { purge: false });
+  const secondLeaf = second.leaf;
+  await mountOverlay(second);
+
+  assert.equal(overlayElementsInBody(), 12, "两个 overlay × 6 个 body 级元素");
+  assert.ok(findPdfOverlayForLeaf(firstLeaf as never), "第一个 overlay 已登记");
+  assert.ok(findPdfOverlayForLeaf(secondLeaf as never), "第二个 overlay 已登记");
+
+  const unmounted = unmountAllPdfOverlays();
+  await settle();
+
+  assert.equal(unmounted, 2, "应报告卸载了 2 个 overlay");
+  assert.equal(overlayElementsInBody(), 0, "两个 overlay 的 DOM 必须全部离开 document.body");
+  assert.equal(findPdfOverlayForLeaf(firstLeaf as never), undefined, "ATTACHED 应被清空");
+  assert.equal(findPdfOverlayForLeaf(secondLeaf as never), undefined, "ATTACHED 应被清空");
+
+  // 幂等: 再调一次应该是 0, 而不是重复拆一遍或抛异常。
+  assert.equal(unmountAllPdfOverlays(), 0, "重复调用应返回 0");
+  await settle();
+});
+
+test("unmountAllPdfOverlays: 只算真正挂载过的, 不动从没 mount 过的实例", async () => {
+  unmountAllPdfOverlays();
+  const mounted = makeHarness([makeExcerpt("ex-1", "挂上了")]);
+  await mountOverlay(mounted);
+  const orphan = makeHarness([], { purge: false });
+  const before = overlayElementsInBody();
+  assert.equal(before, 12, "1 个已挂载 + 1 个只构造没挂载");
+
+  const unmounted = unmountAllPdfOverlays();
+  await settle();
+
+  assert.equal(unmounted, 1, "只统计真正 attach 过的 overlay");
+  assert.equal(
+    overlayElementsInBody(),
+    6,
+    "从没 mount 过的实例不该被 unmountAllPdfOverlays 拆 —— 它的 DOM 是构造器的产物"
+  );
+  // 清场, 别把 6 个残留元素留给后面的用例。
+  purgeOverlayDom();
+  await settle();
 });

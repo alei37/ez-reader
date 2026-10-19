@@ -12798,12 +12798,43 @@ var init_pdfOverlay = __esm({
       }
       /** Resolve bookId + title + translation locale. Must be awaited before mount. */
       async resolveBook() {
-        const entry = this.opts.library.list().find((e3) => e3.book.locator.path === this.opts.bookPath);
-        if (entry) {
-          this.bookId = entry.book.id;
-          this.bookTitle = entry.book.metadata?.title ?? entry.book.locator.path;
+        try {
+          const entry = this.opts.library.list().find((e3) => e3.book.locator.path === this.opts.bookPath);
+          if (entry) {
+            this.bookId = entry.book.id;
+            this.bookTitle = entry.book.metadata?.title ?? entry.book.locator.path;
+          }
+          this.targetLocale = await this.opts.reading.getTranslationLocale();
+        } catch (error) {
+          this.detachConstructedDom();
+          throw error;
         }
-        this.targetLocale = await this.opts.reading.getTranslationLocale();
+      }
+      /**
+       * 拆掉**构造函数**创建的资源(6 个 body 级 DOM 元素 + 它们上面的 listener),
+       * 不碰 `mount()` 阶段才注册的东西(observer / rAF / 30s 静默 timer)。
+       *
+       * 与 `unmount()` 的区别只有一个门槛: `unmount()` 以 `mountStarted` 为准
+       * (从没 mount 过的实例调它是 no-op,否则会去拆它还没建的 mount 阶段资源);
+       * 这个方法专门服务"构造完了但 mount 没跑"的那条路径。
+       *
+       * 幂等: DOM 的 `.remove()` 本身幂等,`disposers` 也会被清空,重复调无害。
+       */
+      detachConstructedDom() {
+        for (const d2 of this.disposers) {
+          try {
+            d2();
+          } catch (error) {
+            console.warn("[ez-reader] PdfOverlay disposer threw during teardown", error);
+          }
+        }
+        this.disposers.length = 0;
+        this.menuEl.remove();
+        this.notesBtn.remove();
+        this.notesPanel.remove();
+        this.highlightLayer.remove();
+        this.searchBar.remove();
+        this.translationPopoverEl.remove();
       }
       /**
        * Attach to the PDFView leaf. Idempotent — 同 leaf 重复调用会先卸载旧的.
@@ -13308,20 +13339,7 @@ var init_pdfOverlay = __esm({
         this.translateGeneration += 1;
         this.flushPdfActiveSession();
         this.clearPdfInactivityCheck();
-        for (const d2 of this.disposers) {
-          try {
-            d2();
-          } catch (error) {
-            console.warn("[ez-reader] PdfOverlay disposer threw", error);
-          }
-        }
-        this.disposers.length = 0;
-        this.menuEl.remove();
-        this.notesBtn.remove();
-        this.notesPanel.remove();
-        this.highlightLayer.remove();
-        this.searchBar.remove();
-        this.translationPopoverEl.remove();
+        this.detachConstructedDom();
         this.clearPdfSearchHighlights();
         this.pendingSelection = void 0;
         this.highlightsByExcerpt.clear();
