@@ -4,6 +4,167 @@
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-19
+
+> **30 个修复**,来自一次三轮的全量 code review。0.3.2 修的是「v0.3.0 的核心功能
+> 从未对真实用户生效过」,这一版修的是**用户实际报出来的故障** —— 排在第一位
+> 的是 EPUB 选中词之后浮窗根本不弹。
+
+第一轮 15 个(见下)修的是「用户撞上了」;第二轮又挖出 15 个,大多是我们自己
+在前一轮修问题时**顺手造出来的**(比如 `ReaderView` 加了 progress debounce 却
+没在切书时清掉,于是上一本书的进度写进了下一本书)。
+
+### 用户可见的故障 (Fixed)
+
+- **EPUB 选中词之后浮窗不弹**(用户实测报出) — 不是 iframe 通信问题,是**事件顺序**。
+  foliate 在 `view.open()` **内部**派发 `load`,而挂载 load 监听的
+  `bindSelectionChange` 是 `open()` **返回之后**才调用的 —— 第一次 `load`
+  永久错过,iframe document 上一个 selection listener 都没挂上。
+  现在 `open()` 在 `await view.open(parsed)` **之前**就注册 `captureLoad`。
+- **`sanitizeBookContent` 是死代码** — MIME 门写的是 `/text\/(x?html)/i`,
+  而 foliate 的真实 MIME 是 `application/xhtml+xml`(`epub.js:19`)。
+  EPUB 侧的内容净化层从来没生效过。文件里的注释还声称「补丁丢失会退化成
+  纵深防御」—— 事实正相反。
+- **`open()` 失败不销毁已解包的 EPUB** — `extractCover` / `readMetadata` 都有
+  `finally` 里的 destroy,最常用的 `open()` 反而没有,整个解包后的资源
+  以 blob URL 形式泄漏到进程结束。
+- **书籍详情弹窗里的三个路径全是错的** — 用 `bookId.slice(0, 8)` 拼文件名,
+  而实际写入用的是 SHA-1 前 10 位。`bookId` 就是 vault 路径,切片里可能含 `/`,
+  于是指向一个不存在的嵌套路径。同文件里的 `sanitizeWikiTitle` 与
+  `sanitizeFileBase` 逐字符相同,只有 id 那一半不同。
+- **MOBI / AZW3 的章节名恒为 undefined** — 回填 TOC 的「第二遍」是**只有注释、
+  没有代码**;唯一能跑的回填还被 `flatToc.length === 0` 挡着。
+- **加书成功却弹「失败」** — 30s 超时用的是单个入口标志,而流程里有**两个**
+  串行的 30s 阶段。29s + 6s 在 t=30s 触发外层计时器,第二阶段已经成功之后才抛。
+- **沉浸模式快捷键不可达** — `case "F"` 排在 `if (event.shiftKey) { … return null; }`
+  **之后**,任何带 Shift 的键都被先吞掉。既有的测试用 `shiftKey:false`
+  (Caps+F) 断言,于是旧代码对 Caps 碰巧能用、对 Shift 不能用。
+- **PDF 译文串台** — 两条翻译路径都在 await 之后无条件渲染,迟到的旧响应会
+  盖掉新的。照搬 `TranslationDrawer` 已有的 `translateGeneration` 模式。
+- **API key 明文外发** — `isValidHttpUrl` 只在 `validateKey()` 里跑,而它
+  **没有任何生产调用者**;baseUrl 又是每敲一个键就存一次且不做校验。
+  `Authorization: Bearer <key>` + 用户选中的原文可以发往任意主机,
+  包括 `127.0.0.1`。现在两个 provider 在 `translate()` 入口就拒绝非 https 的 baseUrl。
+- **阅读时长与阅读进度静默丢失** — `getState()` 的读取发生在 `mutate()` 的
+  writeChain **之外**,于是 `upsertReading` 的原子性是假的。实测 20 个并发
+  flush 串行化成 1000ms 而不是 20000ms。新增 `patchReading` /
+  `patchPinnedAt` 两个组合式端口方法,`ReadingService` 里 **0 处**
+  `upsertReading` 调用残留。
+- **写盘失败后内存与磁盘分叉** — `mutate()` 里 `this.cache = snapshot`
+  在 `await saveData` **之前**执行。失败后既不回读磁盘,下一次成功的写还会
+  把没落地的增量静默持久化,把这次失败彻底掩盖。
+- **中文书名封面互相覆盖** — `CoverCache` 的文件名把所有非 ASCII 字符
+  折叠成同一个 `_`,于是等长的中文标题共用一个封面文件,后写的直接
+  覆盖先写的(图片被销毁)。改用与写入侧一致的 SHA-1 tag。
+- **富元数据每次重启被清空** — `sanitizeRichMetadataMap` 把每条记录重建成
+  `{title, authors, languages: [], cachedAt}`,publisher / published /
+  identifier / description 全丢,`languages` 也被清零(书架的语言筛选因此
+  永远匹配不到)。新增 `core/utils/metadata.ts` 统一处理。
+- **导入数据无确认、无备份** — 「导入」直接整份覆盖当前数据。现在先确认、
+  再自动备份到 `ezreader/backups/data-<ts>.json`,然后才写入。
+- **切书时上一本书的进度写进下一本书** — `setEntry` 没清 progress 的
+  debounce timer,残留的 `{fraction, cfi}` 在 300ms 后触发,而那时
+  `this.entry` 已经是新书 —— 新书的续读位置被写成另一本书的 CFI。
+- **「最近添加」按文件修改时间排序** — 排序键用的是 `sourceModifiedAt`。
+- **空 vault 里每次加减书都重复注册 4 个监听器** — `initialize()` 的守卫
+  是 `entries.size > 0`,而空 vault 时它永远是 0。
+- **置顶按钮双击没反应** — 翻转决策在 writeChain 之外读 `entry.book.pinnedAt`。
+- **`core/` 反向依赖 `adapters/`** — `dailyReadingTime.ts` 是纯函数却住在
+  adapters/,逼出两处动态 import,而它们的注释还声称是反过来的原因。
+
+### 第二轮修复(同日追加)
+
+**架构**
+- **重启后阅读器标签页是空白的** — `ReaderView` 从来没有 `getState`/`setState`,
+  Obsidian 恢复 workspace 时拿不到"这个 leaf 显示哪本书",`this.entry` 永远是
+  `undefined`,`openSession()` 第一行就 return。同一根因让
+  `findReaderLeafForBook` 永远查不到,"回到原文"每次都新开一个标签页。
+- **同一本书点几次开几个标签页** — `openReader` 无条件 `getLeaf("tab")`。
+  每个标签页持有独立的 foliate iframe / PDF worker,内存翻倍,且各自 debounce
+  写同一个 bookId,进度互相打架。现在先查已有 leaf,命中就复用。
+- **「打开阅读器方式」是装饰性设置** — 设置页有下拉框,`Plugin` 硬编码
+  `getLeaf("tab")`。现在真的读它(读失败一律 fallback `"tab"`,猜成 window 会
+  凭空弹出抢焦点的窗口,比没生效糟糕得多)。
+- **禁用插件后 PDF overlay 永久泄漏** — `onunload` 不卸载任何 overlay。
+  关闭时每个 PDF leaf 上仍跑着 60fps rAF 循环 + 2 个 MutationObserver +
+  6 个 document/window listener,它们闭包持有 view,rAF 循环让页面永远无法 GC。
+- **`PdfOverlay.mount()` 中途抛异常 → 资源全泄漏** — `this.mounted = true` 在
+  mount 最末尾,任何中途抛错都让 `unmount()` 的 `if (!this.mounted) return;`
+  直接早退,disposers / observers / rAF / 5 个 DOM 元素全部泄漏,
+  `ATTACHED` 里还留着半死不活的实例导致后续不再补挂。改用 `mountStarted` 守卫。
+- **PDF 笔记面板重渲染吞掉正在输入的想法** — 9 个刷新触发点,提交又靠 `blur`
+  (Chromium 在 DOM 移除时不保证 fire)。
+
+**交互**
+- **书架每敲一个搜索词就弹回顶部** — `renderRefresh` 无条件 `body.empty()`,
+  内容高度塌成 0 → `scrollTop` 按规范被 clamp 到 0。
+- **书籍详情把「读失败」说成「你没读过」** — `getRichEntry` 内部 `catch {}` 吞掉
+  IO 异常,返回跟"从没打开过"完全一样的空快照。用户的阅读记录可能真丢了,
+  UI 却说他没读过 —— 这是最恶劣的一类 bug。UI 层改为四态磁盘探测
+  (`ok`/`absent`/`error`/`unknown`),读取失败显示红色告警 + 重试按钮,
+  **绝不再出现「暂无 session 记录」**。
+- **IO 失败时显示「找不到这本书」** — `load()` 的 catch 跟"书真被删了"共用一个
+  `missing` 标记,用户会跑去 vault 翻文件,甚至以为自己误删了书。拆成独立通道。
+
+**TXT / MOBI**
+- **移动端划词浮窗根本不弹** — `selectionchange` 是规范里定义在 **Document** 上的
+  事件,浏览器不在 Element 上 dispatch 它、也不冒泡。代码挂在 `stageEl` 上,
+  是 100% 死代码;桌面端只是碰巧被 mouseup 兜底掩盖了。
+- **老 WebView 上 TXT 整页豆腐块** — 不注册 `gb18030` label 的环境里
+  `new TextDecoder("gb18030")` 抛 `RangeError` 直接逃出去;构造成功但编码表坏的
+  会"成功"返回整页 U+FFFD;忽略 `{fatal:true}` 的老 WebView 让"严格 UTF-8"
+  静默返回 mojibake,GB18030 回退根本没机会跑。现在每次构造都保护 + 结果过
+  U+FFFD 探测 + 手写 Latin-1 兜底,`decodeText` 永不抛。
+- **TXT 章节名恒等于书名** — `detectChapterTitle` 按行找标题行,输入却是分页后
+  **只有一行**的 `page.html`,`^第X章` 是结构性 0 命中。改为分页时带上原始段落行、
+  渲染前检测。顺带把 TXT 目录从"只有一条 txt-root"变成**真章节目录**
+  (下标对齐的 `chapterStartPages`),分页输出与页边界逐字不变。
+
+**平台 / 设置**
+- **老设备上选 Google / Youdao 翻译必崩** — `crypto.subtle` 的 polyfill 只有
+  SHA-1 的 `digest`,`sign`/`verify`/`importKey`/`exportKey` 整个不存在。
+  补齐之后**不支持的算法一律 throw**:签名场景下静默返回错结果比抛错危险得多。
+- **同一个词重复烧 API 配额** — 可从选词菜单 / 抽屉 / PDF overlay 三处并发触发,
+  响应乱序互相覆盖。加 in-flight promise 共享(不是缓存)。另加 5000 字符上限,
+  **超限拒绝而非截断** —— 截断会让用户拿到一个看起来正常的错译。
+- **关设置弹窗丢改动** — 类里根本没有 `hide()` 覆写,基类空实现什么都不做,
+  300ms debounce 的定时器随 UI 一起没了。
+- **9 处设置项保存失败用户完全无感** — `onChange` 是 async 且既不 await 也不
+  catch,`no-console` 又被锁死。统一包一层,失败弹中文提示(尤其 baseUrl 非 https
+  那条 —— 它现在真的会抛)。
+- **导出失败静默** — `exportData` 无 try/catch,调用方 `void` 掉,失败是
+  unhandled rejection,blob URL 也永远不释放。
+- **`scan()` 扫进 `.obsidian/` 和 `.trash/`** — 回收站里删掉的书重新出现在书架,
+  我们自己的封面缓存被当成书,大 vault 上扫描慢一个数量级。
+
+### 已知影响面
+
+- 富元数据里此前已被清空的 publisher / published / identifier / description
+  **无法恢复** —— 它们已经不在用户的 `data.json` 里了。下次打开该书重新解析
+  时会重新填上。title / authors / languages 幸存。
+- 封面文件名的哈希规则变了,旧封面按孤儿处理,下次抽封面时重新生成(一次性开销,
+  不影响书籍数据)。
+- 已打开着的书在重命名后仍持有旧 `bookId`,之后的一次 session flush 会在旧 id
+  下留下零星记录。这是已知限制,记在代码注释里。
+
+### 工程 (Engineering)
+
+- **测试代码第一次进入类型检查** — 之前 `tsconfig.json` 只有
+  `"include": ["src/**/*.ts"]`,而 `pnpm test` 用 esbuild 跑、从不类型检查。
+  新增 `tsconfig.test.json` + `pnpm typecheck:tests`,清掉 **150 个**既有类型错误。
+  代价是实实在在的:端口从写测试桩之后**又长了 9 个方法**,10 个文件里的
+  `implements AnnotationStore` 一直是个**假声明**,还有 4 处**签名写错**和
+  4 处拿 `ReadonlyArray<never>` 冒充返回值(`never` 对任何类型都 assignable,
+  连"返回类型对不上"都报不出来,只是静悄悄地永远返回空数组)。
+  修复过程中 `as any` / `as unknown as` **净减少 9 条,新增 0 条**。
+- **`codeOnly` 注释剥离 helper 有 bug** — 各测试文件里复制的那份正则实现顺序反了:
+  行注释里出现块注释起始符的行会被当成块注释开头,一路吞到下一个闭合符,
+  中间**所有真实代码一起消失**(实测把 `Plugin.ts` 从 32498 字符砍到 19250,
+  `onunload` / `registerView` 两个方法整段消失 —— **而测试照样全绿**)。
+  改为共享的单趟扫描器 `tests/core/codeOnly.ts`。
+- 8 个变异验证脚本(`scripts/mutate-*-batch.py`)、**63 个变异点**,每个都必须由
+  **测试断言**捕获 —— 编译不过算 INCONCLUSIVE,不算通过。
+
 ## [0.3.2] - 2026-10-12
 
 > 这一版不新增功能,全部是修复。起因是一次全量 code review —— 结论是

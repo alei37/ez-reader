@@ -3958,3 +3958,61 @@
   font-size: 13px;
   padding: 32px 0;
 }
+
+/* --- v0.3.3 读取失败告警 ---
+ *
+ * 存在的理由: v0.3.3 之前, vault IO 失败 (权限 / 磁盘 / Syncthing 冲突) 被
+ * `getRichEntry` 内部的 `catch {}` 吞掉, UI 拿到一个跟"从没打开过这本书"
+ * 完全一样的空快照 → 显示"暂无 session 记录"。用户的阅读时长数据可能真的
+ * 丢了, 而 UI 说的是"你没读过"。这是最恶劣的一类 bug —— 掩盖数据丢失。
+ *
+ * 现在分成两类: 顶部横幅 (整体加载失败, 带重试按钮) 和行内红字 (只有
+ * sessions 读失败)。红色刻意用 Obsidian 的 --text-error 而不是主题色 ——
+ * 这是"你的数据可能有问题", 不是"你刚做了什么", 得看起来像警告而不像
+ * 选中态。 */
+.ez-reader__book-info-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--text-error);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--background-modifier-error-hover, rgba(255, 0, 0, 0.06));
+  color: var(--text-error);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ez-reader__book-info-alert__title {
+  font-weight: 600;
+}
+
+.ez-reader__book-info-alert__detail {
+  /* 底层 IO 错误原文 (权限拒绝 / 路径不存在 …)。不换行截断 ——
+   * 用户排查时要的就是完整信息, 横向滚动比看不到强。 */
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+
+.ez-reader__book-info-alert__hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ez-reader__book-info-sessions__error {
+  color: var(--text-error);
+  font-size: 12px;
+  padding: 8px 0;
+  text-align: center;
+}
+
+/* 读取失败时, 柱状图 placeholder 不能画成"从未阅读" ——
+ * 那正是这个 bug 最恶劣的形态: 明明数据在磁盘上, UI 说你没读过。
+ * placeholder 文案已由 JS 换成失败提示, 这里只把它染红。 */
+.ez-reader__book-info-bar-chart__placeholder.is-error {
+  color: var(--text-error);
+}

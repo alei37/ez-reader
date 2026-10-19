@@ -1,6 +1,6 @@
 {
   "name": "ez-reader",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Obsidian plugin for reading local ebooks in the active Vault, with progress, bookmarks, excerpts, research notes, and optional online translation.",
   "main": "main.js",
   "author": {
@@ -22,7 +22,8 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node scripts/check-version.mjs && tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
-    "test": "node esbuild.tests.config.mjs && node --test tests/dist/core/*.test.mjs"
+    "test": "node esbuild.tests.config.mjs && node --test tests/dist/core/*.test.mjs",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json"
   },
   "keywords": [
     "obsidian",

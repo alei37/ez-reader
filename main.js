@@ -12604,9 +12604,10 @@ var init_highlight = __esm({
 var pdfOverlay_exports = {};
 __export(pdfOverlay_exports, {
   PdfOverlay: () => PdfOverlay,
-  findPdfOverlayForLeaf: () => findPdfOverlayForLeaf
+  findPdfOverlayForLeaf: () => findPdfOverlayForLeaf,
+  unmountAllPdfOverlays: () => unmountAllPdfOverlays
 });
-var import_obsidian19, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, findPdfOverlayForLeaf, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, renderNotesPanelContent, attachInlineNoteEditor, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable, NOTES_BTN_POS_KEY, NOTES_BTN_SIZE, readNotesBtnPos, writeNotesBtnPos;
+var import_obsidian19, PDF_VIEW_TYPE, generateExcerptId2, ATTACHED, ALL_ATTACHED, findPdfOverlayForLeaf, unmountAllPdfOverlays, debounce2, findActivePageNumber, isSelectionInContainer, findPageElement2, PdfOverlay, cssEscapeAttr, promptForThought, createSelectionMenu, showMenuAt, createNotesButton, createNotesPanel, createHighlightLayer, createSearchBar, updatePdfSearchStatus, collectTextLayerSpans2, PDF_NOTE_CLS, SHOW_TEXT2, caretOffsetIn, setCaretIn, captureNoteDrafts, restoreNoteDraft, renderNotesPanelContent, attachInlineNoteEditor, drawHighlight, findPdfTotalPages, createTranslationPopover, makeDraggable, NOTES_BTN_POS_KEY, NOTES_BTN_SIZE, readNotesBtnPos, writeNotesBtnPos;
 var init_pdfOverlay = __esm({
   "src/ui/reader/pdfOverlay.ts"() {
     "use strict";
@@ -12622,8 +12623,21 @@ var init_pdfOverlay = __esm({
       return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
     };
     ATTACHED = /* @__PURE__ */ new WeakMap();
+    ALL_ATTACHED = /* @__PURE__ */ new Set();
     findPdfOverlayForLeaf = (leaf) => {
       return ATTACHED.get(leaf);
+    };
+    unmountAllPdfOverlays = () => {
+      let count = 0;
+      for (const overlay of [...ALL_ATTACHED]) {
+        try {
+          overlay.unmount();
+          count += 1;
+        } catch (error) {
+          console.warn("[ez-reader] unmountAllPdfOverlays: one overlay failed to unmount", error);
+        }
+      }
+      return count;
     };
     debounce2 = (fn, ms) => {
       let timer;
@@ -12686,6 +12700,25 @@ var init_pdfOverlay = __esm({
       bookTitle = "";
       targetLocale = "zh-CN";
       mounted = false;
+      /**
+       * P0: 「mount() 是否已经开始挂资源」—— 跟 `mounted` 分开是刻意的。
+       *
+       * `mounted` 只在 `mount()` 顺利跑到最后一行才置 true, 而 mount() 中途要
+       * 注册十几个 listener、两个 MutationObserver、一条 rAF 循环。任何中途抛出的
+       * 异常 (PDF++ 之类插件改了 PDFView 的 DOM 结构, `container.querySelector(...)`
+       * 拿到 null) 都会让 `mounted` 永远停在 false —— 于是 `unmount()` 第一行
+       * `if (!this.mounted) return;` 直接早退, disposers 里已经注册的 listener、
+       * observer、rAF、六个挂在 document.body 上的元素**全部泄漏**, 而且
+       * `ATTACHED` 里还留着一个半死不活的 overlay, 之后
+       * `attachOverlayToPdfLeafIfLibraryBook` 的 `findPdfOverlayForLeaf(leaf)`
+       * 幂等检查会误判"已经挂过了"从而永远不再补挂。
+       *
+       * 所以拆成两个标志:
+       * - `mountStarted`: 进 mount() 第一行就置 true, 是**清理**的依据。
+       * - `mounted`: mount() 跑完才置 true, 只表示"完全挂载成功", 给
+       *   `onLayoutChange` 那种"活着才干活"的监听用。
+       */
+      mountStarted = false;
       /**
        * P0 修复: 翻译结果 stale 守卫。每次 runTranslation 自增, await 之后只有
        * generation 仍然匹配才写 UI。旧请求不取消网络, 只是不让它覆盖新译文。
@@ -12772,14 +12805,38 @@ var init_pdfOverlay = __esm({
         }
         this.targetLocale = await this.opts.reading.getTranslationLocale();
       }
-      /** Attach to the PDFView leaf. Idempotent — 同 leaf 重复调用会先卸载旧的. */
+      /**
+       * Attach to the PDFView leaf. Idempotent — 同 leaf 重复调用会先卸载旧的.
+       *
+       * P0: 整体包 try/catch。任何中途抛出的异常都必须把**已经注册的部分资源**
+       * 拆干净再抛出去 —— 之前 `this.mounted = true` 在最后一行, 中途抛异常时
+       * `unmount()` 会被 `!this.mounted` 挡住, 于是 listener / MutationObserver /
+       * rAF / 六个 body 级 DOM 元素全部泄漏, `ATTACHED` 里还留一个死 overlay。
+       * 真实触发场景: PDF++ 之类插件接管 PDFView 后改了 DOM 结构, mount 中途
+       * 某一处解引用拿到 null 就抛。
+       *
+       * 为什么**重抛**而不是吞掉: 调用方 (`Plugin.attachOverlayToPdfLeafIfLibraryBook`)
+       * 已经有 try/catch + 日志, 静默吞会让"这个 PDF 挂不上 overlay"变成一条
+       * 没有线索的静默失败; 而 Plugin 不在本次改动范围内, 不能反过来改它。
+       */
       mount() {
-        if (this.mounted) return;
+        if (this.mountStarted) return;
+        this.mountStarted = true;
+        try {
+          this.attachResources();
+        } catch (error) {
+          this.unmount();
+          throw error;
+        }
+      }
+      /** 真正的挂载逻辑 —— 只由 `mount()` 调用, 不要从别处直接调。 */
+      attachResources() {
         const existing = ATTACHED.get(this.opts.pdfLeaf);
         if (existing && existing !== this) {
           existing.unmount();
         }
         ATTACHED.set(this.opts.pdfLeaf, this);
+        ALL_ATTACHED.add(this);
         const onSelectionChange = () => {
           if (!this.isLeafAlive()) {
             this.unmount();
@@ -13230,11 +13287,27 @@ var init_pdfOverlay = __esm({
           console.warn("[ez-reader] jumpToExcerpt: page element not in DOM for page", pos.page);
         }
       }
+      /**
+       * 拆卸 overlay。幂等 —— 重复调不抛、不重复 flush。
+       *
+       * P0: 早退条件从 `this.mounted` 改成 `this.mountStarted`。
+       * `mounted` 只在 mount 顺利跑完时才为 true, 于是"mount 中途抛异常"这条
+       * 最需要清理的路径反被自己的守卫挡住 (详见 `mountStarted` 的注释)。
+       * 换成 `mountStarted` 之后两个方向都成立:
+       *   - 从没 mount 过 → 没挂过任何资源, no-op (不去拆构造器建的 DOM,
+       *     那是别的实例也可能共用的 document.body 直属子节点);
+       *   - mount 中途失败 → 已经注册了一部分, 必须拆干净。
+       *
+       * `flushPdfActiveSession()` 自身幂等 (第一行就 `activeSinceMs === null`
+       * 早退), 所以重复调 unmount 不会把同一段阅读时长记两次。
+       */
       unmount() {
-        if (!this.mounted) return;
+        if (!this.mountStarted) return;
+        this.mountStarted = false;
         this.mounted = false;
         this.translateGeneration += 1;
         this.flushPdfActiveSession();
+        this.clearPdfInactivityCheck();
         for (const d2 of this.disposers) {
           try {
             d2();
@@ -13255,6 +13328,7 @@ var init_pdfOverlay = __esm({
         if (ATTACHED.get(this.opts.pdfLeaf) === this) {
           ATTACHED.delete(this.opts.pdfLeaf);
         }
+        ALL_ATTACHED.delete(this);
       }
       hideMenu() {
         this.menuEl.setCssProps({ display: "none" });
@@ -13262,7 +13336,43 @@ var init_pdfOverlay = __esm({
       toggleNotesPanel() {
         const isOpen = this.notesPanel.classList.toggle("is-open");
         this.notesBtn.classList.toggle("is-active", isOpen);
-        if (isOpen) void this.refreshNotesPanel();
+        if (isOpen) this.requestNotesPanelRefresh();
+      }
+      /**
+       * `refreshNotesPanel()` 的 fire-and-forget 入口。
+       *
+       * P0: 之前调用处直接写 `void this.refreshNotesPanel()` —— 面板有 9 个刷新
+       * 触发点 (点开面板 / 点黄条 / 加摘录 / 加想法 / 删书签 / 删摘录 …), 多数是
+       * `void` 丢弃 promise。`void` 不处理 rejection: 读盘失败或渲染中途抛异常
+       * 都会变成 unhandled rejection, 同时面板停在半渲染状态, 用户看到的是一个
+       * 永远空着的侧栏, 没有任何线索。
+       *
+       * 为什么统一收口而不是每个调用点各写 `.catch()`: 触发点还会继续增加, 分散
+       * 的 `.catch` 迟早漏一个, 而漏掉的那个在测试里根本看不见。收口之后"刷新
+       * 面板"只有一条失败语义 —— 给用户一个 Notice, 不产生 unhandled rejection。
+       */
+      requestNotesPanelRefresh() {
+        void this.refreshNotesPanel().catch(() => {
+          new import_obsidian19.Notice("\u7B14\u8BB0\u9762\u677F\u5237\u65B0\u5931\u8D25");
+        });
+      }
+      /**
+       * 把笔记面板里那些"点了就算"的异步回调包一层。
+       *
+       * 渲染函数里全是 `void handlers.onRemoveExcerpt(id)` 这种写法, 而
+       * `removeExcerpt` / `updateExcerptNote` 都要写盘 —— data.json 被占、vault
+       * 只读、同步盘写失败, 任何一个都会让这次点击静默变成 unhandled rejection。
+       * 包一层之后失败有 Notice, 面板还能继续用。
+       *
+       * 用 Notice 而不是 console.warn: `no-console` 是本项目被锁死的 lint rule
+       * (AGENTS.md §3.7), 而且"用户点了删除但什么都没发生"本来就该让用户知道。
+       */
+      async withPanelNotice(work, message) {
+        try {
+          await work();
+        } catch {
+          new import_obsidian19.Notice(message);
+        }
       }
       async refreshNotesPanel() {
         if (!this.bookId) return;
@@ -13273,12 +13383,12 @@ var init_pdfOverlay = __esm({
           ]);
           renderNotesPanelContent(this.notesPanel, bookmarks, excerpts, {
             onJump: (locator) => this.jumpToLocator(locator),
-            onRemoveBookmark: async (id) => {
+            onRemoveBookmark: (id) => this.withPanelNotice(async () => {
               await this.opts.reading.removeBookmark(this.bookId, id);
               await this.refreshNotesPanel();
               new import_obsidian19.Notice("\u4E66\u7B7E\u5DF2\u5220\u9664");
-            },
-            onRemoveExcerpt: async (id) => {
+            }, "\u5220\u9664\u4E66\u7B7E\u5931\u8D25"),
+            onRemoveExcerpt: (id) => this.withPanelNotice(async () => {
               await this.opts.reading.removeExcerpt(this.bookId, id);
               const rendered = this.highlightsByExcerpt.get(id);
               if (rendered) {
@@ -13288,16 +13398,19 @@ var init_pdfOverlay = __esm({
               }
               await this.refreshNotesPanel();
               new import_obsidian19.Notice("\u6458\u5F55\u5DF2\u5220\u9664");
-            },
+            }, "\u5220\u9664\u6458\u5F55\u5931\u8D25"),
             // P2: 让面板里的 note 字段可内联编辑 — 用户点黄线 → 跳到这条摘录 →
             // 自动进编辑模式; blur 保存走 reading.updateExcerptNote (不动 highlight /
-            // createdAt / locator, 只 patch note).
-            onUpdateNote: async (id, note) => {
+            // createdAt / locator, 只 patch note)。
+            //
+            // 这里也必须包 withPanelNotice: attachInlineNoteEditor 的 blur 回调是
+            // `void onUpdate(...)`, 写盘失败照样是 unhandled rejection。
+            onUpdateNote: (id, note) => this.withPanelNotice(async () => {
               await this.opts.reading.updateExcerptNote(this.bookId, id, { note });
-            }
+            }, "\u4FDD\u5B58\u60F3\u6CD5\u5931\u8D25")
           });
-        } catch (error) {
-          console.warn("[ez-reader] failed to refresh notes panel", error);
+        } catch {
+          new import_obsidian19.Notice("\u7B14\u8BB0\u9762\u677F\u5237\u65B0\u5931\u8D25");
         }
       }
       jumpToLocator(locator) {
@@ -13907,7 +14020,72 @@ var init_pdfOverlay = __esm({
         (el) => el instanceof HTMLElement
       );
     };
+    PDF_NOTE_CLS = "ez-reader__pdf-overlay-notes-panel__note";
+    SHOW_TEXT2 = 4;
+    caretOffsetIn = (el) => {
+      const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
+      if (!sel || sel.rangeCount === 0) return 0;
+      const range = sel.getRangeAt(0);
+      if (!el.contains(range.startContainer)) return 0;
+      const probe = range.cloneRange();
+      probe.selectNodeContents(el);
+      probe.setEnd(range.startContainer, range.startOffset);
+      return probe.toString().length;
+    };
+    setCaretIn = (el, offset) => {
+      const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
+      if (!sel) return;
+      let remaining = Math.max(0, Math.trunc(offset));
+      let target = null;
+      const walker = document.createTreeWalker(el, SHOW_TEXT2);
+      let node = walker.nextNode();
+      while (node) {
+        const length = node.textContent?.length ?? 0;
+        if (remaining <= length) {
+          target = node;
+          break;
+        }
+        remaining -= length;
+        node = walker.nextNode();
+      }
+      const range = document.createRange();
+      if (target) {
+        range.setStart(target, Math.min(remaining, target.textContent?.length ?? 0));
+      } else {
+        range.selectNodeContents(el);
+        range.collapse(false);
+        return;
+      }
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+    captureNoteDrafts = (panel) => {
+      const drafts = /* @__PURE__ */ new Map();
+      for (const row of Array.from(panel.querySelectorAll("[data-excerpt-id]"))) {
+        const id = row.getAttribute("data-excerpt-id");
+        if (!id) continue;
+        const noteEl = row.querySelector(`.${PDF_NOTE_CLS}`);
+        if (!noteEl || noteEl.getAttribute("data-editing") !== "1") continue;
+        drafts.set(id, {
+          text: noteEl.textContent ?? "",
+          caretOffset: caretOffsetIn(noteEl)
+        });
+      }
+      return drafts;
+    };
+    restoreNoteDraft = (noteEl, draft) => {
+      noteEl.contentEditable = "true";
+      noteEl.setAttribute("data-editing", "1");
+      noteEl.addClass("is-editing");
+      noteEl.toggleClass("has-content", draft.text.length > 0);
+      noteEl.toggleClass("is-placeholder", draft.text.length === 0);
+      noteEl.setText(draft.text);
+      noteEl.focus();
+      setCaretIn(noteEl, draft.caretOffset);
+    };
     renderNotesPanelContent = (panel, bookmarks, excerpts, handlers) => {
+      const drafts = captureNoteDrafts(panel);
       panel.empty();
       panel.createEl("div", { cls: "ez-reader__pdf-overlay-notes-panel__heading", text: "\u7B14\u8BB0" });
       if (bookmarks.length === 0 && excerpts.length === 0) {
@@ -13932,13 +14110,18 @@ var init_pdfOverlay = __esm({
           const row = panel.createEl("div", { cls: "ez-reader__pdf-overlay-notes-panel__row" });
           row.setAttribute("data-excerpt-id", ex.id);
           row.createEl("div", { text: ex.text, cls: "excerpt" });
+          const draft = drafts.get(ex.id);
           const noteEl = row.createEl("div", {
-            cls: "ez-reader__pdf-overlay-notes-panel__note",
-            text: ex.note || ""
+            cls: PDF_NOTE_CLS,
+            text: draft ? draft.text : ex.note || ""
           });
-          noteEl.setAttribute("data-editing", "0");
-          if (ex.note) noteEl.addClass("has-content");
-          else noteEl.addClass("is-placeholder");
+          if (draft) {
+            restoreNoteDraft(noteEl, draft);
+          } else {
+            noteEl.setAttribute("data-editing", "0");
+            if (ex.note) noteEl.addClass("has-content");
+            else noteEl.addClass("is-placeholder");
+          }
           if (handlers.onUpdateNote) {
             attachInlineNoteEditor(noteEl, ex, handlers.onUpdateNote);
           }
@@ -14166,16 +14349,47 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 
 // src/platform/Sha1.ts
+var utf8Bytes = (text) => {
+  const out = new Uint8Array(text.length * 3 + 4);
+  let n3 = 0;
+  for (let i3 = 0; i3 < text.length; i3++) {
+    let code = text.charCodeAt(i3);
+    if (code >= 55296 && code <= 56319 && i3 + 1 < text.length) {
+      const next = text.charCodeAt(i3 + 1);
+      if (next >= 56320 && next <= 57343) {
+        code = (code - 55296) * 1024 + (next - 56320) + 65536;
+        i3 += 1;
+      } else {
+        code = 65533;
+      }
+    } else if (code >= 55296 && code <= 57343) {
+      code = 65533;
+    }
+    if (code < 128) {
+      out[n3++] = code;
+    } else if (code < 2048) {
+      out[n3++] = 192 | code >> 6;
+      out[n3++] = 128 | code & 63;
+    } else if (code < 65536) {
+      out[n3++] = 224 | code >> 12;
+      out[n3++] = 128 | code >> 6 & 63;
+      out[n3++] = 128 | code & 63;
+    } else {
+      out[n3++] = 240 | code >> 18;
+      out[n3++] = 128 | code >> 12 & 63;
+      out[n3++] = 128 | code >> 6 & 63;
+      out[n3++] = 128 | code & 63;
+    }
+  }
+  return out.slice(0, n3);
+};
 var bytesFromBufferSource = (input) => {
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) {
     const view = input;
     return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
   }
-  const text = String(input);
-  const out = new Uint8Array(text.length);
-  for (let i3 = 0; i3 < text.length; i3++) out[i3] = text.charCodeAt(i3) & 255;
-  return out;
+  return utf8Bytes(String(input));
 };
 var sha1Bytes = (bytes) => {
   const len = bytes.length;
@@ -14320,26 +14534,467 @@ if (typeof ReadableStream !== "undefined" && typeof ReadableStream.prototype[Sym
     return iterator;
   };
 }
-if (typeof window.structuredClone !== "function") {
+var hostWindow = () => typeof window === "undefined" ? null : window;
+var host = hostWindow();
+if (host && typeof host.structuredClone !== "function") {
   const jsonClone = (value) => JSON.parse(JSON.stringify(value));
-  Object.defineProperty(window, "structuredClone", {
+  Object.defineProperty(host, "structuredClone", {
     value: jsonClone,
     writable: true,
     configurable: true
   });
 }
-var installSha1DigestFallback = () => {
-  const cryptoObj = window.crypto;
-  if (cryptoObj && typeof cryptoObj.subtle?.digest === "function") return;
+var SHA256_K = new Uint32Array([
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+]);
+var rotr = (x3, n3) => x3 >>> n3 | x3 << 32 - n3;
+var sha256Bytes = (bytes) => {
+  const len = bytes.length;
+  const bitLen = len * 8;
+  const padded = len + 9 + 63 & ~63;
+  const buf = new Uint8Array(padded);
+  buf.set(bytes);
+  buf[len] = 128;
+  const view = new DataView(buf.buffer);
+  view.setUint32(padded - 8, Math.floor(bitLen / 4294967296), false);
+  view.setUint32(padded - 4, bitLen >>> 0, false);
+  let h0 = 1779033703, h1 = 3144134277, h22 = 1013904242, h3 = 2773480762;
+  let h4 = 1359893119, h5 = 2600822924, h6 = 528734635, h7 = 1541459225;
+  const w2 = new Uint32Array(64);
+  for (let i3 = 0; i3 < padded; i3 += 64) {
+    for (let j2 = 0; j2 < 16; j2++) w2[j2] = view.getUint32(i3 + j2 * 4, false);
+    for (let j2 = 16; j2 < 64; j2++) {
+      const s0 = rotr(w2[j2 - 15], 7) ^ rotr(w2[j2 - 15], 18) ^ w2[j2 - 15] >>> 3;
+      const s1 = rotr(w2[j2 - 2], 17) ^ rotr(w2[j2 - 2], 19) ^ w2[j2 - 2] >>> 10;
+      w2[j2] = w2[j2 - 16] + s0 + w2[j2 - 7] + s1 | 0;
+    }
+    let a3 = h0, b3 = h1, c2 = h22, d2 = h3, e3 = h4, f3 = h5, g3 = h6, h8 = h7;
+    for (let j2 = 0; j2 < 64; j2++) {
+      const S1 = rotr(e3, 6) ^ rotr(e3, 11) ^ rotr(e3, 25);
+      const ch = e3 & f3 ^ ~e3 & g3;
+      const temp1 = h8 + S1 + ch + SHA256_K[j2] + w2[j2] | 0;
+      const S0 = rotr(a3, 2) ^ rotr(a3, 13) ^ rotr(a3, 22);
+      const maj = a3 & b3 ^ a3 & c2 ^ b3 & c2;
+      const temp2 = S0 + maj | 0;
+      h8 = g3;
+      g3 = f3;
+      f3 = e3;
+      e3 = d2 + temp1 | 0;
+      d2 = c2;
+      c2 = b3;
+      b3 = a3;
+      a3 = temp1 + temp2 | 0;
+    }
+    h0 = h0 + a3 | 0;
+    h1 = h1 + b3 | 0;
+    h22 = h22 + c2 | 0;
+    h3 = h3 + d2 | 0;
+    h4 = h4 + e3 | 0;
+    h5 = h5 + f3 | 0;
+    h6 = h6 + g3 | 0;
+    h7 = h7 + h8 | 0;
+  }
+  const out = new ArrayBuffer(32);
+  const outView = new DataView(out);
+  outView.setUint32(0, h0, false);
+  outView.setUint32(4, h1, false);
+  outView.setUint32(8, h22, false);
+  outView.setUint32(12, h3, false);
+  outView.setUint32(16, h4, false);
+  outView.setUint32(20, h5, false);
+  outView.setUint32(24, h6, false);
+  outView.setUint32(28, h7, false);
+  return out;
+};
+var normalizeHashName = (name) => String(name).toUpperCase().replace(/[^A-Z0-9]/g, "");
+var readDerTlv = (bytes, offset) => {
+  const tag = bytes[offset];
+  let i3 = offset + 1;
+  let length = bytes[i3];
+  i3 += 1;
+  if (length > 128) {
+    const count = length - 128;
+    length = 0;
+    for (let k3 = 0; k3 < count; k3++) {
+      length = length << 8 | bytes[i3 + k3];
+    }
+    i3 += count;
+  }
+  return [tag, i3, i3 + length, i3 + length];
+};
+var derIntegerToBigInt = (bytes) => {
+  let hex = "";
+  for (const b3 of bytes) hex += b3.toString(16).padStart(2, "0");
+  return hex.length === 0 ? 0n : BigInt(`0x${hex}`);
+};
+var bigIntToBytes = (value, length) => {
+  const out = new Uint8Array(length);
+  let v3 = value;
+  for (let i3 = length - 1; i3 >= 0; i3--) {
+    out[i3] = Number(v3 & 0xffn);
+    v3 >>= 8n;
+  }
+  return out;
+};
+var bytesToBigInt = (bytes) => {
+  let hex = "";
+  for (const b3 of bytes) hex += b3.toString(16).padStart(2, "0");
+  return hex.length === 0 ? 0n : BigInt(`0x${hex}`);
+};
+var parseRsaKey = (bytes, wantPrivate) => {
+  if (typeof BigInt !== "function") {
+    throw new Error(
+      "\u672C\u8BBE\u5907\u7684 JavaScript \u4E0D\u652F\u6301 BigInt, \u65E0\u6CD5\u515C\u5E95\u5B9E\u73B0 RSA \u7B7E\u540D\u3002\u8BF7\u5728\u684C\u9762\u7AEF\u4F7F\u7528 Google \u7FFB\u8BD1, \u6216\u6362\u7528\u4E0D\u9700\u8981\u7B7E\u540D\u7684\u7FFB\u8BD1\u670D\u52A1(\u6709\u9053 / DeepL)\u3002"
+    );
+  }
+  let [, seqStart, seqEnd] = readDerTlv(bytes, 0);
+  if (seqEnd > bytes.length) throw new Error("RSA \u5BC6\u94A5\u89E3\u6790\u5931\u8D25: DER \u7ED3\u6784\u88AB\u622A\u65AD");
+  let i3 = seqStart;
+  if (!wantPrivate) {
+    const [, , algNext2] = readDerTlv(bytes, i3);
+    i3 = algNext2;
+    const [, bitContent] = readDerTlv(bytes, i3);
+    const [, innerStart2] = readDerTlv(bytes, bitContent + 1);
+    const [, nStart, nEnd] = readDerTlv(bytes, innerStart2);
+    const [, eStart, eEnd] = readDerTlv(bytes, nEnd);
+    if (eEnd > seqEnd) {
+      throw new Error("RSA \u516C\u94A5\u89E3\u6790\u5931\u8D25: SPKI \u5185\u5C42\u7ED3\u6784\u8D8A\u754C");
+    }
+    return {
+      n: bytes.slice(nStart, nEnd),
+      e: bytes.slice(eStart, eEnd)
+    };
+  }
+  const [, , versionNext] = readDerTlv(bytes, i3);
+  i3 = versionNext;
+  const [, , algNext] = readDerTlv(bytes, i3);
+  i3 = algNext;
+  const [, octetStart, octetEnd] = readDerTlv(bytes, i3);
+  if (octetEnd > seqEnd) throw new Error("RSA \u79C1\u94A5\u89E3\u6790\u5931\u8D25: PKCS#8 \u5185\u5C42\u7ED3\u6784\u8D8A\u754C");
+  const [, innerStart] = readDerTlv(bytes, octetStart);
+  if (innerStart > octetEnd) throw new Error("RSA \u79C1\u94A5\u89E3\u6790\u5931\u8D25: PKCS#8 \u91CC\u6CA1\u6709 RSAPrivateKey SEQUENCE");
+  let j2 = innerStart;
+  const next = () => {
+    const [, , end] = readDerTlv(bytes, j2);
+    j2 = end;
+  };
+  next();
+  const readInt = () => {
+    const [, s3, e4] = readDerTlv(bytes, j2);
+    j2 = e4;
+    return bytes.slice(s3, e4);
+  };
+  const n3 = readInt();
+  const e3 = readInt();
+  const d2 = readInt();
+  const p3 = readInt();
+  const q2 = readInt();
+  const dp = readInt();
+  const dq = readInt();
+  const qinv = readInt();
+  return { n: n3, e: e3, d: d2, p: p3, q: q2, dp, dq, qinv };
+};
+var derIntegerContent = (value) => {
+  let start = 0;
+  while (start < value.length - 1 && value[start] === 0) start += 1;
+  const trimmed = value.slice(start);
+  if (trimmed[0] < 128) return trimmed;
+  const out = new Uint8Array(trimmed.length + 1);
+  out.set(trimmed, 1);
+  return out;
+};
+var derLength = (length) => {
+  if (length < 128) return new Uint8Array([length]);
+  const bytes = [];
+  let v3 = length;
+  while (v3 > 0) {
+    bytes.unshift(v3 & 255);
+    v3 >>= 8;
+  }
+  return new Uint8Array([128 | bytes.length, ...bytes]);
+};
+var derWrap = (tag, content) => {
+  const out = new Uint8Array(1 + derLength(content.length).length + content.length);
+  out[0] = tag;
+  out.set(derLength(content.length), 1);
+  out.set(content, 1 + derLength(content.length).length);
+  return out;
+};
+var derConcat = (parts) => {
+  const total = parts.reduce((sum, p3) => sum + p3.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+};
+var encodePkcs8 = (key) => {
+  const int = (bytes) => derWrap(2, derIntegerContent(bytes));
+  const rsaPrivateKey = derWrap(
+    48,
+    derConcat([
+      derWrap(2, new Uint8Array([0])),
+      // version
+      int(key.n),
+      int(key.e),
+      int(key.d),
+      int(key.p),
+      int(key.q),
+      int(key.dp),
+      int(key.dq),
+      int(key.qinv)
+    ])
+  );
+  const algId = derWrap(48, derConcat([
+    derWrap(6, new Uint8Array([42, 134, 72, 134, 247, 13, 1, 1, 1])),
+    // rsaEncryption
+    derWrap(5, new Uint8Array(0))
+    // NULL
+  ]));
+  const body = derConcat([
+    derWrap(2, new Uint8Array([0])),
+    // version 0
+    algId,
+    derWrap(4, rsaPrivateKey)
+  ]);
+  const out = derWrap(48, body);
+  return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+};
+var encodeSpki = (key) => {
+  const int = (bytes) => derWrap(2, derIntegerContent(bytes));
+  const rsaPublicKey = derWrap(48, derConcat([int(key.n), int(key.e)]));
+  const algId = derWrap(48, derConcat([
+    derWrap(6, new Uint8Array([42, 134, 72, 134, 247, 13, 1, 1, 1])),
+    derWrap(5, new Uint8Array(0))
+  ]));
+  const body = derConcat([algId, derWrap(3, derConcat([new Uint8Array([0]), rsaPublicKey]))]);
+  const out = derWrap(48, body);
+  return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+};
+var DIGEST_INFO_PREFIX = {
+  SHA1: new Uint8Array([48, 33, 48, 9, 6, 5, 43, 14, 3, 2, 26, 5, 0, 4, 20]),
+  SHA256: new Uint8Array([48, 49, 48, 13, 6, 9, 96, 134, 72, 1, 101, 3, 4, 2, 1, 5, 0, 4, 32])
+};
+var emsaPkcs1v15 = (message, hashName, modulusLength) => {
+  const prefix = DIGEST_INFO_PREFIX[hashName];
+  if (!prefix) throw new Error(`\u4E0D\u652F\u6301\u7684\u7B7E\u540D\u54C8\u5E0C\u7B97\u6CD5: ${hashName}\u3002\u5F53\u524D\u53EA\u5B9E\u73B0 SHA-1 / SHA-256\u3002`);
+  const hash = hashName === "SHA1" ? sha1Bytes(message) : sha256Bytes(message);
+  const tLen = prefix.length + hash.byteLength;
+  if (modulusLength < tLen + 11) {
+    throw new Error(`RSA \u5BC6\u94A5\u592A\u77ED: \u6A21\u957F ${modulusLength} \u5B57\u8282\u88C5\u4E0D\u4E0B\u7B7E\u540D(\u81F3\u5C11\u9700\u8981 ${tLen + 11})\u3002`);
+  }
+  const em = new Uint8Array(modulusLength);
+  em[0] = 0;
+  em[1] = 1;
+  for (let i3 = 2; i3 < modulusLength - tLen - 1; i3++) em[i3] = 255;
+  em[modulusLength - tLen - 1] = 0;
+  em.set(prefix, modulusLength - tLen);
+  em.set(new Uint8Array(hash), modulusLength - hash.byteLength);
+  return em;
+};
+var modPow = (base, exp, modulus) => {
+  if (modulus <= 0n) throw new Error("\u6A21\u6570\u975E\u6CD5");
+  let result = 1n;
+  let b3 = base % modulus;
+  let e3 = exp;
+  while (e3 > 0n) {
+    if (e3 & 1n) result = result * b3 % modulus;
+    e3 >>= 1n;
+    b3 = b3 * b3 % modulus;
+  }
+  return result;
+};
+var timingSafeEqual = (a3, b3) => {
+  if (a3.length !== b3.length) return false;
+  let diff = 0;
+  for (let i3 = 0; i3 < a3.length; i3++) diff |= a3[i3] ^ b3[i3];
+  return diff === 0;
+};
+var isFallbackKey = (key) => !!key && typeof key === "object" && "components" in key;
+var createFallbackSubtle = () => {
   const subtle = {
     async digest(algorithm, data) {
-      const name = String(algorithm).toLowerCase();
-      if (name !== "sha-1" && name !== "sha1") {
-        throw new Error(`crypto.subtle.digest fallback only supports SHA-1 (requested: ${algorithm})`);
+      const name = normalizeHashName(algorithm);
+      const bytes = bytesFromBufferSource(data);
+      if (name === "SHA1") return sha1Bytes(bytes);
+      if (name === "SHA256") return sha256Bytes(bytes);
+      throw new Error(
+        `crypto.subtle \u515C\u5E95\u53EA\u5B9E\u73B0\u4E86 SHA-1 / SHA-256 \u7684 digest(\u8BF7\u6C42\u7684\u662F: ${algorithm})\u3002\u8FD9\u662F\u8001 WebView \u517C\u5BB9\u5C42, \u8BF7\u6362\u7528\u4E0D\u9700\u8981\u8BE5\u7B97\u6CD5\u7684\u529F\u80FD, \u6216\u5728\u684C\u9762\u7AEF\u4F7F\u7528\u3002`
+      );
+    },
+    async importKey(format, keyData, algorithm, extractable, keyUsages) {
+      const name = String(algorithm?.name ?? "");
+      if (name !== "RSASSA-PKCS1-v1_5") {
+        throw new Error(`crypto.subtle.importKey \u515C\u5E95\u53EA\u5B9E\u73B0\u4E86 RSASSA-PKCS1-v1_5(\u8BF7\u6C42\u7684\u662F: ${name})\u3002`);
       }
-      return sha1Bytes(bytesFromBufferSource(data));
+      const hashRaw = algorithm?.hash;
+      const hashName = normalizeHashName(typeof hashRaw === "string" ? hashRaw : hashRaw?.name);
+      if (!DIGEST_INFO_PREFIX[hashName]) {
+        throw new Error(`RSASSA-PKCS1-v1_5 \u515C\u5E95\u53EA\u652F\u6301 SHA-1 / SHA-256 \u54C8\u5E0C(\u8BF7\u6C42\u7684\u662F: ${String(hashName)})\u3002`);
+      }
+      const bytes = bytesFromBufferSource(keyData);
+      const fmt = String(format).toLowerCase();
+      const wantPrivate = fmt === "pkcs8";
+      if (!wantPrivate && fmt !== "spki" && fmt !== "jwk") {
+        throw new Error(`\u4E0D\u652F\u6301\u7684\u5BC6\u94A5\u683C\u5F0F: ${format}(\u515C\u5E95\u5B9E\u73B0\u652F\u6301 pkcs8 / spki / jwk)\u3002`);
+      }
+      const components = parseRsaKey(bytes, wantPrivate);
+      for (const usage of keyUsages) {
+        if (wantPrivate && usage !== "sign") {
+          throw new Error(`\u79C1\u94A5\u515C\u5E95\u5B9E\u73B0\u53EA\u652F\u6301 sign, \u4E0D\u652F\u6301 ${usage}\u3002`);
+        }
+        if (!wantPrivate && usage !== "verify") {
+          throw new Error(`\u516C\u94A5\u515C\u5E95\u5B9E\u73B0\u53EA\u652F\u6301 verify, \u4E0D\u652F\u6301 ${usage}\u3002`);
+        }
+      }
+      return {
+        type: wantPrivate ? "private" : "public",
+        extractable,
+        algorithm: { name, hash: { name: hashName } },
+        usages: [...keyUsages],
+        components
+      };
+    },
+    async sign(algorithm, key, data) {
+      const name = String(algorithm?.name ?? "");
+      if (name !== "RSASSA-PKCS1-v1_5") {
+        throw new Error(`crypto.subtle.sign \u515C\u5E95\u53EA\u5B9E\u73B0\u4E86 RSASSA-PKCS1-v1_5(\u8BF7\u6C42\u7684\u662F: ${name})\u3002`);
+      }
+      if (!isFallbackKey(key) || key.type !== "private") {
+        throw new Error("crypto.subtle.sign \u9700\u8981\u79C1\u94A5 key\u3002");
+      }
+      const hashRaw = algorithm?.hash;
+      const hashName = normalizeHashName(typeof hashRaw === "string" ? hashRaw : hashRaw?.name ?? key.algorithm.hash.name);
+      const components = key.components;
+      if (!components.d || !components.n || !components.e) {
+        throw new Error("\u79C1\u94A5\u7F3A\u5C11\u7B7E\u540D\u6240\u9700\u7684 n / d \u5206\u91CF\u3002");
+      }
+      const n3 = derIntegerToBigInt(components.n);
+      const modulusLength = n3.toString(16).length + 1 >> 1;
+      const em = emsaPkcs1v15(bytesFromBufferSource(data), hashName, modulusLength);
+      const m3 = bytesToBigInt(em);
+      const signature = modPow(m3, derIntegerToBigInt(components.d), n3);
+      const out = bigIntToBytes(signature, modulusLength);
+      return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+    },
+    async verify(algorithm, key, signature, data) {
+      const name = String(algorithm?.name ?? "");
+      if (name !== "RSASSA-PKCS1-v1_5") {
+        throw new Error(`crypto.subtle.verify \u515C\u5E95\u53EA\u5B9E\u73B0\u4E86 RSASSA-PKCS1-v1_5(\u8BF7\u6C42\u7684\u662F: ${name})\u3002`);
+      }
+      if (!isFallbackKey(key)) {
+        throw new Error("crypto.subtle.verify \u9700\u8981\u516C\u94A5 key\u3002");
+      }
+      const hashRaw = algorithm?.hash;
+      const hashName = normalizeHashName(typeof hashRaw === "string" ? hashRaw : hashRaw?.name ?? key.algorithm.hash.name);
+      const components = key.components;
+      const n3 = derIntegerToBigInt(components.n);
+      const e3 = derIntegerToBigInt(components.e);
+      const modulusLength = n3.toString(16).length + 1 >> 1;
+      const s3 = bytesToBigInt(bytesFromBufferSource(signature));
+      if (s3 >= n3) return false;
+      const em = bigIntToBytes(modPow(s3, e3, n3), modulusLength);
+      let expected;
+      try {
+        expected = emsaPkcs1v15(bytesFromBufferSource(data), hashName, modulusLength);
+      } catch (error) {
+        throw error;
+      }
+      return timingSafeEqual(em, expected);
+    },
+    async exportKey(format, key) {
+      if (!isFallbackKey(key)) {
+        throw new Error("crypto.subtle.exportKey \u53EA\u652F\u6301\u515C\u5E95\u5B9E\u73B0\u81EA\u5DF1\u9020\u7684 key\u3002");
+      }
+      if (!key.extractable) {
+        throw new Error("\u8BE5 key \u5BFC\u5165\u65F6 extractable = false, \u4E0D\u80FD\u5BFC\u51FA\u3002");
+      }
+      const fmt = String(format).toLowerCase();
+      if (key.type === "private") {
+        if (fmt !== "pkcs8") {
+          throw new Error(`\u79C1\u94A5\u515C\u5E95\u5B9E\u73B0\u53EA\u652F\u6301\u5BFC\u51FA pkcs8(\u8BF7\u6C42\u7684\u662F: ${format})\u3002`);
+        }
+        return encodePkcs8(key.components);
+      }
+      if (fmt !== "spki") {
+        throw new Error(`\u516C\u94A5\u515C\u5E95\u5B9E\u73B0\u53EA\u652F\u6301\u5BFC\u51FA spki(\u8BF7\u6C42\u7684\u662F: ${format})\u3002`);
+      }
+      return encodeSpki(key.components);
     }
   };
+  return subtle;
+};
+var installSubtleFallback = () => {
+  const scope = hostWindow();
+  if (!scope) return;
+  const cryptoObj = scope.crypto;
+  if (cryptoObj && typeof cryptoObj.subtle?.digest === "function") return;
+  const subtle = createFallbackSubtle();
   if (cryptoObj) {
     try {
       Object.defineProperty(cryptoObj, "subtle", {
@@ -14352,7 +15007,7 @@ var installSha1DigestFallback = () => {
     }
   } else {
     try {
-      Object.defineProperty(window, "crypto", {
+      Object.defineProperty(scope, "crypto", {
         value: { subtle, getRandomValues: (a3) => a3 },
         configurable: true,
         writable: true
@@ -14362,15 +15017,17 @@ var installSha1DigestFallback = () => {
     }
   }
 };
-installSha1DigestFallback();
+installSubtleFallback();
 var collectPolyfillReport = () => {
+  const scope = hostWindow();
   const checks = [
-    ["Object.groupBy", window.Object?.groupBy],
-    ["Map.groupBy", window.Map?.groupBy],
+    ["Object.groupBy", scope?.Object?.groupBy],
+    ["Map.groupBy", scope?.Map?.groupBy],
     ["Promise.withResolvers", Promise.withResolvers],
     ["ReadableStream[Symbol.asyncIterator]", typeof ReadableStream !== "undefined" && typeof ReadableStream.prototype[Symbol.asyncIterator] === "function"],
-    ["structuredClone", typeof window.structuredClone === "function"],
-    ["crypto.subtle.digest", typeof window.crypto?.subtle?.digest === "function"],
+    ["structuredClone", typeof scope?.structuredClone === "function"],
+    ["crypto.subtle.digest", typeof scope?.crypto?.subtle?.digest === "function"],
+    ["crypto.subtle.sign", typeof scope?.crypto?.subtle?.sign === "function"],
     ["ResizeObserver", typeof ResizeObserver !== "undefined"],
     ["Intl.Segmenter", typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"],
     ["customElements", typeof customElements !== "undefined"]
@@ -16021,6 +16678,24 @@ var mimeTypeFor = (format) => {
 
 // src/adapters/obsidian/ObsidianBookSource.ts
 var METADATA_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
+var IGNORED_VAULT_DIRS = /* @__PURE__ */ new Set([
+  ".obsidian",
+  ".trash",
+  ".git",
+  ".stfolder",
+  ".stversions",
+  ".smart-env",
+  ".github",
+  "node_modules"
+]);
+var isIgnoredVaultPath = (path) => {
+  const segments = path.split("/");
+  for (let i3 = 0; i3 < segments.length - 1; i3++) {
+    if (IGNORED_VAULT_DIRS.has(segments[i3])) return true;
+  }
+  return false;
+};
+var isIgnoredVaultFolder = (folderPath) => folderPath !== "" && isIgnoredVaultPath(`${folderPath}/x`);
 var ObsidianBookSource = class {
   constructor(app) {
     this.app = app;
@@ -16039,6 +16714,7 @@ var ObsidianBookSource = class {
     let totalFromGetFiles = 0;
     for (const file of this.app.vault.getFiles()) {
       if (!(file instanceof import_obsidian3.TFile)) continue;
+      if (isIgnoredVaultPath(file.path)) continue;
       totalFromGetFiles += 1;
       if (seenPaths.has(file.path)) continue;
       const format = extensionToFormat(file.extension);
@@ -16061,6 +16737,7 @@ var ObsidianBookSource = class {
       }
       for (const filePath of entries.files) {
         if (seenPaths.has(filePath)) continue;
+        if (isIgnoredVaultPath(filePath)) continue;
         const abstract = this.app.vault.getAbstractFileByPath(filePath);
         if (!(abstract instanceof import_obsidian3.TFile)) continue;
         const format = extensionToFormat(abstract.extension);
@@ -16071,6 +16748,7 @@ var ObsidianBookSource = class {
       }
       for (const subFolder of entries.folders) {
         if (visited.has(subFolder)) continue;
+        if (isIgnoredVaultFolder(subFolder)) continue;
         visited.add(subFolder);
         adapterFolders.push(subFolder);
       }
@@ -16290,7 +16968,7 @@ var buildAppearanceCss = (appearance) => {
   `;
 };
 var FoliateBookReader = class {
-  async open(book, host, appearance, loader) {
+  async open(book, host2, appearance, loader) {
     const { makeBook: makeBook2 } = await importFoliateModule();
     const parsed = await loadEpubFile(book, loader, makeBook2);
     const transformTarget = parsed.transformTarget;
@@ -16305,8 +16983,8 @@ var FoliateBookReader = class {
     };
     const view = document.createElement("foliate-view");
     view.setAttribute("data-ez-reader-flow", appearance.flow);
-    host.append(view);
-    if (host.clientWidth < 100 || host.clientHeight < 100) {
+    host2.append(view);
+    if (host2.clientWidth < 100 || host2.clientHeight < 100) {
       await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve()));
     }
     if (transformTarget) {
@@ -16926,8 +17604,33 @@ var PagedTextSession = class {
    *  set existed, every page flip appended two listeners + one cleanup closure
    *  into `disposers`, which was only drained at close(). After 100 flips we'd
    *  call 200 stale removeEventListener no-ops on session close. Now we
-   *  actively unbind on each flip. */
+   *  actively unbind on each flip.
+   *
+   *  注意这里只剩 **手势结束** 类事件(mouseup / touchend)。`selectionchange`
+   *  早就从"每页重挂"里拿掉了 —— 见下面 `documentSelectionHandler` 的注释。 */
   selectionCleanup = null;
+  /**
+   * `selectionchange` 的唯一处理器。
+   *
+   * 为什么它必须挂在 **document** 上(而不是 stageEl / this.element):
+   * `selectionchange` 是 DOM 规范里定义在 `Document` 上的事件 —— 浏览器只在
+   * document 上 dispatch 它,既不会在 Element 上 dispatch,也不会从 document
+   * 冒泡到 Element(它根本不冒泡)。挂在元素上等于注册了一个永远不会被调用的
+   * 回调,这不是"低概率失效",是 100% 失效。之前正是这么写的,后果是移动端
+   * (Android WebView 划词)浮窗根本不弹 —— 桌面端碰巧能用只是因为 mouseup
+   * 那条兜底路径还在,用户以为功能是好的,直到换到平板才发现。
+   *
+   * 为什么用**实例字段**而不是构造函数里的局部函数: close() 必须用同一个函数
+   * 引用解绑,匿名函数传给 removeEventListener 是 no-op(规范要求同一个 listener
+   * 对象),解绑"看起来写了"但实际没摘掉。
+   *
+   * 为什么**只注册一次**而不是每次 renderPage 重挂: stageEl 从构造到 close
+   * 一直是同一个节点(翻页只 replaceChildren 子节点),每次重挂只会让回调按翻页
+   * 次数成倍触发 —— 一次划词弹出 N 个浮窗。
+   */
+  documentSelectionHandler = () => {
+    this.dispatchSelection();
+  };
   /** P1 polish: anchor click listener bound at stage level so it survives
    *  page flips. Catches <a data-ez-reader-href="..."> clicks (sanitizeHtml
    *  renames href → data-ez-reader-href so the browser doesn't navigate
@@ -16978,6 +17681,7 @@ var PagedTextSession = class {
     this.stageEl.addEventListener("click", this.stageClickHandler);
     this.element.append(this.stageEl);
     this.host.append(this.element);
+    this.element.ownerDocument.addEventListener("selectionchange", this.documentSelectionHandler);
     this.renderPage(0, "initial");
   }
   /** Direction of last navigation; ReaderView uses it for page animations. */
@@ -16991,6 +17695,10 @@ var PagedTextSession = class {
       this.selectionCleanup();
       this.selectionCleanup = null;
     }
+    this.element.ownerDocument.removeEventListener(
+      "selectionchange",
+      this.documentSelectionHandler
+    );
     try {
       const win = this.element.ownerDocument.defaultView;
       const WinEvent = win?.Event;
@@ -17228,10 +17936,10 @@ var PagedTextSession = class {
     }
     const onSelectionDone = () => this.dispatchSelection();
     this.stageEl.addEventListener("mouseup", onSelectionDone);
-    this.stageEl.addEventListener("selectionchange", onSelectionDone);
+    this.stageEl.addEventListener("touchend", onSelectionDone);
     this.selectionCleanup = () => {
       this.stageEl.removeEventListener("mouseup", onSelectionDone);
-      this.stageEl.removeEventListener("selectionchange", onSelectionDone);
+      this.stageEl.removeEventListener("touchend", onSelectionDone);
     };
     const total = this.content.pages.length;
     const fraction = total <= 1 ? 0 : pageIdx / (total - 1);
@@ -17333,20 +18041,20 @@ var stripHtmlTags = (html) => html.replace(/<[^>]*>/g, " ");
 // src/adapters/text/TxtBookReader.ts
 var DEFAULT_PAGE_CHARS = 1600;
 var MAX_PAGE_CHARS = 2400;
-var splitTextIntoPages = (text, options = {}) => {
+var splitTextIntoChunks = (text, options = {}) => {
   const pageChars = Math.max(200, Math.min(MAX_PAGE_CHARS, options.pageChars ?? DEFAULT_PAGE_CHARS));
   const mode = options.paragraphMode ?? detectParagraphMode(text);
   const paragraphs = splitIntoParagraphs(text, mode);
-  const pages = [];
-  let current = "";
+  const chunks = [];
+  let lines = [];
+  let currentLength = 0;
   const flush = () => {
-    const trimmed = current.trimEnd();
+    const trimmed = lines.join("\n\n").trimEnd();
+    const collected = lines;
+    lines = [];
+    currentLength = 0;
     if (trimmed.length === 0) return;
-    pages.push({
-      id: `page-${pages.length}`,
-      html: paragraphsToHtml(trimmed)
-    });
-    current = "";
+    chunks.push({ text: trimmed, lines: collected });
   };
   for (const para of paragraphs) {
     const trimmed = para.trim();
@@ -17355,28 +18063,29 @@ var splitTextIntoPages = (text, options = {}) => {
       flush();
       const hardChunks = hardBreakLongParagraph(trimmed, pageChars);
       for (const chunk of hardChunks) {
-        pages.push({ id: `page-${pages.length}`, html: paragraphsToHtml(chunk) });
+        chunks.push({ text: chunk, lines: [chunk] });
       }
       continue;
     }
-    if (current.length === 0) {
-      current = trimmed;
+    if (lines.length === 0) {
+      lines = [trimmed];
+      currentLength = trimmed.length;
       continue;
     }
-    if (current.length + trimmed.length + 2 > pageChars) {
+    if (currentLength + trimmed.length + 2 > pageChars) {
       flush();
-      current = trimmed;
+      lines = [trimmed];
+      currentLength = trimmed.length;
     } else {
-      current = `${current}
-
-${trimmed}`;
+      lines.push(trimmed);
+      currentLength += trimmed.length + 2;
     }
   }
   flush();
-  if (pages.length === 0) {
-    pages.push({ id: "page-0", html: "<p></p>" });
+  if (chunks.length === 0) {
+    chunks.push({ text: "", lines: [] });
   }
-  return pages;
+  return chunks;
 };
 var detectParagraphMode = (text) => {
   if (/\r?\n\s*\r?\n/.test(text)) return "blank-line";
@@ -17460,42 +18169,59 @@ var guessTitleFromText = (text, fallback) => {
   }
   return fallback;
 };
-var detectChapterTitle = (text) => {
-  const lines = text.split(/\r?\n/);
-  const patterns = [
-    /^[\s\u3000]*第\s*[0-9零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾]+\s*[章回节卷集篇]/u,
-    /^[\s\u3000]*chapter\s+[0-9]+(?:\s|$)/iu,
-    /^[\s\u3000]*CHAPTER\s+[IVXLCDM]+/u
-  ];
-  for (const line of lines.slice(0, 50)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0 || trimmed.length > 60) continue;
-    for (const re2 of patterns) {
-      if (re2.test(trimmed)) return trimmed;
-    }
+var matchChapterTitle = (line) => {
+  const trimmed = line.trim();
+  if (trimmed.length === 0 || trimmed.length > 60) return null;
+  for (const re2 of CHAPTER_TITLE_PATTERNS) {
+    if (re2.test(trimmed)) return trimmed;
   }
   return null;
 };
+var CHAPTER_TITLE_PATTERNS = [
+  // 中文古文 / 翻译小说常见模式
+  /^[\s　]*第\s*[0-9零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾]+\s*[章回节卷集篇]/u,
+  /^[\s　]*chapter\s+[0-9]+(?:\s|$)/iu,
+  /^[\s　]*CHAPTER\s+[IVXLCDM]+/u
+];
+var MAX_TXT_TOC_ITEMS = 500;
+var planTxtPages = (text, fallbackTitle, options = {}) => {
+  const title = guessTitleFromText(text, fallbackTitle);
+  const chunks = splitTextIntoChunks(text, options);
+  const toc = [{ id: "txt-root", label: title, depth: 0 }];
+  const chapterStartPages = [0];
+  const pages = [];
+  let currentChapter = title;
+  for (const chunk of chunks) {
+    for (const line of chunk.lines) {
+      const detected = matchChapterTitle(line);
+      if (!detected) continue;
+      currentChapter = detected;
+      if (toc.length < MAX_TXT_TOC_ITEMS) {
+        toc.push({ id: `txt-ch-${toc.length}`, label: detected, depth: 1 });
+        chapterStartPages.push(pages.length);
+      }
+      break;
+    }
+    pages.push({
+      id: `page-${pages.length}`,
+      html: paragraphsToHtml(chunk.text),
+      chapterTitle: currentChapter
+    });
+  }
+  return { title, pages, toc, chapterStartPages };
+};
 var TxtBookReader = class {
-  async open(book, host, appearance, loader) {
+  async open(book, host2, appearance, loader) {
     const bytes = await loader(book.locator.path);
     const text = decodeText(bytes);
     const fallbackTitle = book.locator.path.split("/").pop()?.replace(/\.txt$/i, "") ?? "TXT";
-    const title = guessTitleFromText(text, fallbackTitle);
-    const pages = splitTextIntoPages(text);
-    let lastChapter = title;
-    const enrichedPages = pages.map((page, idx) => {
-      const plainText = page.html.replace(/<[^>]*>/g, " ");
-      const detected = idx === 0 ? title : detectChapterTitle(plainText);
-      if (detected) lastChapter = detected;
-      return { ...page, chapterTitle: lastChapter };
-    });
+    const plan = planTxtPages(text, fallbackTitle);
     const content = {
-      pages: enrichedPages,
-      toc: [{ id: "txt-root", label: title, depth: 0 }],
-      chapterStartPages: [0]
+      pages: plan.pages,
+      toc: plan.toc,
+      chapterStartPages: plan.chapterStartPages
     };
-    return new PagedTextSession({ content, host, appearance, loader });
+    return new PagedTextSession({ content, host: host2, appearance, loader });
   }
   async extractCover() {
     return null;
@@ -17517,19 +18243,23 @@ var decodeText = (bytes) => {
   if (view.length >= 2 && view[0] === 254 && view[1] === 255) {
     return decodeUtf16(view.subarray(2), "utf-16be");
   }
-  if (view.length >= 3 && view[0] === 239 && view[1] === 187 && view[2] === 191) {
-    const strict = tryDecode(view.subarray(3), "utf-8", true);
-    if (strict !== null) return strict;
-    const gb2 = tryDecode(view.subarray(3), "gb18030", false);
-    if (gb2 !== null) return gb2;
-    return new TextDecoder("utf-8").decode(view.subarray(3));
-  }
-  const utf8 = tryDecode(view, "utf-8", true);
-  if (utf8 !== null) return utf8;
-  const gb = tryDecode(view, "gb18030", false);
-  if (gb !== null) return gb;
-  return new TextDecoder("utf-8").decode(view);
+  const body = view.length >= 3 && view[0] === 239 && view[1] === 187 && view[2] === 191 ? view.subarray(3) : view;
+  return decodeBody(body);
 };
+var decodeBody = (view) => {
+  const utf8 = decodeStrict(view, "utf-8");
+  if (utf8 !== null) return utf8;
+  for (const label of CJK_FALLBACK_LABELS) {
+    const decoded = decodeStrict(view, label) ?? decodeIfClean(view, label);
+    if (decoded !== null) return decoded;
+  }
+  const lenientUtf8 = decodeIfClean(view, "utf-8");
+  if (lenientUtf8 !== null) return lenientUtf8;
+  const windows1252 = decodeIfClean(view, "windows-1252");
+  if (windows1252 !== null) return windows1252;
+  return decodeLatin1(view);
+};
+var CJK_FALLBACK_LABELS = ["gb18030", "gbk"];
 var tryDecode = (bytes, label, fatal) => {
   try {
     return new TextDecoder(label, { fatal }).decode(bytes);
@@ -17537,10 +18267,29 @@ var tryDecode = (bytes, label, fatal) => {
     return null;
   }
 };
+var decodeStrict = (bytes, label) => {
+  const text = tryDecode(bytes, label, true);
+  if (text === null) return null;
+  return isCleanText(text) ? text : null;
+};
+var decodeIfClean = (bytes, label) => {
+  const text = tryDecode(bytes, label, false);
+  if (text === null) return null;
+  return isCleanText(text) ? text : null;
+};
+var isCleanText = (text) => !text.includes("\uFFFD");
+var decodeLatin1 = (bytes) => {
+  const CHUNK = 4096;
+  let out = "";
+  for (let i3 = 0; i3 < bytes.length; i3 += CHUNK) {
+    out += String.fromCharCode.apply(null, Array.from(bytes.subarray(i3, i3 + CHUNK)));
+  }
+  return out;
+};
 var decodeUtf16 = (bytes, label) => {
   const decoded = tryDecode(bytes, label, false);
   if (decoded !== null) return decoded;
-  return new TextDecoder("utf-8").decode(bytes);
+  return tryDecode(bytes, "utf-8", false) ?? decodeLatin1(bytes);
 };
 
 // src/core/utils/sanitizeHtml.ts
@@ -17733,7 +18482,7 @@ var importMobiParser = async () => {
 };
 var isAzw3Format = (format) => format === "azw3";
 var MobiBookReader = class {
-  async open(book, host, appearance, loader) {
+  async open(book, host2, appearance, loader) {
     const bytes = await loader(book.locator.path);
     const parser2 = await this.createParser(book.locator.format, bytes);
     let content;
@@ -17746,7 +18495,7 @@ var MobiBookReader = class {
       }
       throw error;
     }
-    const session = new PagedTextSession({ content, host, appearance, loader });
+    const session = new PagedTextSession({ content, host: host2, appearance, loader });
     const originalClose = session.close.bind(session);
     let destroyed = false;
     const destroyParser = () => {
@@ -19975,6 +20724,7 @@ var inferStatus = (current, fraction) => {
 };
 
 // src/core/services/TranslationService.ts
+var MAX_TRANSLATION_CHARS = 5e3;
 var TranslationCoordinator = class _TranslationCoordinator {
   constructor(annotations, providers) {
     this.annotations = annotations;
@@ -19990,6 +20740,20 @@ var TranslationCoordinator = class _TranslationCoordinator {
    */
   cachedSettings = null;
   static SETTINGS_CACHE_TTL_MS = 3e4;
+  /**
+   * In-flight requests keyed by `providerId|target|text`.
+   *
+   * 为什么需要: 同一个词可能被**同时**从三个入口触发 —— 选词浮层菜单
+   * (`ReaderSelectionMenu`)、翻译抽屉 (`TranslationDrawer`)、PDF 覆盖层
+   * (`PdfOverlay`)。用户划一次词, 三处都可能各发一次, 于是:
+   *   1. 同一段原文被打 3 次 → 白烧 3 倍 API 额度(用户的 key!)
+   *   2. 三次响应**乱序**回来, 后到的覆盖先到的, 抽屉里最终显示的可能
+   *      是最慢那次的结果, 用户看到"点了没反应"或内容闪变。
+   *
+   * 只在 in-flight 期间共享, 请求结束立刻移除 —— 所以这不是缓存: 用户
+   * 之后再查同一个词会真的重新请求, 不会拿到几分钟前的旧译文。
+   */
+  inFlight = /* @__PURE__ */ new Map();
   listProviders() {
     return [...this.providers.values()];
   }
@@ -20007,6 +20771,11 @@ var TranslationCoordinator = class _TranslationCoordinator {
     return value;
   }
   async translate(text, source, target) {
+    if (text.length > MAX_TRANSLATION_CHARS) {
+      throw new Error(
+        `\u5F85\u7FFB\u8BD1\u6587\u672C\u8FC7\u957F: ${text.length} \u5B57\u7B26,\u4E0A\u9650 ${MAX_TRANSLATION_CHARS} \u5B57\u7B26\u3002\u8BF7\u53EA\u9009\u4E2D\u53E5\u5B50\u6216\u6BB5\u843D\u540E\u91CD\u8BD5\u3002`
+      );
+    }
     const settings = await this.getSettings();
     if (!settings.translation) {
       throw new Error("Translation is not configured. Add an API key in plugin settings first.");
@@ -20020,7 +20789,19 @@ var TranslationCoordinator = class _TranslationCoordinator {
       source: settings.translation.sourceLocale || source,
       target: settings.translation.targetLocale || target
     };
-    return provider.translate(settings.translation.apiKey, request);
+    const key = `${provider.id}\0${request.target}\0${request.text}`;
+    const existing = this.inFlight.get(key);
+    if (existing) return existing;
+    const apiKey = settings.translation.apiKey;
+    const pending = (async () => {
+      try {
+        return await provider.translate(apiKey, request);
+      } finally {
+        this.inFlight.delete(key);
+      }
+    })();
+    this.inFlight.set(key, pending);
+    return pending;
   }
 };
 
@@ -20114,18 +20895,18 @@ var AddToLibraryModal = class extends import_obsidian5.Modal {
       return haystack.includes(query);
     });
   }
-  renderList(host) {
-    this.lastRendered = host;
-    host.empty();
+  renderList(host2) {
+    this.lastRendered = host2;
+    host2.empty();
     const filtered = this.filteredCandidates();
     const summaryEl = this.contentEl.querySelector(".ez-reader__add-modal__summary-text");
     if (summaryEl) summaryEl.textContent = `\u5171 ${this.candidates.length} \u672C\u5019\u9009 \xB7 \u5DF2\u9009 ${this.selected.size} \u672C`;
     if (filtered.length === 0) {
-      host.createDiv({ cls: "ez-reader__add-modal__empty", text: "\u6CA1\u6709\u53EF\u52A0\u5165\u7684\u4E66(\u53EF\u80FD\u5DF2\u7ECF\u5168\u90E8\u52A0\u5165,\u6216 Vault \u91CC\u6CA1\u6709\u652F\u6301\u7684\u683C\u5F0F)\u3002" });
+      host2.createDiv({ cls: "ez-reader__add-modal__empty", text: "\u6CA1\u6709\u53EF\u52A0\u5165\u7684\u4E66(\u53EF\u80FD\u5DF2\u7ECF\u5168\u90E8\u52A0\u5165,\u6216 Vault \u91CC\u6CA1\u6709\u652F\u6301\u7684\u683C\u5F0F)\u3002" });
       return;
     }
     for (const entry of filtered) {
-      const row = host.createDiv({ cls: "ez-reader__add-modal__row" });
+      const row = host2.createDiv({ cls: "ez-reader__add-modal__row" });
       const checkbox = row.createEl("input", { attr: { type: "checkbox" } });
       const applySelectionVisual = () => {
         row.toggleClass("is-selected", this.selected.has(entry.book.id));
@@ -20400,6 +21181,11 @@ var statusBadge = (status) => {
       return { label: statusLabel(status), cls: "is-unread" };
   }
 };
+var describeError = (error) => error instanceof Error ? error.message : String(error);
+var PROBE_LABELS = {
+  sessions: "\u9605\u8BFB\u8BB0\u5F55 (sessions)",
+  info: "\u4E66\u7C4D\u4FE1\u606F (info)"
+};
 var BookInfoModal = class extends import_obsidian6.Modal {
   deps;
   bookId;
@@ -20407,6 +21193,18 @@ var BookInfoModal = class extends import_obsidian6.Modal {
   rich = null;
   /** True when getRichEntry returned null (book removed mid-flight). */
   missing = false;
+  /**
+   * Bug 3 修复: getRichEntry **reject**(加载失败) 的错误信息。
+   *
+   * 之前它和 `missing` 共用一个标记(失败时置 missing = true), 结果 vault
+   * IO 挂掉时用户看到的是"找不到这本书 — 可能已被移除或刷新过库" ——
+   * 把"插件没读到"说成"你的书没了", 用户第一反应是去 vault 里找文件,
+   * 甚至以为自己误删了。两条路径必须分开: `missing` 只表示 getRichEntry
+   * 正常返回了 null(书真的不在库里), `loadError` 才表示读取过程炸了。
+   */
+  loadError = null;
+  /** 磁盘探测结果 — 见 FileProbe 注释。null = 还没探测 / 探测不可用。 */
+  probes = /* @__PURE__ */ new Map();
   /** Active load promise so re-opening the modal re-fetches. */
   loadPromise;
   /** Set of copy-feedback timers so onClose can cancel them. */
@@ -20424,16 +21222,72 @@ var BookInfoModal = class extends import_obsidian6.Modal {
         this.missing = true;
       } else {
         this.rich = result;
+        this.missing = false;
+        this.loadError = null;
+        await this.probeBookFiles(result);
       }
       if (this.contentEl.children.length > 0) {
         this.render();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeError(error);
       new import_obsidian6.Notice(`\u52A0\u8F7D\u4E66\u7C4D\u8BE6\u60C5\u5931\u8D25: ${message}`);
-      this.missing = true;
+      this.loadError = message;
+      this.missing = false;
       if (this.contentEl.children.length > 0) this.render();
     }
+  }
+  /**
+   * 自己再读一次 ezreader/ 下的 per-book 文件, 把 IO 状态和 LibraryService
+   * 返回的快照对照, 从而区分"没读过"和"没读到"。
+   */
+  async probeBookFiles(rich) {
+    const title = rich.bookInfo?.title ?? rich.entry.book.metadata?.title ?? rich.entry.book.locator.path;
+    const stem = bookFileStem(title, this.bookId);
+    const [sessions, info] = await Promise.all([
+      this.probeBookFile(`ezreader/sessions/${stem}.jsonl`, {
+        hasUsableData: rich.recentSessions.length > 0
+      }),
+      this.probeBookFile(`ezreader/info/${stem}.md`, { hasUsableData: null })
+    ]);
+    this.probes.set("sessions", sessions);
+    this.probes.set("info", info);
+  }
+  /**
+   * 探测单个文件。**绝不抛出** —— 探测本身失败就是它要报告的信息之一,
+   * 任何意外都收敛成 state:"error" / "unknown", 不能让弹窗整个打不开。
+   *
+   * @param hasUsableData 上游是否真的解析出了数据。sessions 传布尔值:
+   *   "磁盘有内容但 false" 只能解释成上游吞了异常, 判为 error。
+   *   info 传 null: LibraryService 会用 fallback 合成一份看起来正常的
+   *   BookInfo, 快照本身不构成证据(见 probeBookFiles 注释)。
+   */
+  async probeBookFile(path, opts) {
+    const adapter = this.readProbeAdapter();
+    if (adapter === null) return { state: "unknown", path };
+    try {
+      const exists = await adapter.exists(path);
+      if (!exists) return { state: "absent", path };
+    } catch (error) {
+      return { state: "error", path, message: describeError(error) };
+    }
+    try {
+      const raw = await adapter.read(path);
+      if (raw.trim().length === 0) return { state: "absent", path };
+      if (opts.hasUsableData === false) {
+        return { state: "error", path, message: "\u6587\u4EF6\u91CC\u6709\u5185\u5BB9, \u4F46\u8BE6\u60C5\u9875\u6CA1\u89E3\u6790\u51FA\u6765" };
+      }
+      return { state: "ok", path };
+    } catch (error) {
+      return { state: "error", path, message: describeError(error) };
+    }
+  }
+  /** Grab the adapter, or null when it can't support the probe. */
+  readProbeAdapter() {
+    const adapter = this.deps.app?.vault?.adapter;
+    if (!adapter) return null;
+    if (typeof adapter.exists !== "function" || typeof adapter.read !== "function") return null;
+    return adapter;
   }
   onOpen() {
     this.modalEl.addClass("ez-reader__modal");
@@ -20450,6 +21304,10 @@ var BookInfoModal = class extends import_obsidian6.Modal {
   render() {
     const { contentEl } = this;
     contentEl.empty();
+    if (this.loadError !== null) {
+      this.renderLoadError();
+      return;
+    }
     if (this.missing) {
       this.renderMissing();
       return;
@@ -20467,11 +21325,47 @@ var BookInfoModal = class extends import_obsidian6.Modal {
     const info = rich.bookInfo;
     this.titleEl.setText(info.title);
     this.renderHeader(contentEl, rich, entry);
+    this.renderDataWarnings(contentEl);
     this.renderMeta(contentEl, info);
     this.renderProgress(contentEl, rich, info);
     this.renderTimeStats(contentEl, rich);
     this.renderSessions(contentEl, rich);
     this.renderFooter(contentEl, info);
+  }
+  /**
+   * Bug 2: 把"没读到"的文件集中告警一次。
+   *
+   * 为什么要有这层而不是各自在段落里提示: sessions 和 info 的失败会同时
+   * 影响"阅读时长统计"和"最近 session 明细"两块, 用户看到的是两个都空,
+   * 分不清是一个原因还是两个。集中一条横幅说清楚"哪些文件没读到", 比让
+   * 用户自己拼图可靠。
+   */
+  renderDataWarnings(root) {
+    const failed = [];
+    for (const kind of ["sessions", "info"]) {
+      const probe = this.probes.get(kind);
+      if (probe && probe.state === "error") failed.push({ kind, probe });
+    }
+    if (failed.length === 0) return;
+    const alert = root.createDiv({ cls: "ez-reader__book-info-alert is-error" });
+    alert.setAttribute("role", "alert");
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__title",
+      // "读取失败" 四字跟 renderSessions 里的行内警告、renderLoadError 里的
+      // 标题保持一致 —— 同一个概念在弹窗里只该有一种说法, 否则用户会以为是
+      // 两个不同的问题。
+      text: "\u26A0 \u8BFB\u53D6\u5931\u8D25 \u2014 \u6709\u6570\u636E\u6CA1\u80FD\u8BFB\u51FA\u6765, \u4E0B\u9762\u7684\u7EDF\u8BA1\u53EF\u80FD\u4E0D\u5B8C\u6574\u3002"
+    });
+    for (const { kind, probe } of failed) {
+      alert.createEl("p", {
+        cls: "ez-reader__book-info-alert__detail",
+        text: `${PROBE_LABELS[kind]}: ${probe.message ?? "\u8BFB\u53D6\u5931\u8D25"} \u2014 ${probe.path}`
+      });
+    }
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__hint",
+      text: "\u8FD9\u901A\u5E38\u4E0D\u662F\u6570\u636E\u88AB\u5220\u4E86 \u2014\u2014 \u66F4\u53EF\u80FD\u662F vault \u540C\u6B65\u51B2\u7A81\u628A\u6587\u4EF6\u641E\u574F\u3001\u6587\u4EF6\u88AB\u5176\u4ED6\u7A0B\u5E8F\u5360\u7528, \u6216\u8BFB\u5199\u6743\u9650\u5F02\u5E38\u3002\u5EFA\u8BAE\u68C0\u67E5 vault \u91CC\u7684 ezreader/ \u76EE\u5F55, \u786E\u8BA4\u8FD9\u4E9B\u6587\u4EF6\u5B8C\u6574, \u5173\u6389\u5176\u4ED6\u6B63\u5728\u540C\u6B65\u7684\u5BA2\u6237\u7AEF\u4E4B\u540E\u518D\u6253\u5F00\u4E00\u6B21\u3002"
+    });
   }
   // ---------------------------------------------------------------------------
   // Header
@@ -20676,9 +21570,10 @@ var BookInfoModal = class extends import_obsidian6.Modal {
     const hasAnyActivity = buckets.some((b3) => b3.totalMs > 0 || b3.sessionCount > 0);
     if (buckets.length === 0 || !hasAnyActivity) {
       chart.addClass("is-empty");
+      const sessionsFailed = this.probes.get("sessions")?.state === "error";
       chart.createDiv({
-        cls: "ez-reader__book-info-bar-chart__placeholder",
-        text: "\u6682\u65E0\u9605\u8BFB\u8BB0\u5F55 \u2014 \u5728\u9605\u8BFB\u5668\u91CC\u8BFB\u4E00\u4F1A\u513F\u5C31\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC"
+        cls: sessionsFailed ? "ez-reader__book-info-bar-chart__placeholder is-error" : "ez-reader__book-info-bar-chart__placeholder",
+        text: sessionsFailed ? "\u26A0 \u9605\u8BFB\u8BB0\u5F55\u6CA1\u8BFB\u51FA\u6765 \u2014 \u8FD9\u5F20\u56FE\u53EF\u80FD\u4E0D\u5B8C\u6574, \u4E0D\u4EE3\u8868\u4F60\u6CA1\u6709\u8BFB\u8FC7\u3002" : "\u6682\u65E0\u9605\u8BFB\u8BB0\u5F55 \u2014 \u5728\u9605\u8BFB\u5668\u91CC\u8BFB\u4E00\u4F1A\u513F\u5C31\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC"
       });
     } else {
       const ordered = [...buckets].reverse();
@@ -20718,10 +21613,19 @@ var BookInfoModal = class extends import_obsidian6.Modal {
     });
     const list = section.createDiv({ cls: "ez-reader__book-info-sessions" });
     if (rich.recentSessions.length === 0) {
+      const sessionsProbe = this.probes.get("sessions");
+      if (sessionsProbe && sessionsProbe.state === "error") {
+        list.addClass("is-error");
+        list.createDiv({
+          cls: "ez-reader__book-info-sessions__error",
+          text: `\u26A0 \u8BFB\u53D6\u5931\u8D25 \u2014 \u6CA1\u80FD\u8BFB\u51FA\u8FD9\u672C\u4E66\u7684\u9605\u8BFB\u8BB0\u5F55(${sessionsProbe.message ?? "\u672A\u77E5\u539F\u56E0"})\u3002\u4F60\u7684\u8BB0\u5F55\u5F88\u53EF\u80FD\u8FD8\u5728, \u53EA\u662F\u8FD9\u6B21\u6CA1\u8BFB\u5230; \u8BF7\u68C0\u67E5 vault \u540C\u6B65\u6216 ezreader/sessions/ \u76EE\u5F55\u540E\u91CD\u65B0\u6253\u5F00\u3002`
+        });
+        return;
+      }
       list.addClass("is-empty");
       list.createDiv({
         cls: "ez-reader__book-info-sessions__placeholder",
-        text: "\u6682\u65E0 session \u8BB0\u5F55 \u2014 sessions.jsonl \u5728\u7B2C\u4E00\u6B21\u5173\u95ED\u9605\u8BFB\u5668\u65F6\u521B\u5EFA"
+        text: "\u6682\u65E0 session \u8BB0\u5F55 \u2014 \u8BFB\u4E00\u4F1A\u513F\u518D\u5173\u6389\u9605\u8BFB\u5668, \u8FD9\u91CC\u5C31\u4F1A\u8BB0\u4E0B\u8FD9\u6B21\u9605\u8BFB\u3002"
       });
       return;
     }
@@ -20790,6 +21694,46 @@ var BookInfoModal = class extends import_obsidian6.Modal {
     section.createEl("p", {
       text: "\u627E\u4E0D\u5230\u8FD9\u672C\u4E66 \u2014 \u53EF\u80FD\u5DF2\u88AB\u79FB\u9664\u6216\u5237\u65B0\u8FC7\u5E93\u3002"
     });
+    this.titleEl.setText("\u4E66\u7C4D\u8BE6\u60C5");
+  }
+  /**
+   * Bug 3: `getRichEntry` reject 的独立展示。
+   *
+   * 复用 renderMissing 的文案是这次 bug 的根源: 加载失败 ≠ 书被删。
+   * 弹窗是从书架右键菜单打开的, 用户刚点完, 书十有八九还在库里 ——
+   * 报"找不到这本书"会让用户跑去 vault 里翻文件, 甚至以为是自己误删的。
+   *
+   * 这里给重试按钮是因为加载失败往往是瞬时的(同步冲突 / 文件被占用),
+   * 关掉重开要重新走一遍右键菜单, 成本比点一下高。
+   */
+  renderLoadError() {
+    const { contentEl } = this;
+    contentEl.empty();
+    const section = contentEl.createDiv({ cls: "ez-reader__book-info-section" });
+    const alert = section.createDiv({ cls: "ez-reader__book-info-alert is-error" });
+    alert.setAttribute("role", "alert");
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__title",
+      text: "\u8BFB\u53D6\u8FD9\u672C\u4E66\u7684\u8BE6\u60C5\u5931\u8D25 \u2014 \u4F60\u7684\u4E66\u8FD8\u5728\u4E66\u67B6\u4E0A, \u662F\u63D2\u4EF6\u6CA1\u80FD\u8BFB\u51FA\u6570\u636E\u3002"
+    });
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__detail",
+      text: `\u9519\u8BEF: ${this.loadError ?? "\u672A\u77E5\u539F\u56E0"}`
+    });
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__hint",
+      text: "\u8FD9\u901A\u5E38\u4E0D\u662F\u4F60\u7684\u64CD\u4F5C\u95EE\u9898 \u2014 \u66F4\u53EF\u80FD\u662F vault \u540C\u6B65\u51B2\u7A81\u3001\u6587\u4EF6\u88AB\u5176\u4ED6\u7A0B\u5E8F\u5360\u7528, \u6216\u8BFB\u5199\u6743\u9650\u5F02\u5E38\u3002\u5EFA\u8BAE\u5148\u70B9\u91CD\u8BD5; \u5982\u679C\u53CD\u590D\u5931\u8D25, \u68C0\u67E5 vault \u91CC\u7684 ezreader/ \u76EE\u5F55\u662F\u5426\u5B8C\u6574, \u4EE5\u53CA\u662F\u5426\u6709\u591A\u4E2A\u540C\u6B65\u5BA2\u6237\u7AEF\u5728\u540C\u65F6\u5199\u8FD9\u4E2A vault\u3002"
+    });
+    const retry = alert.createEl("button", { text: "\u91CD\u8BD5", attr: { type: "button" } });
+    retry.addClass("mod-cta");
+    retry.onclick = () => {
+      this.loadError = null;
+      this.missing = false;
+      this.rich = null;
+      this.probes.clear();
+      this.renderLoading();
+      void this.load();
+    };
     this.titleEl.setText("\u4E66\u7C4D\u8BE6\u60C5");
   }
 };
@@ -20931,9 +21875,9 @@ var ShelfFiltersModal = class extends import_obsidian8.Modal {
     const next = arr.includes(value) ? arr.filter((x3) => x3 !== value) : [...arr, value];
     return next.length > 0 ? next : void 0;
   }
-  renderStatusSection(host) {
-    host.createEl("h3", { text: "\u9605\u8BFB\u72B6\u6001" });
-    const wrap2 = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
+  renderStatusSection(host2) {
+    host2.createEl("h3", { text: "\u9605\u8BFB\u72B6\u6001" });
+    const wrap2 = host2.createDiv({ cls: "ez-reader__shelf-filters__row" });
     for (const status of Object.keys(STATUS_LABELS)) {
       const button = wrap2.createEl("button", { text: STATUS_LABELS[status], attr: { type: "button" } });
       button.addClass("ez-reader__pill");
@@ -20945,9 +21889,9 @@ var ShelfFiltersModal = class extends import_obsidian8.Modal {
       });
     }
   }
-  renderFormatSection(host) {
-    host.createEl("h3", { text: "\u6587\u4EF6\u683C\u5F0F" });
-    const wrap2 = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
+  renderFormatSection(host2) {
+    host2.createEl("h3", { text: "\u6587\u4EF6\u683C\u5F0F" });
+    const wrap2 = host2.createDiv({ cls: "ez-reader__shelf-filters__row" });
     for (const format of SHELF_FORMAT_ORDER) {
       if (!READER_CAPABLE_FORMATS.has(format)) continue;
       const button = wrap2.createEl("button", {
@@ -20963,9 +21907,9 @@ var ShelfFiltersModal = class extends import_obsidian8.Modal {
       });
     }
   }
-  renderLanguageSection(host) {
-    host.createEl("h3", { text: "\u8BED\u8A00" });
-    const wrap2 = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
+  renderLanguageSection(host2) {
+    host2.createEl("h3", { text: "\u8BED\u8A00" });
+    const wrap2 = host2.createDiv({ cls: "ez-reader__shelf-filters__row" });
     for (const lang of COMMON_LANGUAGES) {
       const button = wrap2.createEl("button", { text: lang, attr: { type: "button" } });
       button.addClass("ez-reader__pill");
@@ -20977,9 +21921,9 @@ var ShelfFiltersModal = class extends import_obsidian8.Modal {
       });
     }
   }
-  renderProgressSection(host) {
-    host.createEl("h3", { text: "\u8FDB\u5EA6\u8303\u56F4" });
-    const wrap2 = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
+  renderProgressSection(host2) {
+    host2.createEl("h3", { text: "\u8FDB\u5EA6\u8303\u56F4" });
+    const wrap2 = host2.createDiv({ cls: "ez-reader__shelf-filters__row" });
     for (const bucket of Object.keys(PROGRESS_LABELS)) {
       const button = wrap2.createEl("button", { text: PROGRESS_LABELS[bucket], attr: { type: "button" } });
       button.addClass("ez-reader__pill");
@@ -20991,9 +21935,9 @@ var ShelfFiltersModal = class extends import_obsidian8.Modal {
       });
     }
   }
-  renderRecencySection(host) {
-    host.createEl("h3", { text: "\u6700\u8FD1\u6253\u5F00\u65F6\u95F4" });
-    const wrap2 = host.createDiv({ cls: "ez-reader__shelf-filters__row" });
+  renderRecencySection(host2) {
+    host2.createEl("h3", { text: "\u6700\u8FD1\u6253\u5F00\u65F6\u95F4" });
+    const wrap2 = host2.createDiv({ cls: "ez-reader__shelf-filters__row" });
     for (const bucket of Object.keys(RECENCY_LABELS)) {
       const button = wrap2.createEl("button", { text: RECENCY_LABELS[bucket], attr: { type: "button" } });
       button.addClass("ez-reader__pill");
@@ -21005,8 +21949,8 @@ var ShelfFiltersModal = class extends import_obsidian8.Modal {
       });
     }
   }
-  renderActions(host) {
-    const row = host.createDiv({ cls: "ez-reader__shelf-filters__actions" });
+  renderActions(host2) {
+    const row = host2.createDiv({ cls: "ez-reader__shelf-filters__actions" });
     const clear = row.createEl("button", { text: "\u6E05\u9664\u5168\u90E8", attr: { type: "button" } });
     clear.onclick = () => {
       this.settle({});
@@ -21660,12 +22604,14 @@ var ShelfView = class extends import_obsidian9.ItemView {
   }
   renderRefresh() {
     const entries = this.deps.library.list(this.filter, this.sort);
+    const previousScrollTop = this.body.scrollTop;
     this.body.empty();
     this.body.removeClass("is-grid", "is-list");
     this.body.addClass(this.mode === "grid" ? "is-grid" : "is-list");
     this.body.setAttribute("data-shelf-density", this.shelfDensity);
     if (entries.length === 0) {
       this.renderEmptyState();
+      this.body.scrollTop = 0;
     } else {
       this.emptyState.addClass("is-hidden");
       for (const entry of entries) {
@@ -21682,6 +22628,9 @@ var ShelfView = class extends import_obsidian9.ItemView {
           onContextMenu: (item, event) => this.openItemMenu(item, event)
         }, coverPath);
         this.body.append(node);
+      }
+      if (previousScrollTop > 0) {
+        this.body.scrollTop = previousScrollTop;
       }
     }
     this.toolbar.update(this.toolbarState());
@@ -22177,9 +23126,9 @@ var BookmarksPanel = class {
   root;
   handlers;
   bookmarks = [];
-  constructor(handlers, host) {
+  constructor(handlers, host2) {
     this.handlers = handlers;
-    this.root = host.createDiv({ cls: "ez-reader__reader-panel is-hidden" });
+    this.root = host2.createDiv({ cls: "ez-reader__reader-panel is-hidden" });
     this.render();
   }
   setBookmarks(bookmarks) {
@@ -22307,10 +23256,10 @@ var ExcerptsPanel = class {
   handlers;
   app;
   excerpts = [];
-  constructor(handlers, host) {
+  constructor(handlers, host2) {
     this.handlers = handlers;
     this.app = handlers.app ?? null;
-    this.root = host.createDiv({ cls: "ez-reader__reader-panel is-hidden" });
+    this.root = host2.createDiv({ cls: "ez-reader__reader-panel is-hidden" });
     this.render();
   }
   setExcerpts(excerpts) {
@@ -22889,10 +23838,10 @@ var SidebarNotesPanel = class {
   searchInput;
   /** Set of excerpt ids whose note region is currently expanded. */
   expandedNotes = /* @__PURE__ */ new Set();
-  constructor(handlers, host) {
+  constructor(handlers, host2) {
     this.handlers = handlers;
     this.app = handlers.app;
-    this.root = host.createDiv({ cls: "ez-reader__notes-panel" });
+    this.root = host2.createDiv({ cls: "ez-reader__notes-panel" });
     this.render();
   }
   /**
@@ -23321,9 +24270,9 @@ var TocPanel = class {
   visitedIds = /* @__PURE__ */ new Set();
   /** 一次性的 capture keydown listener 引用, 用于 dispose 时摘掉. */
   onKeyDown;
-  constructor(handlers, host) {
+  constructor(handlers, host2) {
     this.handlers = handlers;
-    this.root = host.createDiv({
+    this.root = host2.createDiv({
       cls: "ez-reader__reader-panel ez-reader__reader-panel--toc-sidebar is-hidden"
     });
     this.onKeyDown = (event) => this.handleKeyDown(event);
@@ -24005,12 +24954,12 @@ var TranslationDrawer = class {
    * resolving and clobbering the new loading state.
    */
   translateGeneration = 0;
-  constructor(handlers, service, host, initial) {
+  constructor(handlers, service, host2, initial) {
     this.handlers = handlers;
     this.service = service;
     this.currentSource = initial.source;
     this.currentTarget = initial.target;
-    this.root = host.createDiv({ cls: "ez-reader__translation-drawer is-hidden" });
+    this.root = host2.createDiv({ cls: "ez-reader__translation-drawer is-hidden" });
     this.renderShell();
   }
   setLanguages(source, target) {
@@ -24188,11 +25137,11 @@ var FoliateContentDelegate = class {
   constructor(engine) {
     this.engine = engine;
   }
-  async mount(host, ctx) {
+  async mount(host2, ctx) {
     if (this.session) {
       throw new Error("[ez-reader] FoliateContentDelegate.mount called twice without destroy");
     }
-    this.session = await this.engine.open(ctx.book, host, ctx.appearance, ctx.loader);
+    this.session = await this.engine.open(ctx.book, host2, ctx.appearance, ctx.loader);
     return this.session;
   }
   async destroy() {
@@ -24214,11 +25163,11 @@ var TextContentDelegate = class {
   constructor(engine) {
     this.engine = engine;
   }
-  async mount(host, ctx) {
+  async mount(host2, ctx) {
     if (this.session) {
       throw new Error("[ez-reader] TextContentDelegate.mount called twice without destroy");
     }
-    this.session = await this.engine.open(ctx.book, host, ctx.appearance, ctx.loader);
+    this.session = await this.engine.open(ctx.book, host2, ctx.appearance, ctx.loader);
     return this.session;
   }
   async destroy() {
@@ -24235,6 +25184,19 @@ var TextContentDelegate = class {
 
 // src/ui/reader/ReaderView.ts
 var READER_VIEW_TYPE = "ez-reader-view";
+var buildReaderViewState = (input) => ({
+  file: input.bookId ?? "",
+  immersive: input.immersive
+});
+var parseReaderViewState = (raw) => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const candidate = raw;
+  if (typeof candidate.file !== "string") return null;
+  return {
+    file: candidate.file,
+    immersive: candidate.immersive === true ? true : void 0
+  };
+};
 var createContentDelegate = (format, deps) => {
   switch (format) {
     case "txt":
@@ -24408,6 +25370,57 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
   getIcon() {
     return "book-open";
   }
+  /**
+   * v0.3.3: 当前打开的 bookId, 没打开书时 `undefined`。
+   *
+   * `Plugin.findReaderLeafForBook` 用它做第二重匹配。为什么要第二重:
+   * `leaf.getViewState()` 读的是 **Obsidian 记下的最后状态**, 而
+   * `setEntry` 是纯内存操作 —— 用户在同一个 leaf 里从 A 换到 B 之后,
+   * layout 里存的还是 A, 拿它去匹配 B 会漏。view 实例上的
+   * `this.entry` 才是真相源。
+   */
+  getCurrentBookId() {
+    return this.entry?.book.id;
+  }
+  /**
+   * v0.3.3: 告诉 Obsidian 这个 leaf 在显示哪本书, 好让它写进
+   * `workspace.json`。之前整个方法缺失, 结果重启后恢复出来的阅读器
+   * 标签页是空的 (详见 `ReaderViewState` 注释)。
+   */
+  getState() {
+    return { ...buildReaderViewState({ bookId: this.entry?.book.id, immersive: this.isImmersive }) };
+  }
+  /**
+   * v0.3.3: Obsidian 恢复 workspace 时调这个, 我们据此把书重新打开。
+   *
+   * 时序上 `result.loaded` 之前 `this.host` 还不存在 (onOpen 还没建完
+   * DOM), 所以必须等它 —— `setEntry` 里虽有 "host 未就绪就 rAF 重试"
+   * 的兜底, 但那条路是给 `Plugin.openReader` 同步调用准备的; 恢复路径
+   * 我们主动等, 少一次竞态。
+   *
+   * 注意 Obsidian 的 `ViewStateResult` 上**没有** `loaded` (只有
+   * `history: boolean`), 所以这里等的是我们自己的 `whenHostReady()`。
+   * `result` 仍然签名必需, 但我们用不上它。
+   *
+   * 书不在库里 (被删了 / 书库还没 initialize 完) 时**不** `setState`,
+   * 直接 `return`: 保持一个空壳 leaf 总比一个报错的阅读器好。
+   */
+  async setState(rawState, result) {
+    const parsed = parseReaderViewState(rawState);
+    if (!parsed) return;
+    await this.whenHostReady();
+    const entry = parsed.file ? this.deps.library?.get(parsed.file) : void 0;
+    if (!entry) {
+      return;
+    }
+    if (parsed.immersive === true) {
+      this.isImmersive = true;
+      this.containerEl.children[1]?.classList?.add("ez-reader__immersive");
+    }
+    this.setEntry(entry);
+    this.leaf.setEphemeralState?.({ file: entry.book.id });
+    result.history = false;
+  }
   async onOpen() {
     const container = this.containerEl.children[1];
     container.empty();
@@ -24554,6 +25567,8 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     this.bindReadingTimeTracker();
     this.bindActiveReadingDetector();
     if (this.entry) await this.openSession();
+    this.hostReadyResolve?.();
+    this.hostReadyResolve = void 0;
   }
   async onClose() {
     if (this.pendingClosePromise) {
@@ -24582,6 +25597,8 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     this.searchBar = void 0;
     this.notesPanel?.dispose();
     this.host = void 0;
+    this.hostReadyPromise = void 0;
+    this.hostReadyResolve = void 0;
     this.markReady();
     this.pendingSelection = void 0;
   }
@@ -24648,6 +25665,29 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
    */
   readyPromise;
   readyResolve;
+  /**
+   * v0.3.3: host (stage 容器) 建好之后 resolve。
+   *
+   * Obsidian 的 `ViewStateResult` 只有 `history: boolean`, 没有 loaded
+   * promise —— 社区插件常见的 `await result.loaded` 写法在本项目的
+   * obsidian.d.ts 上根本不存在。所以恢复 workspace 时, `setState` 只能
+   * 等我们自己的这个信号, 否则 `setEntry` 会在 host 还是 undefined 时
+   * 被调用, 只能退回 rAF + 100ms 轮询赌时序。
+   *
+   * 已经在 onOpen 结束之后才 setState 的调用方不会 await 它 (promise
+   * 已经 resolve, `await` 立即返回), 无副作用。
+   */
+  hostReadyPromise;
+  hostReadyResolve;
+  /** 等 onOpen 建好 stage 容器。重复调用返回同一个 promise。 */
+  whenHostReady() {
+    if (!this.hostReadyPromise) {
+      this.hostReadyPromise = new Promise((resolve) => {
+        this.hostReadyResolve = resolve;
+      });
+    }
+    return this.hostReadyPromise;
+  }
   // P0-1 修复: 30s 兜底 timer 必须保存 handle, 在 markReady / onClose /
   // setEntry 时 clear. 之前 fire-and-forget, view 关闭后 timer 还持有 view
   // 引用直到 30s 后 fire, 反复开关书会累积僵尸 timer.
@@ -24800,8 +25840,8 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
     window.addEventListener("focus", onWindowFocus);
     this.register(() => window.removeEventListener("blur", onWindowBlur));
     this.register(() => window.removeEventListener("focus", onWindowFocus));
-    const host = this.host;
-    if (!host) return;
+    const host2 = this.host;
+    if (!host2) return;
     let lastNotifiedAt = 0;
     const onInteraction = () => {
       if (this.deps.app.workspace.activeLeaf !== this.leaf) return;
@@ -24821,11 +25861,11 @@ var ReaderView = class _ReaderView extends import_obsidian17.ItemView {
       "wheel"
     ];
     for (const ev of interactionEvents) {
-      host.addEventListener(ev, onInteraction, { passive: true });
+      host2.addEventListener(ev, onInteraction, { passive: true });
     }
     this.register(() => {
       for (const ev of interactionEvents) {
-        host.removeEventListener(ev, onInteraction);
+        host2.removeEventListener(ev, onInteraction);
       }
     });
   }
@@ -26061,6 +27101,16 @@ ${translated}`;
   }
 };
 
+// src/ui/reader/readerLeafState.ts
+var readerLeafMatchesBook = (layoutState, viewBookId, bookId) => {
+  if (typeof viewBookId === "string" && viewBookId.length > 0) {
+    return viewBookId === bookId;
+  }
+  if (!layoutState || typeof layoutState !== "object" || Array.isArray(layoutState)) return false;
+  const file = layoutState.file;
+  return typeof file === "string" && file === bookId;
+};
+
 // src/ui/settings/SettingsTab.ts
 var import_obsidian18 = require("obsidian");
 
@@ -26122,7 +27172,7 @@ var debounceAsync = (fn, ms = 300) => {
       try {
         await fn(...args);
       } catch (error) {
-        console.error("[ez-reader] debounced settings save failed", error);
+        new import_obsidian18.Notice(`\u4FDD\u5B58\u8BBE\u7F6E\u5931\u8D25: ${describeSaveFailure(error)}`);
       }
     }
   };
@@ -26143,6 +27193,13 @@ var debounceAsync = (fn, ms = 300) => {
     pendingArgs = void 0;
   };
   return debounced;
+};
+var describeSaveFailure = (error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/https:\/\//i.test(message) || message.includes("API \u57FA\u7840\u5730\u5740")) {
+    return "API \u57FA\u7840\u5730\u5740\u5FC5\u987B\u662F\u4EE5 https:// \u5F00\u5934\u7684\u7F51\u5740(\u4E3A\u907F\u514D API key \u660E\u6587\u5916\u53D1, \u5DF2\u62D2\u7EDD\u53D1\u9001)\u3002\u8BF7\u5728\u300C\u7FFB\u8BD1\u670D\u52A1 \u2192 LLM \xB7 API \u57FA\u7840\u5730\u5740\u300D\u91CC\u6539\u6389\u3002";
+  }
+  return `\u4FDD\u5B58\u8BBE\u7F6E\u5931\u8D25: ${message}`;
 };
 var SettingsTab = class extends import_obsidian18.PluginSettingTab {
   constructor(app, plugin, annotations, providers = []) {
@@ -26182,6 +27239,51 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
     this.renderTranslationSection(containerEl);
     this.renderUISection(containerEl);
     this.renderAboutSection(containerEl);
+  }
+  /**
+   * Flush every pending debounced write. Public so the host can commit
+   * before teardown — `Plugin.onunload()` has the same problem as `hide()`
+   * (an in-flight 300ms timer dies with the process), and that file is
+   * outside this fix's write scope.
+   *
+   * Must never reject: callers fire-and-forget it (`void this.x()`), and a
+   * rejection here would itself become an unhandled rejection.
+   */
+  async flushPendingSaves() {
+    const pending = this.activeDebouncers;
+    this.activeDebouncers = [];
+    if (pending.length === 0) return;
+    await Promise.allSettled(pending.map((d2) => d2.flush()));
+  }
+  /**
+   * Obsidian closes the settings modal by calling `hide()`, and the base
+   * implementation does nothing. Without this override, the debounced
+   * writes for the last edit (a slider drag, or the LLM `baseUrl` text
+   * field) die with the modal: the user typed a value, closed settings,
+   * and it was never written to `data.json`. `display()` already flushes
+   * on tab switches; this covers the close-the-whole-modal path.
+   */
+  hide() {
+    void this.flushPendingSaves();
+  }
+  /**
+   * Run an async settings mutation, converting any rejection into a Notice.
+   *
+   * Every `onChange(async …)` in this file used to be unhandled: it is
+   * handed to Obsidian's dropdown/toggle, which neither awaits nor catches
+   * it. A rejection there is an unhandled promise rejection — invisible to
+   * the user, and `no-console` means there's not even a log line. These
+   * handlers really do throw now (the provider's https security gate, disk
+   * errors from `patchSettings`), so every one of them is wrapped here.
+   *
+   * Resolves (never rejects) so callers can `void this.runSafely(…)`.
+   */
+  async runSafely(label, fn) {
+    try {
+      await fn();
+    } catch (error) {
+      new import_obsidian18.Notice(`${label}\u5931\u8D25: ${describeSaveFailure(error)}`);
+    }
   }
   /**
    * Wrap an async save function in a trailing-edge debouncer and register
@@ -26234,13 +27336,15 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
       void this.loadSettings().then((s3) => {
         dropdown.setValue(s3.defaultAppearance.theme);
       });
-      dropdown.onChange(async (value) => {
-        if (!THEMES2.includes(value)) return;
-        await this.annotations.patchSettings((s3) => ({
-          ...s3,
-          defaultAppearance: { ...s3.defaultAppearance, theme: value }
-        }));
-      });
+      dropdown.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u9ED8\u8BA4\u4E3B\u9898", async () => {
+          if (!THEMES2.includes(value)) return;
+          await this.annotations.patchSettings((s3) => ({
+            ...s3,
+            defaultAppearance: { ...s3.defaultAppearance, theme: value }
+          }));
+        })
+      );
     });
     new import_obsidian18.Setting(containerEl).setName("\u9ED8\u8BA4\u6392\u7248").setDesc("paginated = \u5355\u9875\u7FFB\u9875; scrolled = \u6EDA\u5C4F").addDropdown((dropdown) => {
       dropdown.addOption("paginated", "\u5355\u9875\u7FFB\u9875");
@@ -26248,13 +27352,15 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
       void this.loadSettings().then((s3) => {
         dropdown.setValue(s3.defaultAppearance.flow);
       });
-      dropdown.onChange(async (value) => {
-        if (value !== "paginated" && value !== "scrolled") return;
-        await this.annotations.patchSettings((s3) => ({
-          ...s3,
-          defaultAppearance: { ...s3.defaultAppearance, flow: value }
-        }));
-      });
+      dropdown.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u9ED8\u8BA4\u6392\u7248", async () => {
+          if (value !== "paginated" && value !== "scrolled") return;
+          await this.annotations.patchSettings((s3) => ({
+            ...s3,
+            defaultAppearance: { ...s3.defaultAppearance, flow: value }
+          }));
+        })
+      );
     });
   }
   // ---- 阅读体验 ----
@@ -26266,34 +27372,42 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
       void this.loadSettings().then((s3) => {
         dropdown.setValue(s3.readerOpenMode);
       });
-      dropdown.onChange(async (value) => {
-        if (value !== "tab" && value !== "window") return;
-        await this.annotations.patchSettings((s3) => ({ ...s3, readerOpenMode: value }));
-      });
+      dropdown.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u9605\u8BFB\u5668\u6253\u5F00\u65B9\u5F0F", async () => {
+          if (value !== "tab" && value !== "window") return;
+          await this.annotations.patchSettings((s3) => ({ ...s3, readerOpenMode: value }));
+        })
+      );
     });
     new import_obsidian18.Setting(containerEl).setName("\u8BB0\u4F4F\u9605\u8BFB\u8FDB\u5EA6").setDesc("\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8DF3\u8F6C\u5230\u4E0A\u6B21\u9605\u8BFB\u4F4D\u7F6E").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.rememberProgress !== false);
       });
-      toggle.onChange(async (value) => {
-        await this.annotations.patchSettings((s3) => ({ ...s3, rememberProgress: value }));
-      });
+      toggle.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u9605\u8BFB\u8FDB\u5EA6\u9009\u9879", async () => {
+          await this.annotations.patchSettings((s3) => ({ ...s3, rememberProgress: value }));
+        })
+      );
     });
     new import_obsidian18.Setting(containerEl).setName("\u9ED8\u8BA4\u53CC\u9875\u663E\u793A").setDesc("\u65B0\u4E66\u6253\u5F00\u65F6\u9ED8\u8BA4\u5F00\u542F\u53CC\u9875(\u4EC5\u684C\u9762, foliate \u9002\u7528)").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.twoPagesByDefault ?? false);
       });
-      toggle.onChange(async (value) => {
-        await this.annotations.patchSettings((s3) => ({ ...s3, twoPagesByDefault: value }));
-      });
+      toggle.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u53CC\u9875\u663E\u793A\u9009\u9879", async () => {
+          await this.annotations.patchSettings((s3) => ({ ...s3, twoPagesByDefault: value }));
+        })
+      );
     });
     new import_obsidian18.Setting(containerEl).setName("Pad \u9ED8\u8BA4\u6C89\u6D78\u6A21\u5F0F").setDesc("\u5728 Pad / \u7A84\u5C4F\u4E0A\u6253\u5F00\u4E66\u65F6\u81EA\u52A8\u8FDB\u5165\u6C89\u6D78\u6A21\u5F0F(\u9690\u85CF\u5DE5\u5177\u680F)").addToggle((toggle) => {
       void this.loadSettings().then((s3) => {
         toggle.setValue(s3.immersiveOnTablet ?? false);
       });
-      toggle.onChange(async (value) => {
-        await this.annotations.patchSettings((s3) => ({ ...s3, immersiveOnTablet: value }));
-      });
+      toggle.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u6C89\u6D78\u6A21\u5F0F\u9009\u9879", async () => {
+          await this.annotations.patchSettings((s3) => ({ ...s3, immersiveOnTablet: value }));
+        })
+      );
     });
     const shortcutSummary = new import_obsidian18.Setting(containerEl).setName("\u952E\u76D8\u5FEB\u6377\u952E").setDesc("\u9605\u8BFB\u5668\u952E\u76D8\u5FEB\u6377\u952E(\u5F53\u524D\u53EA\u8BFB;\u81EA\u5B9A\u4E49\u7F16\u8F91\u5668\u5728\u8DEF\u7EBF\u56FE\u91CC)");
     void this.loadSettings().then((s3) => {
@@ -26344,22 +27458,24 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
       void this.loadSettings().then((s3) => {
         dropdown.setValue(s3.translation?.providerId ?? "none");
       });
-      dropdown.onChange(async (value) => {
-        await this.annotations.patchSettings((s3) => {
-          if (value === "none") {
-            return { ...s3, translation: null };
-          }
-          const prevProvider = s3.translation?.providerId;
-          const next = {
-            providerId: value,
-            apiKey: prevProvider === value ? s3.translation?.apiKey ?? "" : "",
-            sourceLocale: s3.translation?.sourceLocale ?? "auto",
-            targetLocale: s3.translation?.targetLocale ?? "zh-CN"
-          };
-          return { ...s3, translation: next };
-        });
-        await this.renderTranslationApiKeyUi(containerEl);
-      });
+      dropdown.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u7FFB\u8BD1\u670D\u52A1", async () => {
+          await this.annotations.patchSettings((s3) => {
+            if (value === "none") {
+              return { ...s3, translation: null };
+            }
+            const prevProvider = s3.translation?.providerId;
+            const next = {
+              providerId: value,
+              apiKey: prevProvider === value ? s3.translation?.apiKey ?? "" : "",
+              sourceLocale: s3.translation?.sourceLocale ?? "auto",
+              targetLocale: s3.translation?.targetLocale ?? "zh-CN"
+            };
+            return { ...s3, translation: next };
+          });
+          await this.renderTranslationApiKeyUi(containerEl);
+        })
+      );
     });
     const hint = providerSetting.settingEl.createDiv({ cls: "ez-reader__settings-hint is-hidden" });
     const refreshHint = (providerId) => {
@@ -26635,11 +27751,13 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
       void this.annotations.listSettings().then((settings) => {
         dropdown.setValue(isUiLocale(settings.uiLocale) ? settings.uiLocale : "zh-CN");
       });
-      dropdown.onChange(async (value) => {
-        if (!isUiLocale(value)) return;
-        await this.annotations.patchSettings((s3) => ({ ...s3, uiLocale: value }));
-        new import_obsidian18.Notice("\u754C\u9762\u8BED\u8A00\u5C06\u5728\u91CD\u542F\u540E\u751F\u6548");
-      });
+      dropdown.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u754C\u9762\u8BED\u8A00", async () => {
+          if (!isUiLocale(value)) return;
+          await this.annotations.patchSettings((s3) => ({ ...s3, uiLocale: value }));
+          new import_obsidian18.Notice("\u754C\u9762\u8BED\u8A00\u5C06\u5728\u91CD\u542F\u540E\u751F\u6548");
+        })
+      );
     });
     new import_obsidian18.Setting(containerEl).setName("\u4E66\u67B6\u5C01\u9762\u5BC6\u5EA6").setDesc("\u5F71\u54CD\u7F51\u683C\u5217\u6570\u548C\u5217\u8868\u5C01\u9762\u5C3A\u5BF8\u3002\u7D27\u51D1=\u6BCF\u884C\u591A\u672C,\u8D85\u5927=\u6BCF\u884C\u4E00\u672C\u5927\u5C01\u9762\u3002").addDropdown((dropdown) => {
       for (const density of SHELF_DENSITIES) {
@@ -26649,10 +27767,12 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
         const raw = s3.shelfDensity ?? "default";
         dropdown.setValue(SHELF_DENSITIES.includes(raw) ? raw : "default");
       });
-      dropdown.onChange(async (value) => {
-        if (!SHELF_DENSITIES.includes(value)) return;
-        await this.annotations.patchSettings((s3) => ({ ...s3, shelfDensity: value }));
-      });
+      dropdown.onChange(
+        (value) => this.runSafely("\u4FDD\u5B58\u5C01\u9762\u5BC6\u5EA6", async () => {
+          if (!SHELF_DENSITIES.includes(value)) return;
+          await this.annotations.patchSettings((s3) => ({ ...s3, shelfDensity: value }));
+        })
+      );
     });
   }
   // ---- 关于 ----
@@ -26672,21 +27792,29 @@ var SettingsTab = class extends import_obsidian18.PluginSettingTab {
     importBtn.onclick = () => void this.importData();
   }
   async exportData() {
-    const data = await this.annotations.load();
-    const json = JSON.stringify(redactSecrets(data), null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a3 = document.createElement("a");
-    a3.href = url;
-    a3.download = `ez-reader-export-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a3);
-    a3.click();
-    a3.remove();
-    URL.revokeObjectURL(url);
-    const hadKey = typeof data?.settings?.translation?.apiKey === "string" && !!data?.settings?.translation?.apiKey;
-    new import_obsidian18.Notice(
-      hadKey ? "\u6570\u636E\u5DF2\u5BFC\u51FA (API key \u5DF2\u8131\u654F, \u4E0D\u4F1A\u5199\u5165\u5907\u4EFD\u6587\u4EF6)" : "\u6570\u636E\u5DF2\u5BFC\u51FA"
-    );
+    try {
+      const data = await this.annotations.load();
+      const json = JSON.stringify(redactSecrets(data), null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const a3 = document.createElement("a");
+        a3.href = url;
+        a3.download = `ez-reader-export-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a3);
+        a3.click();
+        a3.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      const hadKey = typeof data?.settings?.translation?.apiKey === "string" && !!data?.settings?.translation?.apiKey;
+      new import_obsidian18.Notice(
+        hadKey ? "\u6570\u636E\u5DF2\u5BFC\u51FA (API key \u5DF2\u8131\u654F, \u4E0D\u4F1A\u5199\u5165\u5907\u4EFD\u6587\u4EF6)" : "\u6570\u636E\u5DF2\u5BFC\u51FA"
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new import_obsidian18.Notice(`\u5BFC\u51FA\u5931\u8D25: ${message}`);
+    }
   }
   async importData() {
     const input = document.createElement("input");
@@ -26896,6 +28024,10 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
   }
   onunload() {
     this.library?.dispose();
+    void Promise.resolve().then(() => (init_pdfOverlay(), pdfOverlay_exports)).then(({ unmountAllPdfOverlays: unmountAllPdfOverlays2 }) => {
+      unmountAllPdfOverlays2();
+    }).catch(() => {
+    });
     if (typeof this.__ezReaderPreviousShowUnsupported === "boolean") {
       const vault = this.app.vault;
       void vault.setConfig?.("showUnsupportedFiles", this.__ezReaderPreviousShowUnsupported);
@@ -26945,11 +28077,11 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
    */
   makeTextReader() {
     return {
-      open: async (book, host, appearance, loader) => {
+      open: async (book, host2, appearance, loader) => {
         if (book.locator.format === "mobi" || book.locator.format === "azw3") {
-          return this.mobiReader.open(book, host, appearance, loader);
+          return this.mobiReader.open(book, host2, appearance, loader);
         }
-        return this.txtReader.open(book, host, appearance, loader);
+        return this.txtReader.open(book, host2, appearance, loader);
       },
       extractCover: async (book, loader) => {
         if (book.locator.format === "mobi" || book.locator.format === "azw3") {
@@ -26975,6 +28107,23 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
       translationLocale: settings.translation?.targetLocale ?? "zh-CN",
       rememberProgress: settings.rememberProgress !== false
     };
+  }
+  /**
+   * v0.3.3: 读 `readerOpenMode` 设置 (设置页"打开阅读器方式"下拉框)。
+   *
+   * 单开一个方法而不是塞进 `loadReaderSettings`: 后者是 ReaderView 的
+   * `settingsProvider`, 每次开书都要 await 一遍, 而打开方式只被
+   * `openReader` 用一次。读失败 / 字段缺失一律 fallback `"tab"` ——
+   * 这是**默认值也是 Obsidian 的标准行为**, 猜错的话用户会得到一个
+   * 凭空弹出、抢焦点的窗口, 比"没生效"糟糕得多。
+   */
+  async loadReaderOpenMode() {
+    try {
+      const settings = await this.annotationStore.listSettings();
+      return settings.readerOpenMode === "window" ? "window" : "tab";
+    } catch {
+      return "tab";
+    }
   }
   async handleProtocol(params) {
     const bookId = params.book ?? params.path;
@@ -27014,9 +28163,11 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
       }
       await this.withTimeout(this.openReader(entry), 8e3, "openReader");
       if (excerptId) {
-        const leaf = this.findReaderLeafForBook(bookId) ?? this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
+        const leaf = this.findReaderLeafForBook(bookId);
         if (leaf?.view instanceof ReaderView) {
           await this.withTimeout(leaf.view.openExcerptById(excerptId), 3e4, "openExcerptById");
+        } else {
+          console.warn("[ez-reader] handleProtocol: reader leaf for book not found", bookId);
         }
       }
     } catch (error) {
@@ -27081,8 +28232,10 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
   }
   findReaderLeafForBook(bookId) {
     for (const leaf of this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)) {
-      const state = leaf.getViewState();
-      if (state.state && state.state.file === bookId) {
+      const view = leaf.view;
+      const viewBookId = view instanceof ReaderView ? view.getCurrentBookId() : void 0;
+      const layoutState = leaf.getViewState()?.state;
+      if (readerLeafMatchesBook(layoutState, viewBookId, bookId)) {
         return leaf;
       }
     }
@@ -27132,10 +28285,21 @@ var EzReaderPlugin = class extends import_obsidian20.Plugin {
       await this.openInBuiltInViewer(entry);
       return;
     }
-    const leaf = this.app.workspace.getLeaf("tab");
+    const reusable = this.findReaderLeafForBook(entry.book.id);
+    if (reusable) {
+      await this.app.workspace.revealLeaf(reusable);
+      this.app.workspace.setActiveLeaf(reusable);
+      return;
+    }
+    const mode = await this.loadReaderOpenMode();
+    const leaf = this.app.workspace.getLeaf(mode === "window" ? "window" : "tab");
     await leaf.setViewState({
       type: READER_VIEW_TYPE,
-      state: { file: entry.book.locator.path },
+      // 存 bookId 而不是 path —— 两者在 ObsidianBookSource.resolveId 里
+      // 是同一个值 (resolveId(locator) => locator.path), 但 ReaderView
+      // 是拿这个字段去 `library.get(...)` 查的, 语义上是 id, 写 path
+      // 只是碰巧相等。
+      state: { file: entry.book.id },
       active: true
     });
     const view = leaf.view;
