@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
@@ -58,17 +58,20 @@ for (const key of DOM_GLOBALS) {
 }
 installObsidianDomHelpers(globalThis.HTMLElement);
 
-// TEMP TRACER
-{
-  const w = dom.window as unknown as { setTimeout: (f: () => void, ms?: number, ...r: unknown[]) => unknown };
-  const orig = w.setTimeout.bind(w);
-  const log: unknown[] = [];
-  (globalThis as unknown as { __longTimers: unknown[] }).__longTimers = log;
-  w.setTimeout = (f: () => void, ms?: number, ...r: unknown[]) => {
-    if ((ms ?? 0) >= 1000) log.push({ ms, stack: new Error().stack?.split("\n").slice(1, 8).join("\n  ") });
-    return orig(f, ms, ...r);
-  };
-}
+/**
+ * 收尾时关掉 jsdom window。
+ *
+ * PdfOverlay 会往 `window.setTimeout` 里塞 30s 的静默 timer (阅读时长检测),
+ * jsdom 的定时器是**真的 Node timer**, 会一直吊着 event loop, 于是整个测试
+ * 文件明明跑完 0.2 秒, node --test 却要等 30 秒才退出。`window.close()` 是
+ * jsdom 官方的拆除入口, 它会把窗口内所有 timer 清掉。
+ *
+ * 前提: 每个用例都在 finally 里 unmount 掉了自己的 overlay, 所以这里不会有
+ * "半活的 overlay 被连带清掉" 的副作用。
+ */
+after(() => {
+  dom.window.close();
+});
 
 /**
  * Obsidian 运行时给 HTMLElement.prototype 打的 `setCssProps` patch — 公共 stub
@@ -77,7 +80,13 @@ installObsidianDomHelpers(globalThis.HTMLElement);
  * 注意 `setCssProps` 不是 Obsidian 公开 API 的稳定部分, 但 PDF overlay 现有
  * 代码已经全靠它, 测试必须跟上真实运行时。
  */
-if (typeof (globalThis.HTMLElement.prototype as Record<string, unknown>).setCssProps !== "function") {
+// `HTMLElement.prototype` 没有 index signature,直接 cast 到 `Record<string, unknown>`
+// 会被 TS 拒(TS2352)。先过 `unknown` —— 这里就是要在 prototype 上探测一个非公开
+// 的 patch 方法,TS 的类型信息对它没有发言权。
+if (
+  typeof (globalThis.HTMLElement.prototype as unknown as Record<string, unknown>).setCssProps !==
+  "function"
+) {
   Object.defineProperty(globalThis.HTMLElement.prototype, "setCssProps", {
     writable: true,
     configurable: true,
@@ -610,8 +619,4 @@ test("Bug 4: 每一个 refreshNotesPanel() 调用点都被 await 或 .catch 包�
     /private requestNotesPanelRefresh\(\): void/,
     "应有一个吞错 + Notice 的 fire-and-forget 入口"
   );
-});
-
-test("TEMP probe", () => {
-  console.log("TIMERS:\n" + JSON.stringify((globalThis as unknown as { __longTimers: unknown[] }).__longTimers, null, 1));
 });
