@@ -1,5 +1,5 @@
 import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
-import type { App } from "obsidian";
+import type { App, ViewStateResult } from "obsidian";
 import type { Bookmark } from "../../core/entities/Bookmark";
 import type { Book, BookFormat } from "../../core/entities/Book";
 import type { Excerpt } from "../../core/entities/Excerpt";
@@ -36,6 +36,63 @@ import type { TranslationService } from "../../core/ports/TranslationProvider";
 import type { Locale } from "../../core/types/Locale";
 
 export const READER_VIEW_TYPE = "ez-reader-view";
+
+/**
+ * v0.3.3: ReaderView 的 workspace 持久化状态。
+ *
+ * 之前 ReaderView **没有** `getState` / `setState`。两个后果:
+ *  1. Obsidian 重启时恢复上次开着的阅读器标签页 → 恢复出来的 leaf 里
+ *     `this.entry` 永远是 `undefined` → `openSession()` 第一行就 return,
+ *     用户看到的是**一个只有工具栏的空壳阅读器**, 书没了。
+ *  2. `Plugin.findReaderLeafForBook` 依赖 `leaf.getViewState().state.file`
+ *     做匹配, 没有 `getState` 时这个值拿不到 → obsidian:// 协议的
+ *     "回到原文" 每次都新开一个标签页。
+ *
+ * 注意 `file` 存的是 **bookId**, 而 bookId 在 ObsidianBookSource.resolveId
+ * 里就是 vault 相对路径 (`resolveId(locator) => locator.path`)。
+ * 不额外存路径 — 两者是同一个值, 存两份迟早会分叉。
+ */
+export interface ReaderViewState {
+  /** bookId (=== vault 相对路径)。空字符串表示"阅读器开着但没有书"。 */
+  readonly file: string;
+  /** 是否处于沉浸模式 —— 恢复时保持用户的视觉状态。 */
+  readonly immersive?: boolean;
+}
+
+/**
+ * 纯函数: 当前视图 → 可持久化状态。
+ *
+ * 刻意**不**存 fraction / locator: 续读位置由 data.json 的
+ * `ReadingState.position` 负责 (见 `resumeFromPosition`), 那才是跨设备
+ * 同步的权威来源。把 fraction 也写进 workspace state 会产生第二个真相
+ * 源 —— data.json 往后走, workspace state 停在退出那一刻, 谁新谁旧说不清。
+ */
+export const buildReaderViewState = (input: {
+  readonly bookId: string | undefined;
+  readonly immersive: boolean;
+}): ReaderViewState => ({
+  file: input.bookId ?? "",
+  immersive: input.immersive
+});
+
+/**
+ * 纯函数: Obsidian 存回来的 workspace state → 校验过的 `ReaderViewState`。
+ *
+ * 校验而不是直接 cast, 因为 workspace state 会跟着 layout 持久化到
+ * `workspace.json` — 用户手改、跨版本升级、Obsidian 自己的 schema 变更
+ * 都可能送来任意形状。返回 `null` 表示"这条 state 我用不了", 调用方
+ * 保持空壳而不是拿 `undefined` 去查 vault(那会得到一个 SyntaxError
+ * 风格的难懂报错, 用户完全无从下手)。
+ */
+export const parseReaderViewState = (raw: unknown): ReaderViewState | null => {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const candidate = raw as { file?: unknown; immersive?: unknown };
+  if (typeof candidate.file !== "string") return null;
+  return {
+    file: candidate.file,
+    immersive: candidate.immersive === true ? true : undefined
+  };
+};
 
 interface ReaderViewDeps {
   readonly app: App;
@@ -367,6 +424,67 @@ export class ReaderView extends ItemView {
     return "book-open";
   }
 
+  /**
+   * v0.3.3: 当前打开的 bookId, 没打开书时 `undefined`。
+   *
+   * `Plugin.findReaderLeafForBook` 用它做第二重匹配。为什么要第二重:
+   * `leaf.getViewState()` 读的是 **Obsidian 记下的最后状态**, 而
+   * `setEntry` 是纯内存操作 —— 用户在同一个 leaf 里从 A 换到 B 之后,
+   * layout 里存的还是 A, 拿它去匹配 B 会漏。view 实例上的
+   * `this.entry` 才是真相源。
+   */
+  getCurrentBookId(): string | undefined {
+    return this.entry?.book.id;
+  }
+
+  /**
+   * v0.3.3: 告诉 Obsidian 这个 leaf 在显示哪本书, 好让它写进
+   * `workspace.json`。之前整个方法缺失, 结果重启后恢复出来的阅读器
+   * 标签页是空的 (详见 `ReaderViewState` 注释)。
+   */
+  getState(): Record<string, unknown> {
+    return { ...buildReaderViewState({ bookId: this.entry?.book.id, immersive: this.isImmersive }) };
+  }
+
+  /**
+   * v0.3.3: Obsidian 恢复 workspace 时调这个, 我们据此把书重新打开。
+   *
+   * 时序上 `result.loaded` 之前 `this.host` 还不存在 (onOpen 还没建完
+   * DOM), 所以必须等它 —— `setEntry` 里虽有 "host 未就绪就 rAF 重试"
+   * 的兜底, 但那条路是给 `Plugin.openReader` 同步调用准备的; 恢复路径
+   * 我们主动等, 少一次竞态。
+   *
+   * 注意 Obsidian 的 `ViewStateResult` 上**没有** `loaded` (只有
+   * `history: boolean`), 所以这里等的是我们自己的 `whenHostReady()`。
+   * `result` 仍然签名必需, 但我们用不上它。
+   *
+   * 书不在库里 (被删了 / 书库还没 initialize 完) 时**不** `setState`,
+   * 直接 `return`: 保持一个空壳 leaf 总比一个报错的阅读器好。
+   */
+  async setState(rawState: unknown, result: ViewStateResult): Promise<void> {
+    const parsed = parseReaderViewState(rawState);
+    if (!parsed) return;
+    await this.whenHostReady();
+    const entry = parsed.file ? this.deps.library?.get(parsed.file) : undefined;
+    if (!entry) {
+      // 书被移出书库 / 书库还没扫描完。留空壳, 不抛 —— 用户重启后
+      // 先看到书架再重新点开是正常路径, 这里抛错只会让整次恢复失败。
+      return;
+    }
+    if (parsed.immersive === true) {
+      this.isImmersive = true;
+      this.containerEl.children[1]?.classList?.add("ez-reader__immersive");
+    }
+    this.setEntry(entry);
+    // 恢复出来的 leaf 焦点由 Obsidian 决定, 这里不抢 —— 但要让
+    // `Plugin.openReader` 那条路能复用这个 leaf (而不是再开一个), 靠的正是
+    // `getState()` 刚写进去的 `file`。
+    this.leaf.setEphemeralState?.({ file: entry.book.id });
+    // `result.history` 由 Obsidian 用来决定要不要进导航历史。恢复路径
+    // 不该产生一条 "后退回去是空阅读器" 的历史记录, 显式关掉。
+    result.history = false;
+  }
+
   async onOpen(): Promise<void> {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
@@ -539,6 +657,11 @@ export class ReaderView extends ItemView {
     this.bindReadingTimeTracker();
     this.bindActiveReadingDetector();
     if (this.entry) await this.openSession();
+    // v0.3.3: host 至此才算真的可用。`setState` (workspace 恢复路径) 必须
+    // 等这个信号 —— Obsidian 的 `ViewStateResult` 上**没有** loaded promise
+    // (只有 `history: boolean`), 没有自己的信号就只能靠 rAF/timeout 猜时机。
+    this.hostReadyResolve?.();
+    this.hostReadyResolve = undefined;
   }
 
   async onClose(): Promise<void> {
@@ -578,6 +701,11 @@ export class ReaderView extends ItemView {
     this.searchBar = undefined;
     this.notesPanel?.dispose();
     this.host = undefined;
+    // v0.3.3: host 没了, 下一次 `onOpen` 必须能重新发信号, 否则
+    // `whenHostReady` 会返回一个**永远 resolve 不动**的旧 promise ——
+    // 同一个 view 实例被 Obsidian 复用时, 恢复路径会静默卡住。
+    this.hostReadyPromise = undefined;
+    this.hostReadyResolve = undefined;
     // P0-1 修复: 兜底 timer 必须 clear, 否则 view 关闭后 timer 还持有
     // view 引用直到 fire. 现在 markReady() 内部已经会 clear.
     this.markReady();
@@ -699,6 +827,31 @@ export class ReaderView extends ItemView {
    */
   private readyPromise: Promise<void> | undefined;
   private readyResolve: (() => void) | undefined;
+  /**
+   * v0.3.3: host (stage 容器) 建好之后 resolve。
+   *
+   * Obsidian 的 `ViewStateResult` 只有 `history: boolean`, 没有 loaded
+   * promise —— 社区插件常见的 `await result.loaded` 写法在本项目的
+   * obsidian.d.ts 上根本不存在。所以恢复 workspace 时, `setState` 只能
+   * 等我们自己的这个信号, 否则 `setEntry` 会在 host 还是 undefined 时
+   * 被调用, 只能退回 rAF + 100ms 轮询赌时序。
+   *
+   * 已经在 onOpen 结束之后才 setState 的调用方不会 await 它 (promise
+   * 已经 resolve, `await` 立即返回), 无副作用。
+   */
+  private hostReadyPromise: Promise<void> | undefined;
+  private hostReadyResolve: (() => void) | undefined;
+
+  /** 等 onOpen 建好 stage 容器。重复调用返回同一个 promise。 */
+  private whenHostReady(): Promise<void> {
+    if (!this.hostReadyPromise) {
+      this.hostReadyPromise = new Promise<void>((resolve) => {
+        this.hostReadyResolve = resolve;
+      });
+    }
+    return this.hostReadyPromise;
+  }
+
   // P0-1 修复: 30s 兜底 timer 必须保存 handle, 在 markReady / onClose /
   // setEntry 时 clear. 之前 fire-and-forget, view 关闭后 timer 还持有 view
   // 引用直到 30s 后 fire, 反复开关书会累积僵尸 timer.

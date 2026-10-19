@@ -17,9 +17,11 @@ for (const key of DOM_GLOBALS) {
 }
 
 const makeContent = (pageCount: number): PagedTextContent => ({
+  // PagedTextPage 的正文字段叫 `html` (显示用的 HTML), 不是 `text` ——
+  // 之前这里写成 `text`, 端口一进类型检查就报 TS2322.
   pages: Array.from({ length: pageCount }, (_, i) => ({
     id: `chapter${(i + 1).toString().padStart(3, "0")}`,
-    text: `page ${i + 1}`,
+    html: `page ${i + 1}`,
     css: []
   })),
   toc: [
@@ -29,6 +31,15 @@ const makeContent = (pageCount: number): PagedTextContent => ({
   ],
   chapterStartPages: [0, 1, 2]
 });
+
+/**
+ * 当前页的 0-based 下标.
+ *
+ * `PagedTextSession.currentPageIndex` 是 private, 外部读不到. 公开 API 里
+ * `currentPage()` 返回的是 1-based 页码, 减 1 就是内部下标 —— 用公开 API
+ * 推导, 不用 `as unknown as` 硬扒私有字段.
+ */
+const currentPageIndex = (session: PagedTextSession): number => (session.currentPage() ?? 1) - 1;
 
 const makeSession = (pageCount: number): PagedTextSession => {
   const content = makeContent(pageCount);
@@ -46,19 +57,19 @@ const makeSession = (pageCount: number): PagedTextSession => {
 test("PagedTextSession: goToSpineId turns to the matching page", async () => {
   const session = makeSession(5);
   await session.goToSpineId("chapter003");
-  assert.equal(session.currentPageIndex, 2);
+  assert.equal(currentPageIndex(session), 2);
 });
 
 test("PagedTextSession: goToSpineId is a no-op for unknown id", async () => {
   const session = makeSession(5);
   await session.goToSpineId("chapter999");
-  assert.equal(session.currentPageIndex, 0, "unknown id should not change current page");
+  assert.equal(currentPageIndex(session), 0, "unknown id should not change current page");
 });
 
 test("PagedTextSession: goToSpineId strips #anchor suffix", async () => {
   const session = makeSession(5);
   await session.goToSpineId("chapter003#section-1");
-  assert.equal(session.currentPageIndex, 2);
+  assert.equal(currentPageIndex(session), 2);
 });
 
 test("PagedTextSession: goToSpineId handles 9-digit MOBI spine ids", async () => {
@@ -66,7 +77,7 @@ test("PagedTextSession: goToSpineId handles 9-digit MOBI spine ids", async () =>
   const content: PagedTextContent = {
     pages: Array.from({ length: 4 }, (_, i) => ({
       id: (i + 1).toString().padStart(9, "0"),
-      text: `chapter ${i + 1}`,
+      html: `chapter ${i + 1}`,
       css: []
     })),
     toc: [],
@@ -79,7 +90,7 @@ test("PagedTextSession: goToSpineId handles 9-digit MOBI spine ids", async () =>
     content, host, appearance: DEFAULT_READER_APPEARANCE, loader
   });
   await session.goToSpineId("000000003");
-  assert.equal(session.currentPageIndex, 2);
+  assert.equal(currentPageIndex(session), 2);
 });
 
 test("PagedTextSession: link-click event fires when an anchor with data-ez-reader-href is clicked", async () => {

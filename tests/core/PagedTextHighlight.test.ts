@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 
 import { JSDOM } from "jsdom";
 
-import type { BookBytesLoader, ReaderSession } from "../../src/core/ports/BookReader";
+import type { BookBytesLoader } from "../../src/core/ports/BookReader";
 import type { PagedTextContent } from "../../src/adapters/text/PagedTextSession";
 import { PagedTextSession } from "../../src/adapters/text/PagedTextSession";
 import { DEFAULT_READER_APPEARANCE } from "../../src/core/types/ReaderSettings";
@@ -40,7 +40,15 @@ for (const key of DOM_GLOBALS) {
   (globalThis as Record<string, unknown>)[key] = (dom.window as unknown as Record<string, unknown>)[key];
 }
 
-const makeSession = (pages: ReadonlyArray<{ id: string; html: string }>): ReaderSession => {
+/**
+ * 返回具体的 `PagedTextSession` 而不是端口上的 `ReaderSession`.
+ *
+ * 端口上 `highlight?` / `removeHighlight?` 是**可选**方法, 拿端口类型去调
+ * 就会报 "Cannot invoke an object which is possibly 'undefined'". 这套测试
+ * 测的就是 PagedTextSession 的高亮实现, 用具体类拿到的正是**必选**方法,
+ * 不需要任何 `as any` 断言.
+ */
+const makeSession = (pages: ReadonlyArray<{ id: string; html: string }>): PagedTextSession => {
   const content: PagedTextContent = {
     pages,
     toc: [],
@@ -57,13 +65,13 @@ const makeSession = (pages: ReadonlyArray<{ id: string; html: string }>): Reader
   return session;
 };
 
-const countHighlightMarks = (session: ReaderSession, id: string): number => {
+const countHighlightMarks = (session: PagedTextSession, id: string): number => {
   const stage = session.element.querySelector(".ez-reader__paged-text");
   if (!stage) return 0;
   return stage.querySelectorAll(`mark[data-ez-reader-highlight-id="${id}"]`).length;
 };
 
-const sessionTextContent = (session: ReaderSession): string => {
+const sessionTextContent = (session: PagedTextSession): string => {
   const stage = session.element.querySelector(".ez-reader__paged-text");
   return stage?.textContent ?? "";
 };
@@ -126,7 +134,9 @@ test("highlight: cross-page highlight only renders on the page where the text li
   // Page 0 has no mark for this excerpt.
   assert.equal(countHighlightMarks(session, "ex-3"), 0);
   // Navigate to page 1 — mark should be present.
-  await session.goTo({ kind: "identifier", value: 1 });
+  // ReaderTarget.identifier 的 value 是 string (端口签名), 之前这里传了
+  // 数字 1 —— PagedTextSession 内部走 Number(target.value), 传 "1" 行为一致.
+  await session.goTo({ kind: "identifier", value: "1" });
   assert.equal(countHighlightMarks(session, "ex-3"), 1);
   await session.close();
 });

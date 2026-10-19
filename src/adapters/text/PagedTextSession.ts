@@ -140,8 +140,34 @@ export class PagedTextSession implements ReaderSession {
    *  set existed, every page flip appended two listeners + one cleanup closure
    *  into `disposers`, which was only drained at close(). After 100 flips we'd
    *  call 200 stale removeEventListener no-ops on session close. Now we
-   *  actively unbind on each flip. */
+   *  actively unbind on each flip.
+   *
+   *  注意这里只剩 **手势结束** 类事件(mouseup / touchend)。`selectionchange`
+   *  早就从"每页重挂"里拿掉了 —— 见下面 `documentSelectionHandler` 的注释。 */
   private selectionCleanup: (() => void) | null = null;
+  /**
+   * `selectionchange` 的唯一处理器。
+   *
+   * 为什么它必须挂在 **document** 上(而不是 stageEl / this.element):
+   * `selectionchange` 是 DOM 规范里定义在 `Document` 上的事件 —— 浏览器只在
+   * document 上 dispatch 它,既不会在 Element 上 dispatch,也不会从 document
+   * 冒泡到 Element(它根本不冒泡)。挂在元素上等于注册了一个永远不会被调用的
+   * 回调,这不是"低概率失效",是 100% 失效。之前正是这么写的,后果是移动端
+   * (Android WebView 划词)浮窗根本不弹 —— 桌面端碰巧能用只是因为 mouseup
+   * 那条兜底路径还在,用户以为功能是好的,直到换到平板才发现。
+   *
+   * 为什么用**实例字段**而不是构造函数里的局部函数: close() 必须用同一个函数
+   * 引用解绑,匿名函数传给 removeEventListener 是 no-op(规范要求同一个 listener
+   * 对象),解绑"看起来写了"但实际没摘掉。
+   *
+   * 为什么**只注册一次**而不是每次 renderPage 重挂: stageEl 从构造到 close
+   * 一直是同一个节点(翻页只 replaceChildren 子节点),每次重挂只会让回调按翻页
+   * 次数成倍触发 —— 一次划词弹出 N 个浮窗。
+   */
+  private readonly documentSelectionHandler = (): void => {
+    this.dispatchSelection();
+  };
+
   /** P1 polish: anchor click listener bound at stage level so it survives
    *  page flips. Catches <a data-ez-reader-href="..."> clicks (sanitizeHtml
    *  renames href → data-ez-reader-href so the browser doesn't navigate
@@ -212,6 +238,16 @@ export class PagedTextSession implements ReaderSession {
 
     this.host.append(this.element);
 
+    // 选词主通道:`selectionchange` 挂在 **Document** 上(规范要求,见
+    // documentSelectionHandler 的注释)。用 ownerDocument 而不是全局
+    // `document`,这样即使宿主元素来自别的 document(测试里的独立 jsdom、
+    // 未来的 iframe 宿主)也仍然绑在正确的那一个上。
+    //
+    // 每次 selectionchange 都会触发(拖选过程中一帧一次),真正的开销在
+    // dispatchSelection 里的 `stageEl.contains(...)` 过滤:选区不在我们页面上
+    // 时直接 return,用户在 Obsidian 别的面板里划词不会打扰到我们。
+    this.element.ownerDocument.addEventListener("selectionchange", this.documentSelectionHandler);
+
     // First render at page 0 — fire-after-mount so listeners attached via
     // `on("relocate", ...)` after `open()` still see the initial position.
     this.renderPage(0, "initial");
@@ -229,6 +265,13 @@ export class PagedTextSession implements ReaderSession {
       this.selectionCleanup();
       this.selectionCleanup = null;
     }
+    // 解绑 document 上的 selectionchange —— 必须用注册时那个函数引用
+    // (实例字段 documentSelectionHandler),换匿名函数等于没解绑。
+    // 忘记解的话,关掉的阅读器会话会继续响应全局选区变化。
+    this.element.ownerDocument.removeEventListener(
+      "selectionchange",
+      this.documentSelectionHandler
+    );
     // P1 polish: fire the "close" event so any on("close", ...) listeners
     // can react (e.g. releasing external resources). Firing before
     // disposeOn ensures listeners are still alive when the event runs;
@@ -548,29 +591,34 @@ export class PagedTextSession implements ReaderSession {
     };
     pageEl.addEventListener("animationend", onAnimationEnd);
 
-    // Hook selectionchange for this page — re-attach on every render.
+    // Hook the "selection gesture finished" signals for this page — re-attach
+    // on every render.
     //
-    // P1-3: 之前挂在 `document` 上, 选区在 vault 其他地方变化也会触发这里
-    // (例如用户从 PDF / markdown 复制文字). 每次 fire 都要跑 contains() 过滤,
-    // 高频触发下是纯浪费. 改用 mouseup / selectionend 挂在 stageEl —
-    // 只在用户真正在我们页面里选完词时触发, 触发频率从几十 Hz 降到几次/s.
+    // P1-3 之前这里挂的是 `document` 上的 selectionchange,后来为了省开销改成
+    // mouseup / selectionend 挂在 stageEl —— 但 selectionchange 是 Document 事件,
+    // 挂到 Element 上永远收不到,于是"省开销"变成了"移动端整条路径失效"。
+    // 现在分成两条正交的通道:
+    //   · selectionchange(选词**过程**信号)→ document,构造时注册一次,见构造函数。
+    //   · mouseup / touchend(选词**结束**信号)→ stageEl,每次 renderPage 重挂。
+    //     移动端没有 mouseup,划词抬手发的是 touchend / pointerup;之前只挂
+    //     mouseup,等于移动端少了一条"手势结束"的确认信号。
     //
-    // P1 polish: 每次翻页先清掉上一次的 listener — 否则旧的 (mouseup,
-    // selectionchange) 永远挂在 stageEl 上, 100 翻页 = 100 个 stale
-    // listener 累积到 close(). 现在 selectionCleanup 持有上一次 cleanup,
-    // 翻页前先调用一次, 把 stageEl 清干净再装新的.
+    // P1 polish: 每次翻页先清掉上一次的 listener —— 否则旧的 (mouseup,
+    // touchend) 永远挂在 stageEl 上, 100 翻页 = 100 个 stale listener
+    // 累积到 close()。现在 selectionCleanup 持有上一次 cleanup,
+    // 翻页前先调用一次, 把 stageEl 清干净再装新的。
     if (this.selectionCleanup) {
       this.selectionCleanup();
       this.selectionCleanup = null;
     }
     const onSelectionDone = () => this.dispatchSelection();
     this.stageEl.addEventListener("mouseup", onSelectionDone);
-    // selectionchange 在移动端 (iOS / Android) Safari / Chrome 触发,
-    // 桌面 Chrome / Firefox 不会触发 — 两个都挂保险.
-    this.stageEl.addEventListener("selectionchange", onSelectionDone);
+    // touchend = 移动端"划词抬手"。桌面端不会触发,移动端没有 mouseup,
+    // 两个都挂才覆盖两端(桌面拖选 / 触屏长按划词)。
+    this.stageEl.addEventListener("touchend", onSelectionDone);
     this.selectionCleanup = () => {
       this.stageEl.removeEventListener("mouseup", onSelectionDone);
-      this.stageEl.removeEventListener("selectionchange", onSelectionDone);
+      this.stageEl.removeEventListener("touchend", onSelectionDone);
     };
 
     // Fire relocate for any listener attached after mount.

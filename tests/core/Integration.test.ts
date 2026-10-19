@@ -9,19 +9,30 @@ import type {
   AnnotationStore
 } from "../../src/core/ports/AnnotationStore";
 import type { BookId, BookLocator, BookMetadata, CoverImage } from "../../src/core/entities/Book";
+import type { Bookmark } from "../../src/core/entities/Bookmark";
+import type { Excerpt } from "../../src/core/entities/Excerpt";
 import type { BookChangeHandler, BookSource } from "../../src/core/ports/BookSource";
 import type { Disposable } from "../../src/core/utils/Disposable";
 import type { ReadingState } from "../../src/core/entities/ReadingState";
 import type { TranslationProvider, TranslationRequest, TranslationResult } from "../../src/core/ports/TranslationProvider";
 import type { Locale } from "../../src/core/types/Locale";
+import type { PluginSettings } from "../../src/core/types/ReaderSettings";
+import { renameInSnapshot } from "../../src/core/utils/renameSnapshot";
 
 /**
  * Integration test that wires the real LibraryService + ReadingService
  * together against fake adapters. We deliberately avoid mocks of the
  * Obsidian runtime — these tests should pass on plain Node.
  */
-const next_settings = (raw: unknown): Record<string, unknown> => {
-  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+/**
+ * 把任意来源的 settings 归一化成一份完整的 PluginSettings.
+ *
+ * 之前这里返回 `Record<string, unknown>`,导致 `listSettings` / `patchSettings`
+ * 的签名跟 `AnnotationStore` 端口对不上 (TS2416),`implements AnnotationStore`
+ * 一直是假的. 现在返回真正的 `PluginSettings` —— 端口方法直接复用这个类型.
+ */
+const next_settings = (raw: unknown): PluginSettings => {
+  if (raw && typeof raw === "object") return raw as PluginSettings;
   return {
     uiLocale: "zh-CN",
     translation: null,
@@ -41,7 +52,6 @@ const next_settings = (raw: unknown): Record<string, unknown> => {
     readerOpenMode: "tab",
     twoPagesByDefault: false,
     immersiveOnTablet: false,
-    autoCreateNoteOnOpen: true, // legacy field, ignored by current code
     keyboardShortcuts: undefined,
     rememberProgress: true
   };
@@ -59,12 +69,12 @@ class InMemoryStore implements AnnotationStore {
   };
   /** Mirror ObsidianAnnotationStore.onSettingsChanged — listSettings TTL
    * cache busters (e.g. TranslationCoordinator.invalidate) plug in here. */
-  private settingsListeners = new Set<(settings: unknown) => void>();
-  onSettingsChanged(listener: (settings: unknown) => void): () => void {
+  private settingsListeners = new Set<(settings: PluginSettings) => void>();
+  onSettingsChanged(listener: (settings: PluginSettings) => void): () => void {
     this.settingsListeners.add(listener);
     return () => this.settingsListeners.delete(listener);
   }
-  private notifySettingsChanged(settings: unknown): void {
+  private notifySettingsChanged(settings: PluginSettings): void {
     for (const listener of this.settingsListeners) listener(settings);
   }
 
@@ -99,39 +109,120 @@ class InMemoryStore implements AnnotationStore {
       reading: [...this.snapshot.reading.filter((r) => r.bookId !== bookId), next]
     };
   }
-  async listBookmarks(): Promise<ReadonlyArray<unknown>> { return []; }
-  async addBookmark(): Promise<void> {}
-  async removeBookmark(): Promise<void> {}
-  async listExcerpts(): Promise<ReadonlyArray<unknown>> { return []; }
-  async addExcerpt(): Promise<void> {}
-  async removeExcerpt(): Promise<void> {}
-  async listSettings(): Promise<unknown> {
+  async listBookmarks(bookId: string): Promise<ReadonlyArray<Bookmark>> {
+    return this.snapshot.bookmarks.filter((b) => b.bookId === bookId);
+  }
+  async addBookmark(bookmark: Bookmark): Promise<void> {
+    this.snapshot = { ...this.snapshot, bookmarks: [...this.snapshot.bookmarks, bookmark] };
+  }
+  async removeBookmark(bookId: string, bookmarkId: string): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      bookmarks: this.snapshot.bookmarks.filter((b) => !(b.bookId === bookId && b.id === bookmarkId))
+    };
+  }
+  async listExcerpts(bookId: string): Promise<ReadonlyArray<Excerpt>> {
+    return this.snapshot.excerpts.filter((e) => e.bookId === bookId);
+  }
+  async addExcerpt(excerpt: Excerpt): Promise<void> {
+    this.snapshot = { ...this.snapshot, excerpts: [...this.snapshot.excerpts, excerpt] };
+  }
+  async removeExcerpt(bookId: string, excerptId: string): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.filter((e) => !(e.bookId === bookId && e.id === excerptId))
+    };
+  }
+  /** 只 patch note / tags, 其余字段 (id / text / locator / createdAt) 保持原值. */
+  async updateExcerptNote(
+    bookId: string,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.map((e) => {
+        if (e.bookId !== bookId || e.id !== excerptId) return e;
+        return {
+          ...e,
+          ...(patch.note !== undefined ? { note: patch.note } : {}),
+          ...(patch.tags !== undefined ? { tags: patch.tags } : {})
+        };
+      })
+    };
+  }
+  async listSettings(): Promise<PluginSettings> {
     // Mirror the real ObsidianAnnotationStore.normalizeSettings: return
     // a sensible PluginSettings object so consumers don't have to null-check
     // every field. The shape mirrors what `DEFAULT_PLUGIN_SETTINGS`
     // produces when the user has never opened the settings tab.
     return next_settings(this.snapshot.settings);
   }
-  async saveSettings(s: unknown): Promise<void> {
+  async saveSettings(s: PluginSettings): Promise<void> {
     // Persist back into the snapshot so subsequent translate() sees the key.
-    const current = (next_settings(this.snapshot.settings) ?? {}) as Record<string, unknown>;
-    const merged = { ...current, ...(s as Record<string, unknown>) };
-    this.snapshot = { ...this.snapshot, settings: merged as never };
+    const merged = { ...next_settings(this.snapshot.settings), ...s };
+    this.snapshot = { ...this.snapshot, settings: merged };
     this.notifySettingsChanged(merged);
   }
-  async patchSettings(patch: (s: ReturnType<typeof next_settings>) => unknown): Promise<void> {
-    const next = patch(this.snapshot.settings);
-    this.snapshot = { ...this.snapshot, settings: next as never };
+  async patchSettings(patch: (s: PluginSettings) => PluginSettings): Promise<void> {
+    const next = patch(next_settings(this.snapshot.settings));
+    this.snapshot = { ...this.snapshot, settings: next };
     this.notifySettingsChanged(next);
   }
-  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> { return {}; }
-  async saveCoverPaths(): Promise<void> {}
-  async patchCoverPaths(): Promise<void> {}
-  async getAddedAt(): Promise<number | null> { return null; }
-  async getPinnedAt(): Promise<number | null> { return null; }
+  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> { return this.snapshot.coverPaths ?? {}; }
+  async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
+    this.snapshot = { ...this.snapshot, coverPaths };
+  }
+  async patchCoverPaths(patch: (paths: Record<string, string>) => Record<string, string>): Promise<void> {
+    this.snapshot = { ...this.snapshot, coverPaths: patch(this.snapshot.coverPaths ?? {}) };
+  }
+  async getAddedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.addedAtByBookId?.[bookId] ?? null;
+  }
+  async getPinnedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.pinnedAtByBookId?.[bookId] ?? null;
+  }
+  async setPinnedAt(bookId: string, pinnedAt: number | null): Promise<void> {
+    const current = this.snapshot.pinnedAtByBookId ?? {};
+    const next = { ...current };
+    if (pinnedAt === null) delete next[bookId];
+    else next[bookId] = pinnedAt;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
+  async patchPinnedAt(bookId: string, patch: (current: number | null) => number | null): Promise<void> {
+    const currentMap = this.snapshot.pinnedAtByBookId ?? {};
+    const nextValue = patch(currentMap[bookId] ?? null);
+    const next = { ...currentMap };
+    if (nextValue === null) delete next[bookId];
+    else next[bookId] = nextValue;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
   async setAddedAt(bookId: string, addedAt: number): Promise<void> {
     const current = this.snapshot.addedAtByBookId ?? {};
     this.snapshot = { ...this.snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
+  }
+  async saveRichMetadata(bookId: string, metadata: BookMetadata): Promise<void> {
+    const current = this.snapshot.richMetadataByBookId ?? {};
+    this.snapshot = { ...this.snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };
+  }
+  async loadRichMetadata(bookId: string): Promise<BookMetadata | null> {
+    return this.snapshot.richMetadataByBookId?.[bookId] ?? null;
+  }
+  async addToLibraryBatchWithStamp(bookIds: ReadonlyArray<BookId>, addedAt: number): Promise<void> {
+    const existing = new Set(this.snapshot.library);
+    const newIds = bookIds.filter((id) => !existing.has(id));
+    if (newIds.length === 0) return;
+    const addedAtByBookId = { ...(this.snapshot.addedAtByBookId ?? {}) };
+    for (const id of newIds) {
+      if (addedAtByBookId[id] === undefined || addedAtByBookId[id]! > addedAt) {
+        addedAtByBookId[id] = addedAt;
+      }
+    }
+    this.snapshot = {
+      ...this.snapshot,
+      library: [...this.snapshot.library, ...newIds],
+      addedAtByBookId
+    };
   }
   async markOnboardingDismissed(): Promise<void> {
     this.snapshot = { ...this.snapshot, onboardingDismissed: true };
@@ -148,6 +239,18 @@ class InMemoryStore implements AnnotationStore {
     this.snapshot = {
       ...this.snapshot,
       visitedTocIdsByBookId: { ...current, [bookId]: [...ids] }
+    };
+  }
+  /** 复用 core 的纯函数, 跟真 adapter 走同一条 re-key 路径. */
+  async renameBookId(fromBookId: BookId, toBookId: BookId): Promise<void> {
+    this.snapshot = renameInSnapshot(this.snapshot, fromBookId, toBookId);
+  }
+  /** 迁移标记写在 snapshot 顶层 (不是 settings 里), 跟真 adapter 一致. */
+  async setMigratedToV030(passed: boolean, attempts?: number): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      migratedToV030: passed,
+      ...(attempts === undefined ? {} : { migratedToV030Attempts: attempts })
     };
   }
 }

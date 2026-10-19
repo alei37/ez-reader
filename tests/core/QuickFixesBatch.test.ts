@@ -90,7 +90,17 @@ test("the PDF guard drops stale results and stale errors", () => {
   assert.match(source, /if \(generation !== this\.translateGeneration\) return; \/\/ stale result/);
   assert.match(source, /if \(generation !== this\.translateGeneration\) return; \/\/ stale error/);
   // unmount invalidates anything still in flight.
-  assert.match(source, /unmount\(\): void \{[\s\S]{0,200}this\.translateGeneration \+= 1;/);
+  //
+  // 窗口从 200 放宽到 900:断言的意图是"unmount 里会 bump generation",
+  // 不是"第几个字符"。v0.3.3 给 unmount 加了 `mountStarted` 守卫和 30s
+  // 静默 timer 的清理,开头多了几行注释 + 两条语句,把 bump 推出了 200 字符。
+  // 这种"断言命中但其实没测错东西"的红,比红本身更糟 —— 它会让人开始
+  // 怀疑被测代码,而不是怀疑断言。改成"取出 unmount 方法体,断言它在体内",
+  // 语义不变且不再受行数影响。
+  const unmountAt = source.indexOf("unmount(): void {");
+  assert.ok(unmountAt > 0, "PdfOverlay.unmount 应存在");
+  const unmountBody = source.slice(unmountAt, unmountAt + 900);
+  assert.match(unmountBody, /this\.translateGeneration \+= 1;/);
 });
 
 // ---------------------------------------------------------------------------

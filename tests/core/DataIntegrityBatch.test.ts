@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { sanitizeBookMetadata } from "../../src/core/utils/metadata";
 import { ObsidianAnnotationStore } from "../../src/adapters/obsidian/ObsidianAnnotationStore";
 import { LibraryService } from "../../src/core/services/LibraryService";
-import type { BookLocator, BookMetadata } from "../../src/core/entities/Book";
-import type { BookChangeEvent, BookSource } from "../../src/core/ports/BookSource";
+import type { BookLocator, BookMetadata, CoverImage } from "../../src/core/entities/Book";
+import type { BookChangeHandler, BookSource } from "../../src/core/ports/BookSource";
 
 /**
  * Regression cover for the batch-C fixes: rich-metadata field loss, the
@@ -201,6 +201,22 @@ class StubSource implements BookSource {
   async lookup(path: string): Promise<BookLocator | null> {
     return this.locators.find((l) => l.path === path) ?? null;
   }
+  /**
+   * 端口漂移修复: BookSource 端口有 read / readCover / resolveLocator,
+   * 桩里以前没有 —— `implements BookSource` 一直是假的. 这里补上:
+   * - read: 返回一个 sizeBytes 大小的空 buffer (测试不读真实内容)
+   * - readCover: 这个源没有封面, 返回 null
+   * - resolveLocator: 按 path 找回 locator, 跟 lookup 一致
+   */
+  async read(locator: BookLocator): Promise<ArrayBuffer> {
+    return new ArrayBuffer(locator.sizeBytes);
+  }
+  async readCover(): Promise<CoverImage | null> {
+    return null;
+  }
+  async resolveLocator(id: string): Promise<BookLocator | null> {
+    return this.lookup(id);
+  }
   watch(): { dispose: () => void } {
     return { dispose: () => undefined };
   }
@@ -254,7 +270,10 @@ test("an empty vault does not re-register the source watch on every add", async 
   const store = new ObsidianAnnotationStore(plugin as unknown as never);
   await seed(store);
 
-  let handler: ((event: BookChangeEvent) => void) | null = null;
+  // 端口漂移修复: 这个字面量以前缺 read / readCover / resolveLocator,
+  // 跟 BookSource 端口对不上 —— 现在补齐 (read 返回空 buffer, 没有封面,
+  // resolveLocator 按 path 反查).
+  const handlers: BookChangeHandler[] = [];
   let watchCount = 0;
   const source: BookSource = {
     async *scan() {
@@ -262,10 +281,13 @@ test("an empty vault does not re-register the source watch on every add", async 
     },
     resolveId: (l) => l.path,
     readMetadata: async () => null,
+    read: async (l) => new ArrayBuffer(l.sizeBytes),
+    readCover: async () => null,
     lookup: async (p) => (p === "a.epub" ? locatorOf("a.epub", 1) : null),
+    resolveLocator: async (p) => (p === "a.epub" ? locatorOf("a.epub", 1) : null),
     watch(h) {
       watchCount += 1;
-      handler = h;
+      handlers.push(h);
       return { dispose: () => undefined };
     }
   };
@@ -279,10 +301,14 @@ test("an empty vault does not re-register the source watch on every add", async 
   };
   // Add then remove, twice. Each cycle returned the shelf to `entries.size === 0`,
   // which used to re-enter doInitialize() and register another 4 listeners.
+  //
+  // 之前这里用 `let handler: BookChangeHandler | null = null` 收集回调, 但
+  // TS 的控制流分析把"只在回调里赋值"的变量收窄成了 null, 调用处直接报
+  // "This expression is not callable". 改成用数组收集, 不再受收窄影响.
   for (const path of ["a.epub", "b.epub"]) {
-    handler?.({ kind: "added", path, format: "epub" });
+    for (const h of handlers) h({ kind: "added", path, format: "epub" });
     await settle();
-    handler?.({ kind: "removed", path, format: "epub" });
+    for (const h of handlers) h({ kind: "removed", path, format: "epub" });
     await settle();
   }
 

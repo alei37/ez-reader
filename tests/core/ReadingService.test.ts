@@ -7,9 +7,11 @@ import type {
   AnnotationStore
 } from "../../src/core/ports/AnnotationStore";
 import type { Bookmark, BookmarkId } from "../../src/core/entities/Bookmark";
+import type { BookMetadata } from "../../src/core/entities/Book";
 import type { Excerpt, ExcerptId } from "../../src/core/entities/Excerpt";
 import type { ReadingState } from "../../src/core/entities/ReadingState";
 import type { PluginSettings } from "../../src/core/types/ReaderSettings";
+import { renameInSnapshot } from "../../src/core/utils/renameSnapshot";
 
 class InMemoryAnnotationStore implements AnnotationStore {
   snapshot: AnnotationSnapshot;
@@ -31,7 +33,15 @@ class InMemoryAnnotationStore implements AnnotationStore {
       library: initial.library ?? [],
       reading: initial.reading ?? [],
       bookmarks: initial.bookmarks ?? [],
-      excerpts: initial.excerpts ?? []
+      excerpts: initial.excerpts ?? [],
+      coverPaths: initial.coverPaths,
+      addedAtByBookId: initial.addedAtByBookId,
+      pinnedAtByBookId: initial.pinnedAtByBookId,
+      richMetadataByBookId: initial.richMetadataByBookId,
+      visitedTocIdsByBookId: initial.visitedTocIdsByBookId,
+      onboardingDismissed: initial.onboardingDismissed,
+      migratedToV030: initial.migratedToV030,
+      migratedToV030Attempts: initial.migratedToV030Attempts
     };
   }
 
@@ -116,10 +126,86 @@ class InMemoryAnnotationStore implements AnnotationStore {
     const current = this.snapshot.coverPaths ?? {};
     this.snapshot = { ...this.snapshot, coverPaths: patch(current) };
   }
-  async getAddedAt(): Promise<number | null> { return null; }
+  async getAddedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.addedAtByBookId?.[bookId] ?? null;
+  }
   async setAddedAt(bookId: string, addedAt: number): Promise<void> {
     const current = this.snapshot.addedAtByBookId ?? {};
     this.snapshot = { ...this.snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
+  }
+  // 端口漂移修复: 下面这几个方法 (getPinnedAt / setPinnedAt / patchPinnedAt /
+  // saveRichMetadata / loadRichMetadata / addToLibraryBatchWithStamp /
+  // renameBookId / updateExcerptNote / setMigratedToV030) 之前桩里没有,
+  // 于是 `implements AnnotationStore` 一直是假的 —— 端口加方法时没有任何
+  // 东西报错. 全部补成真的 read-modify-write, 行为跟真 adapter 对齐.
+  async getPinnedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.pinnedAtByBookId?.[bookId] ?? null;
+  }
+  async setPinnedAt(bookId: string, pinnedAt: number | null): Promise<void> {
+    const current = this.snapshot.pinnedAtByBookId ?? {};
+    const next = { ...current };
+    if (pinnedAt === null) delete next[bookId];
+    else next[bookId] = pinnedAt;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
+  async patchPinnedAt(bookId: string, patch: (current: number | null) => number | null): Promise<void> {
+    const currentMap = this.snapshot.pinnedAtByBookId ?? {};
+    const nextValue = patch(currentMap[bookId] ?? null);
+    const next = { ...currentMap };
+    if (nextValue === null) delete next[bookId];
+    else next[bookId] = nextValue;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
+  async saveRichMetadata(bookId: string, metadata: BookMetadata): Promise<void> {
+    const current = this.snapshot.richMetadataByBookId ?? {};
+    this.snapshot = { ...this.snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };
+  }
+  async loadRichMetadata(bookId: string): Promise<BookMetadata | null> {
+    return this.snapshot.richMetadataByBookId?.[bookId] ?? null;
+  }
+  async addToLibraryBatchWithStamp(bookIds: ReadonlyArray<string>, addedAt: number): Promise<void> {
+    const existingLibrary = new Set(this.snapshot.library);
+    const existingAddedAt = this.snapshot.addedAtByBookId ?? {};
+    const newIds = bookIds.filter((id) => !existingLibrary.has(id));
+    if (newIds.length === 0) return;
+    const library = [...this.snapshot.library, ...newIds];
+    const addedAtByBookId = { ...existingAddedAt };
+    for (const id of newIds) {
+      if (addedAtByBookId[id] === undefined || addedAtByBookId[id]! > addedAt) {
+        addedAtByBookId[id] = addedAt;
+      }
+    }
+    this.snapshot = { ...this.snapshot, library, addedAtByBookId };
+  }
+  /** 只 patch note / tags, 其余字段 (id / text / locator / createdAt) 保持原值. */
+  async updateExcerptNote(
+    bookId: string,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.map((e) => {
+        if (e.bookId !== bookId || e.id !== excerptId) return e;
+        return {
+          ...e,
+          ...(patch.note !== undefined ? { note: patch.note } : {}),
+          ...(patch.tags !== undefined ? { tags: patch.tags } : {})
+        };
+      })
+    };
+  }
+  /** 复用 core 的纯函数, 跟真 adapter 走同一条 re-key 路径. */
+  async renameBookId(fromBookId: string, toBookId: string): Promise<void> {
+    this.snapshot = renameInSnapshot(this.snapshot, fromBookId, toBookId);
+  }
+  /** 迁移标记写在 snapshot 顶层 (不是 settings 里), 跟真 adapter 一致. */
+  async setMigratedToV030(passed: boolean, attempts?: number): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      migratedToV030: passed,
+      ...(attempts === undefined ? {} : { migratedToV030Attempts: attempts })
+    };
   }
   async markOnboardingDismissed(): Promise<void> {
     this.snapshot = { ...this.snapshot, onboardingDismissed: true };

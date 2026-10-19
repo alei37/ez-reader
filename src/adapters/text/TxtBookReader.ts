@@ -3,7 +3,8 @@ import type {
   BookBytesLoader,
   BookReader,
   ExtractedCover,
-  ReaderSession
+  ReaderSession,
+  TocItem
 } from "../../core/ports/BookReader";
 import type { ReaderAppearance } from "../../core/types/ReaderSettings";
 import type { PagedTextContent, PagedTextPage } from "./PagedTextSession";
@@ -33,6 +34,21 @@ const DEFAULT_PAGE_CHARS = 1600;
 const MAX_PAGE_CHARS = 2400;
 
 /**
+ * A page chunk plus the **raw source lines** it was built from.
+ *
+ * Why keep the lines: chapter detection needs "one line at a time", and by
+ * the time a page is rendered it is a single line of HTML with no line
+ * structure left. Keeping the pre-pagination lines here is what makes
+ * `detectChapterTitle` work for TXT at all (see `planTxtPages`).
+ */
+interface TextChunk {
+  /** Text of the page, paragraphs joined by a blank line. */
+  readonly text: string;
+  /** The trimmed source paragraphs that produced `text`, in order. */
+  readonly lines: ReadonlyArray<string>;
+}
+
+/**
  * Pure page-splitter. Decoupled from DOM and IO so unit tests can hit it.
  *
  * Strategy:
@@ -46,21 +62,40 @@ const MAX_PAGE_CHARS = 2400;
 export const splitTextIntoPages = (
   text: string,
   options: { pageChars?: number; paragraphMode?: "blank-line" | "single-newline" } = {}
-): PagedTextPage[] => {
+): PagedTextPage[] =>
+  splitTextIntoChunks(text, options).map((chunk, index) => ({
+    id: `page-${index}`,
+    html: paragraphsToHtml(chunk.text)
+  }));
+
+/**
+ * The pagination engine, kept separate from `splitTextIntoPages` so we can
+ * carry each page's original lines alongside its HTML. The HTML this
+ * produces is byte-identical to `splitTextIntoPages` for the same input —
+ * only the extra `lines` field is new (asserted by the tests).
+ */
+const splitTextIntoChunks = (
+  text: string,
+  options: { pageChars?: number; paragraphMode?: "blank-line" | "single-newline" } = {}
+): TextChunk[] => {
   const pageChars = Math.max(200, Math.min(MAX_PAGE_CHARS, options.pageChars ?? DEFAULT_PAGE_CHARS));
   const mode = options.paragraphMode ?? detectParagraphMode(text);
   const paragraphs = splitIntoParagraphs(text, mode);
 
-  const pages: PagedTextPage[] = [];
-  let current = "";
+  const chunks: TextChunk[] = [];
+  // `lines` 是正在拼装的那一页的原始段落, `currentLength` 是它的字符数
+  // (= lines.join("\n\n").length)。维护长度而不是每次重算 join,是因为
+  // 诗歌 / 日志类文件里一页可能有几百个极短段落,每次 join 会变成 O(n^2)。
+  // `lines.join("\n\n")` 得到的文本与旧实现逐字相同,所以页面边界不变。
+  let lines: string[] = [];
+  let currentLength = 0;
   const flush = (): void => {
-    const trimmed = current.trimEnd();
+    const trimmed = lines.join("\n\n").trimEnd();
+    const collected = lines;
+    lines = [];
+    currentLength = 0;
     if (trimmed.length === 0) return;
-    pages.push({
-      id: `page-${pages.length}`,
-      html: paragraphsToHtml(trimmed)
-    });
-    current = "";
+    chunks.push({ text: trimmed, lines: collected });
   };
   for (const para of paragraphs) {
     const trimmed = para.trim();
@@ -71,27 +106,30 @@ export const splitTextIntoPages = (
       flush();
       const hardChunks = hardBreakLongParagraph(trimmed, pageChars);
       for (const chunk of hardChunks) {
-        pages.push({ id: `page-${pages.length}`, html: paragraphsToHtml(chunk) });
+        chunks.push({ text: chunk, lines: [chunk] });
       }
       continue;
     }
-    if (current.length === 0) {
-      current = trimmed;
+    if (lines.length === 0) {
+      lines = [trimmed];
+      currentLength = trimmed.length;
       continue;
     }
-    if (current.length + trimmed.length + 2 > pageChars) {
+    if (currentLength + trimmed.length + 2 > pageChars) {
       flush();
-      current = trimmed;
+      lines = [trimmed];
+      currentLength = trimmed.length;
     } else {
-      current = `${current}\n\n${trimmed}`;
+      lines.push(trimmed);
+      currentLength += trimmed.length + 2;
     }
   }
   flush();
 
-  if (pages.length === 0) {
-    pages.push({ id: "page-0", html: "<p></p>" });
+  if (chunks.length === 0) {
+    chunks.push({ text: "", lines: [] });
   }
-  return pages;
+  return chunks;
 };
 
 /**
@@ -231,29 +269,120 @@ export const guessTitleFromText = (text: string, fallback: string): string => {
 };
 
 /**
- * P1: 检测 TXT 当前页是否包含"章节标题"行, 返回第一个匹配的章节标题
- * (中文古文 + 西方翻译小说通用)。模式尽量宽松:
+ * P1: 检测一行是不是章节标题(中文古文 + 西方翻译小说通用)。模式尽量宽松:
  * - `第X章` / `第X回` / `Chapter N` / `CHAPTER N`
  * - 不区分全/半角、不区分大小写
  *
- * 返回 null 表示当前页没识别到章节标题 — caller 显示 fallback。
+ * 返回 null 表示这行不是章节标题。
+ */
+export const matchChapterTitle = (line: string): string | null => {
+  const trimmed = line.trim();
+  if (trimmed.length === 0 || trimmed.length > 60) return null;
+  for (const re of CHAPTER_TITLE_PATTERNS) {
+    if (re.test(trimmed)) return trimmed;
+  }
+  return null;
+};
+
+/** 章节标题行的模式表,导出以便复用与测试。 */
+export const CHAPTER_TITLE_PATTERNS: ReadonlyArray<RegExp> = [
+  // 中文古文 / 翻译小说常见模式
+  /^[\s　]*第\s*[0-9零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾]+\s*[章回节卷集篇]/u,
+  /^[\s　]*chapter\s+[0-9]+(?:\s|$)/iu,
+  /^[\s　]*CHAPTER\s+[IVXLCDM]+/u
+];
+
+/**
+ * P1: 从多行文本里找第一个章节标题行(兼容旧的公开 API)。
+ *
+ * ⚠️ 它**不能**用来检测已经渲染好的页面 HTML —— TXT 的 `page.html` 是一行
+ * 字符串,里面只有 `<p>` / `<br>` 标签,按行切开后"章节标题"永远不可能出现在
+ * 行首。Bug 3 就是这么来的。分页时请改用 `planTxtPages`(它在分页**之前**
+ * 拿着原始行做检测)。
+ *
+ * 返回 null 表示没识别到章节标题 — caller 显示 fallback。
  */
 export const detectChapterTitle = (text: string): string | null => {
   const lines = text.split(/\r?\n/);
-  // 中文古文 / 翻译小说常见模式
-  const patterns: ReadonlyArray<RegExp> = [
-    /^[\s\u3000]*第\s*[0-9零一二三四五六七八九十百千万两壹贰叁肆伍陆柒捌玖拾]+\s*[章回节卷集篇]/u,
-    /^[\s\u3000]*chapter\s+[0-9]+(?:\s|$)/iu,
-    /^[\s\u3000]*CHAPTER\s+[IVXLCDM]+/u
-  ];
   for (const line of lines.slice(0, 50)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0 || trimmed.length > 60) continue;
-    for (const re of patterns) {
-      if (re.test(trimmed)) return trimmed;
-    }
+    const matched = matchChapterTitle(line);
+    if (matched) return matched;
   }
   return null;
+};
+
+/** TOC 条目上限。防止检测到几千个"章节"的日志/诗歌文件把目录面板撑爆。 */
+const MAX_TXT_TOC_ITEMS = 500;
+
+/** A TXT book's full rendering plan: paginated text + chapter metadata. */
+export interface TxtPagePlan {
+  readonly title: string;
+  readonly pages: ReadonlyArray<PagedTextPage>;
+  readonly toc: ReadonlyArray<TocItem>;
+  readonly chapterStartPages: ReadonlyArray<number>;
+}
+
+/**
+ * Build the whole TXT book plan: title, paginated pages (each carrying the
+ * chapter it belongs to), and a TOC derived from the detected chapters.
+ *
+ * ## 方案选择(为什么是"分页前检测"而不是别的)
+ *
+ * 被否掉的两个方案:
+ *
+ * 1. **在渲染后的 `page.html` 上检测**(旧实现)。`splitTextIntoPages` 把每段
+ *    包进 `<p>`,段落之间没有 `\n`,整个 page.html 就是**一行**。按行切开后
+ *    每行都以 `<p>` 开头,`^第X章` 永远匹配不上 → 每页 chapterTitle 恒等于
+ *    书名,目录面板里全是同一个名字,章节跳转 / 进度点全部失效。这不是"匹配
+ *    率低",是结构性 0 命中。
+ *
+ * 2. **改分页逻辑,让 page.html 保留换行**(例如把段落之间的 `\n\n` 换成
+ *    真实换行)。否决原因:TXT 分页是段落感知的,`pageChars` 的预算计算
+ *    (`current.length + trimmed.length + 2`)依赖"段间空白恰好是 2 个字符";
+ *    一旦改分隔符,预算就偏了,`TxtPagination.test.ts` 里那批按字符数断言的
+ *    用例会漂。而且 MOBI 侧的调用方也读同一套分页约定 —— 改动面大、收益小。
+ *
+ * 采用的方案:**分页时顺手把每页的原始段落行带出来**(`TextChunk.lines`),
+ * 章节检测在**分页之前**就已经能拿到行信息。分页规则、page.html 输出、page
+ * 边界全部保持原样(逐字相同),MOBI 完全不受影响 —— 它自己构造 pages,从不
+ * 走这条路径。
+ */
+export const planTxtPages = (
+  text: string,
+  fallbackTitle: string,
+  options: { pageChars?: number; paragraphMode?: "blank-line" | "single-newline" } = {}
+): TxtPagePlan => {
+  const title = guessTitleFromText(text, fallbackTitle);
+  const chunks = splitTextIntoChunks(text, options);
+
+  // TOC: 书名一条 + 每章一条。chapterStartPages 与 toc **下标对齐**
+  // (PagedTextSession.goToToc 用 toc 下标去取 chapterStartPages)。
+  const toc: TocItem[] = [{ id: "txt-root", label: title, depth: 0 }];
+  const chapterStartPages: number[] = [0];
+  const pages: PagedTextPage[] = [];
+
+  let currentChapter = title;
+  for (const chunk of chunks) {
+    // 每页取第一个章节标题行;一页最多记一个章节(PagedTextPage.chapterTitle
+    // 是单值模型)。没检测到就继承上一章 —— 翻到任何一页工具栏都有名字。
+    for (const line of chunk.lines) {
+      const detected = matchChapterTitle(line);
+      if (!detected) continue;
+      currentChapter = detected;
+      if (toc.length < MAX_TXT_TOC_ITEMS) {
+        toc.push({ id: `txt-ch-${toc.length}`, label: detected, depth: 1 });
+        chapterStartPages.push(pages.length);
+      }
+      break;
+    }
+    pages.push({
+      id: `page-${pages.length}`,
+      html: paragraphsToHtml(chunk.text),
+      chapterTitle: currentChapter
+    });
+  }
+
+  return { title, pages, toc, chapterStartPages };
 };
 
 export class TxtBookReader implements BookReader {
@@ -266,23 +395,11 @@ export class TxtBookReader implements BookReader {
     const bytes = await loader(book.locator.path);
     const text = decodeText(bytes);
     const fallbackTitle = book.locator.path.split("/").pop()?.replace(/\.txt$/i, "") ?? "TXT";
-    const title = guessTitleFromText(text, fallbackTitle);
-    const pages = splitTextIntoPages(text);
-    // P1: 给每个 page 标 chapterTitle — 用页面开头文本匹配章节模式,
-    // 没匹配到就继承上一页 (fallback 到书 title)。
-    let lastChapter = title;
-    const enrichedPages = pages.map((page, idx) => {
-      // 把 HTML 转回纯文本再检测 (splitTextIntoPages 已经 escape 过 HTML,
-      // 但 <p>/<br> 还在 — 简单 strip 后再匹配)。
-      const plainText = page.html.replace(/<[^>]*>/g, " ");
-      const detected = idx === 0 ? title : detectChapterTitle(plainText);
-      if (detected) lastChapter = detected;
-      return { ...page, chapterTitle: lastChapter };
-    });
+    const plan = planTxtPages(text, fallbackTitle);
     const content: PagedTextContent = {
-      pages: enrichedPages,
-      toc: [{ id: "txt-root", label: title, depth: 0 }],
-      chapterStartPages: [0]
+      pages: plan.pages,
+      toc: plan.toc,
+      chapterStartPages: plan.chapterStartPages
     };
     return new PagedTextSession({ content, host, appearance, loader });
   }
@@ -303,66 +420,159 @@ export class TxtBookReader implements BookReader {
 }
 
 /**
- * Decode bytes as text. Strategy:
- *   1. Strip UTF-8 BOM if present, decode the rest as UTF-8.
- *   2. Try strict UTF-8 (catches ASCII + most modern Chinese).
- *   3. Fall back to GB18030 (covers GBK + GB2312 + Unicode's CJK extension;
- *      natively supported by Chromium, Firefox, and modern Android WebViews).
- *      This handles the common case of a `.txt` exported from an older
- *      Windows tool or downloaded from a CN forum.
- *   4. Last resort: permissive UTF-8 with replacement chars — better than
- *      refusing to open a slightly malformed file.
+ * Decode bytes as text. Strategy (each step exists because of a real
+ * environment; see the numbered comments below for which one bites where):
+ *
+ *   1. UTF-16 BOM (`FF FE` / `FE FF`) → decode as UTF-16LE / UTF-16BE.
+ *      Windows "Unicode encoding" files have interleaved NULs, so strict
+ *      UTF-8 rejects them and GB18030 would "successfully" decode the
+ *      binary garbage into CJK-looking mojibake.
+ *   2. UTF-8 BOM (`EF BB BF`) → skip the BOM, then run the same chain as
+ *      step 3 on the remainder. The BOM must not be fed to the CJK
+ *      decoders or the whole body shifts by three bytes.
+ *   3. Strict UTF-8 (`fatal: true` **plus** a U+FFFD probe — see below).
+ *   4. GB18030, then GBK (`fatal: true`, then permissive-if-clean).
+ *   5. Permissive UTF-8, accepted only when the result has no U+FFFD.
+ *   6. windows-1252, then a hand-rolled Latin-1 mapping.
  *
  * P0-4: without the GB18030 fallback, the user's GBK-encoded Chinese
  * novels opened to a wall of □□□ — silent data loss with no notice.
+ *
+ * P0 (this revision) — **every** `new TextDecoder(...)` is wrapped, and every
+ * decode result is validated. Two failure modes were unrecoverable before:
+ *
+ *   a) Old Android WebViews do not register the `gb18030` label, so
+ *      `new TextDecoder("gb18030")` throws `RangeError`. Unguarded, that
+ *      exception escaped `decodeText` and the book refused to open at all.
+ *   b) Environments that ignore the `{ fatal: true }` option (also old
+ *      WebViews) make the "strict UTF-8" probe succeed *silently* with
+ *      mojibake, so the GB18030 fallback was never reached. Conversely,
+ *      an environment with a broken gb18030 table constructs fine and
+ *      returns U+FFFD for everything — previously accepted as a "success".
+ *      Both ended in an unreadable page.
+ *
+ * The U+FFFD probe is what closes (b) from both sides: a decode that had to
+ * substitute replacement characters did not actually understand the bytes,
+ * so we keep looking instead of shipping a page of tofu.
+ *
+ * Known limitation (deliberately not fixed here): a UTF-8 file with a few
+ * stray invalid bytes fails step 3 and then gets decoded as GB18030, which
+ * "succeeds" into plausible-looking mojibake. Distinguishing that needs a
+ * per-byte validity ratio heuristic; out of scope for this fix.
  */
 export const decodeText = (bytes: ArrayBuffer): string => {
   const view = new Uint8Array(bytes);
-  // P1 fix: UTF-16 had no branch at all, so a file saved as Windows
-  // "Unicode encoding" (FF FE = LE, FE FF = BE) decoded to mojibake — the
-  // strict-UTF-8 attempt fails on the interleaved NULs, then GB18030
-  // happily "succeeds" on binary garbage and returns it as if it were text.
-  // Verified before the fix: a UTF-16LE file came out as
-  // "��,{\u0000N鄗\r\u0000\n\u0000\r\u0000\n\u0000)Y0W剆臑…".
-  //
-  // The existing UTF-16 test fed `C0 80 FF FE` — that `FF FE` *is* the
-  // UTF-16BE BOM — but only asserted `typeof === "string" && length > 0`,
-  // which passes on pure garbage, so the gap went unnoticed.
   if (view.length >= 2 && view[0] === 0xff && view[1] === 0xfe) {
     return decodeUtf16(view.subarray(2), "utf-16le");
   }
   if (view.length >= 2 && view[0] === 0xfe && view[1] === 0xff) {
     return decodeUtf16(view.subarray(2), "utf-16be");
   }
-  // Strip UTF-8 BOM. `fatal: false` is deliberate: the previous permissive
-  // decode meant a UTF-8-BOM-prefixed GB18030 file was "decoded" as UTF-8
-  // and came out as U+FFFD everywhere instead of falling through to GB18030.
-  if (view.length >= 3 && view[0] === 0xef && view[1] === 0xbb && view[2] === 0xbf) {
-    const strict = tryDecode(view.subarray(3), "utf-8", true);
-    if (strict !== null) return strict;
-    const gb = tryDecode(view.subarray(3), "gb18030", false);
-    if (gb !== null) return gb;
-    return new TextDecoder("utf-8").decode(view.subarray(3));
-  }
-  // Fast path: try strict UTF-8.
-  const utf8 = tryDecode(view, "utf-8", true);
-  if (utf8 !== null) return utf8;
-  // Strict UTF-8 failed — try GB18030. TextDecoder("gb18030") is in
-  // the Encoding spec; supported by Chromium ≥ 110, Firefox ≥ 113,
-  // Safari ≥ 17. Old WebViews may throw — we catch and fall through.
-  const gb = tryDecode(view, "gb18030", false);
-  if (gb !== null) return gb;
-  // Last resort: permissive UTF-8 (U+FFFD replacement).
-  return new TextDecoder("utf-8").decode(view);
+  // UTF-8 BOM: skip it, then run the full chain on the body.
+  const body =
+    view.length >= 3 && view[0] === 0xef && view[1] === 0xbb && view[2] === 0xbf
+      ? view.subarray(3)
+      : view;
+  return decodeBody(body);
 };
 
-/** `TextDecoder(label)` or `null` when this WebView lacks the encoding. */
+/** The actual fallback chain, BOM already stripped. */
+const decodeBody = (view: Uint8Array): string => {
+  // 3) strict UTF-8 — the overwhelmingly common case (modern exports).
+  const utf8 = decodeStrict(view, "utf-8");
+  if (utf8 !== null) return utf8;
+
+  // 4) CJK legacy encodings. `gb18030` is a superset of `gbk`; `gbk` is kept as
+  //    a separate step because a runtime may register one label and not the
+  //    other, and a book in GBK still decodes correctly under it.
+  for (const label of CJK_FALLBACK_LABELS) {
+    const decoded = decodeStrict(view, label) ?? decodeIfClean(view, label);
+    if (decoded !== null) return decoded;
+  }
+
+  // 5) permissive UTF-8 — the bytes are "mostly" UTF-8 or nothing else fits.
+  const lenientUtf8 = decodeIfClean(view, "utf-8");
+  if (lenientUtf8 !== null) return lenientUtf8;
+
+  // 6) Last resort. windows-1252 maps every byte to a printable Latin-1
+  //    character (mojibake, but nothing is lost and there are no tofu boxes).
+  //    If even that label is missing, the manual loop below cannot fail:
+  //    it is plain arithmetic over the byte array.
+  const windows1252 = decodeIfClean(view, "windows-1252");
+  if (windows1252 !== null) return windows1252;
+  return decodeLatin1(view);
+};
+
+/**
+ * CJK fallback labels, in the order we try them.
+ *
+ * Why big5 is NOT here: Big5 decodes GBK bytes into plausible-looking but
+ * *wrong* traditional Chinese without emitting a single U+FFFD, so our
+ * validity probe cannot tell a correct decode from a wrong one. Shipping
+ * silently-wrong text is worse than shipping U+FFFD, which at least tells
+ * the user the encoding guess failed.
+ */
+const CJK_FALLBACK_LABELS: ReadonlyArray<string> = ["gb18030", "gbk"];
+
+/**
+ * `TextDecoder(label)` + decode, or `null` when this runtime lacks the
+ * encoding (old WebView → `RangeError`) or the decoder throws mid-decode
+ * (strict mode + invalid bytes). Never throws — that guarantee is what
+ * keeps one bad file from failing `open()` for the whole book.
+ */
 const tryDecode = (bytes: Uint8Array, label: string, fatal: boolean): string | null => {
   try {
     return new TextDecoder(label, { fatal }).decode(bytes);
   } catch {
     return null;
   }
+};
+
+/**
+ * Strict decode with an explicit "did it actually understand this?" probe.
+ *
+ * `{ fatal: true }` alone is not enough on old WebViews that ignore the
+ * options dictionary — there the decode silently succeeds with mojibake.
+ * The U+FFFD check is what catches that case, and also catches runtimes
+ * whose gb18030 implementation is registered but broken.
+ */
+const decodeStrict = (bytes: Uint8Array, label: string): string | null => {
+  const text = tryDecode(bytes, label, true);
+  if (text === null) return null;
+  return isCleanText(text) ? text : null;
+};
+
+/** Permissive decode, accepted only when the result has no replacement chars. */
+const decodeIfClean = (bytes: Uint8Array, label: string): string | null => {
+  const text = tryDecode(bytes, label, false);
+  if (text === null) return null;
+  return isCleanText(text) ? text : null;
+};
+
+/**
+ * A decode that had to invent U+FFFD replacement characters did not
+ * understand the input. (Files that legitimately contain U+FFFD are rare
+ * enough that rejecting the decode is the better trade — the next fallback
+ * always returns *something* readable.)
+ */
+const isCleanText = (text: string): boolean => !text.includes("\uFFFD");
+
+/**
+ * Ultimate fallback: one byte → one character, straight from the code
+ * point. Uses `String.fromCharCode` in chunks because passing a whole
+ * book's byte array in one call blows the argument limit.
+ *
+ * The result is Latin-1 mojibake, but it is guaranteed: no decoder, no
+ * label, no options — nothing to be unsupported. A book that opens as
+ * garbage is recoverable; a book that refuses to open is not.
+ */
+const decodeLatin1 = (bytes: Uint8Array): string => {
+  const CHUNK = 4096;
+  let out = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    out += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)));
+  }
+  return out;
 };
 
 /**
@@ -374,5 +584,5 @@ const tryDecode = (bytes: Uint8Array, label: string, fatal: boolean): string | n
 const decodeUtf16 = (bytes: Uint8Array, label: "utf-16le" | "utf-16be"): string => {
   const decoded = tryDecode(bytes, label, false);
   if (decoded !== null) return decoded;
-  return new TextDecoder("utf-8").decode(bytes);
+  return tryDecode(bytes, "utf-8", false) ?? decodeLatin1(bytes);
 };

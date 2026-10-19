@@ -314,6 +314,16 @@ export class ShelfView extends ItemView {
 
   private renderRefresh(): void {
     const entries = this.deps.library.list(this.filter, this.sort);
+
+    // Bug 1 修复: 记住滚动位置。`.ez-reader__shelf__body` 是 overflow-y:auto
+    // 的滚动容器(styles.css:104), 而 `empty()` 把它的子节点全删了 ——
+    // 内容高度塌成 0 → 可滚动距离 0 → 浏览器按规范把 scrollTop clamp 到 0。
+    // renderRefresh 在用户每敲一个搜索关键词时都会跑(150ms debounce), 所以
+    // 修复前用户搜到一半书架会疯狂弹回顶部, 视觉上就是"抖动"。
+    //
+    // 必须在 empty() **之前** 读: 读晚了拿到的永远是已经被 clamp 的 0。
+    const previousScrollTop = this.body.scrollTop;
+
     this.body.empty();
     this.body.removeClass("is-grid", "is-list");
     this.body.addClass(this.mode === "grid" ? "is-grid" : "is-list");
@@ -322,6 +332,16 @@ export class ShelfView extends ItemView {
 
     if (entries.length === 0) {
       this.renderEmptyState();
+      // 空结果显式回到顶部, **不**恢复旧的 scrollTop。
+      //
+      // 判断依据: 结果为空时容器里只有 renderEmptyState 的几行字, 根本没有
+      // "第 300px"这个位置可言。浏览器会自己 clamp 成 0, 这里显式写 0 只是
+      // 把这个意图讲明白 + 覆盖 body 还没塌陷的边缘时序。
+      //
+      // 替代方案(没选): 无条件恢复, 靠浏览器 clamp。这在结果为空时恰好等价,
+      // 但一旦以后 emptyState 变高(比如加"清除搜索"按钮 + 推荐位), 用户会
+      // 莫名停在一个不知道哪来的偏移量上, 比回到顶部更难解释。
+      this.body.scrollTop = 0;
     } else {
       this.emptyState.addClass("is-hidden");
       for (const entry of entries) {
@@ -342,6 +362,18 @@ export class ShelfView extends ItemView {
                 onContextMenu: (item, event) => this.openItemMenu(item, event)
               }, coverPath);
         this.body.append(node);
+      }
+      // 恢复滚动位置(有结果时)。
+      //
+      // 过滤后内容变短 → 旧 scrollTop 越界 → 浏览器 clamp 到新的最大值,
+      // 这是无害的: 用户宁可看到"最底部"也不想看到"弹回顶部"。所以这里
+      // 不做任何 clamp 预判 —— 越界的精确值浏览器比我们清楚(它知道真实的
+      // scrollHeight / clientHeight, jsdom 里的模拟值不作数)。
+      //
+      // 另一个坑: 恢复发生在 DOM 重建**之后**。写在 empty() 旁边的话,
+      // 此时 body 还是空的, 赋值会被 clamp 成 0, 等于什么都没修。
+      if (previousScrollTop > 0) {
+        this.body.scrollTop = previousScrollTop;
       }
     }
     this.toolbar.update(this.toolbarState());

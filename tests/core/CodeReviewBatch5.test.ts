@@ -4,7 +4,7 @@ import { ReadingService } from "../../src/core/services/ReadingService";
 import { LibraryService } from "../../src/core/services/LibraryService";
 import { ObsidianAnnotationStore } from "../../src/adapters/obsidian/ObsidianAnnotationStore";
 import type { ReadingState } from "../../src/core/entities/ReadingState";
-import type { BookLocator, BookMetadata } from "../../src/core/entities/Book";
+import type { BookLocator, BookMetadata, CoverImage } from "../../src/core/entities/Book";
 import type { BookChangeEvent, BookSource } from "../../src/core/ports/BookSource";
 
 /**
@@ -81,6 +81,21 @@ class StaticSource implements BookSource {
   async lookup(path: string): Promise<BookLocator | null> {
     return this.locators.find((l) => l.path === path) ?? null;
   }
+  /**
+   * 端口漂移修复: BookSource 端口有 read / readCover / resolveLocator,
+   * 桩里以前没有 —— `implements BookSource` 一直是假的, 所以调用方只能写
+   * `source as unknown as BookSource` 硬绕过去. 现在桩真的实现了端口,
+   * 那个断言也就能删掉了 (类型检查重新变得有意义).
+   */
+  async read(locator: BookLocator): Promise<ArrayBuffer> {
+    return new ArrayBuffer(locator.sizeBytes);
+  }
+  async readCover(): Promise<CoverImage | null> {
+    return null;
+  }
+  async resolveLocator(id: string): Promise<BookLocator | null> {
+    return this.lookup(id);
+  }
   watch(handler: (event: BookChangeEvent) => void): { dispose: () => void } {
     this.watchCount += 1;
     this.handler = handler;
@@ -99,7 +114,7 @@ test("LibraryService: addedDesc sorts by when the user added the book, not by fi
   // a.epub was added FIRST but its file has the newest mtime. The two
   // orderings disagree, which is the whole point of the test.
   const source = new StaticSource([locatorOf("a.epub", 9_000), locatorOf("b.epub", 1_000)]);
-  const library = new LibraryService(source as unknown as BookSource, store);
+  const library = new LibraryService(source, store);
   await library.initialize();
 
   await library.addToLibrary("a.epub", 1_000);
@@ -179,7 +194,7 @@ test("LibraryService: watch is registered exactly once even when the vault start
   const store = emptyStore();
   await seedSnapshot(store);
   const source = new StaticSource([]);
-  const library = new LibraryService(source as unknown as BookSource, store);
+  const library = new LibraryService(source, store);
 
   await library.initialize();
   assert.equal(source.watchCount, 1, "first initialize registers one watch");

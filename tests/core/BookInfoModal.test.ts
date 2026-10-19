@@ -412,10 +412,16 @@ test("BookInfoModal: getRichEntry returns null → missing state", async () => {
   assert.match(contentEl.innerHTML, /找不到这本书/, "missing state rendered");
 });
 
-test("BookInfoModal: getRichEntry throws → Notice fired, missing rendered", async () => {
-  // Library that throws — load() catches and sets missing=true.
+test("BookInfoModal: getRichEntry throws → 报读取失败, 不谎报「找不到这本书」", async () => {
+  // v0.3.3 行为变更。这条断言以前写的是 "missing state after throw" ——
+  // 也就是**把 bug 编码进了测试**:`load()` 的 catch 里置 `missing = true`,
+  // 于是 vault IO 挂掉(权限 / 磁盘 / 同步冲突)时, 用户看到的是"找不到这本书
+  // — 可能已被移除或刷新过库"。用户会跑去 vault 翻文件, 甚至以为自己误删了书。
+  //
+  // v0.3.3 起 `missing` 只表示"getRichEntry 正常返回了 null"(书真被删),
+  // 抛异常走独立的 `loadError` 通道。
   const throwingLibrary = {
-    getRichEntry: async () => { throw new Error("kaboom"); }
+    getRichEntry: async () => { throw new Error("vault IO 挂了"); }
   } as unknown as LibraryService;
   const deps: BookInfoModalDeps = {
     app: makeApp(),
@@ -424,5 +430,11 @@ test("BookInfoModal: getRichEntry throws → Notice fired, missing rendered", as
   };
 
   const contentEl = await mountModal(deps);
-  assert.match(contentEl.innerHTML, /找不到这本书/, "missing state after throw");
+  assert.doesNotMatch(
+    contentEl.innerHTML,
+    /找不到这本书/,
+    "读取失败绝不能显示成书被删了 —— 那会让用户以为自己的数据没了"
+  );
+  assert.match(contentEl.innerHTML, /vault IO 挂了/, "底层错误要透出来, 便于排查");
+  assert.match(contentEl.innerHTML, /重试/, "要有重试按钮 —— IO 挂掉常常是暂时的");
 });

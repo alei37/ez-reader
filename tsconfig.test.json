@@ -1,0 +1,45 @@
+{
+  // v0.3.3: 测试代码的类型检查配置。
+  //
+  // 为什么要单独一个文件: `tsconfig.json` 只有 `"include": ["src/**/*.ts"]`,
+  // 所以 `pnpm test` 从来**没有类型检查过 tests/**。后果不是"测试跑不起来"
+  // (esbuild 不做类型检查, 跑得很欢), 而是**测试桩悄悄烂掉**:
+  //
+  //   给 `AnnotationStore` 端口加一个 `patchReading`, 8 个测试里的
+  //   InMemoryStore stub 立刻不再满足接口 —— 但没有任何东西报���。
+  //   那些 stub 在运行时被调用到, 才是 `annotations.patchReading is not
+  //   a function`。2026-09 那天我为了找这个踩了两次, 今天又为了
+  //   `patchPinnedAt` 再踩一次。
+  //
+  // 这个文件把 tests/ 拉进类型检查。`pnpm typecheck:tests` 单独跑它,
+  // 不进 `pnpm build` —— 因为测试桩的修复节奏和产品代码不同步, 把它
+  // 挂到 build 上会让插件发版被测试代码的债卡住。真正的问题是"测试从不
+  // 被检查", 修法是让它**被检查**, 而不是让它**阻塞发布**。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // 测试跑在 Node + jsdom 下, 不是浏览器。用 Node 的类型补全把
+    // `node:test` / `node:assert` 这些全局拿回来。
+    "types": ["node"],
+    // `baseUrl: "src"` 是给产品代码的相对解析用的; 测试的 import 是
+    // 相对测试文件自己的路径, baseUrl 在这里只会添乱。
+    "baseUrl": ".",
+    // 让 tsc 自己从 `tests/stubs/obsidian-stub.mjs` 推断导出。
+    // TypeScript 不支持在 `declare module` 里写相对路径, 所以手写 .d.ts
+    // 声明这个 stub 是行不通的 —— allowJs 是唯一的干净做法, 而且比一份
+    // 手抄的 .d.ts 更能抓 stub 漂移 (改了 .mjs 的导出, 这里立刻报)。
+    // 注意 `checkJs` 保持关闭: 我们要的是 stub 的**导出形状**, 不是去给
+    // stub 本体做类型检查。
+    "allowJs": true,
+    "checkJs": false,
+    // 有测试直接 `import { ... } from "../../src/ui/reader/TocPanel.ts"` ——
+    // 带扩展名, TS 默认拒绝。
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    // 测试里大量 `as never` / `as unknown as X` 桩注入, 开了 unchecked
+    // index access 之后噪音会淹没真错误。测试不是产品代码, 保持宽松是
+    // 有意的取舍 —— 但上面几条不是。
+    "noUncheckedIndexedAccess": false,
+    "skipLibCheck": true
+  },
+  "include": ["tests/core/**/*.ts", "tests/types/**/*.d.ts", "src/**/*.ts"]
+}

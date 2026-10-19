@@ -17,6 +17,55 @@ import type { Disposable } from "../../core/utils/Disposable";
 const METADATA_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * Vault directories that must never be walked for books.
+ *
+ * 之前 `scan()` 把整个 vault 递归一遍, 于是:
+ *   - `.obsidian/` —— 插件配置、workspace 状态、我们自己的封面缓存
+ *     (`.obsidian/plugins/ez-reader/data/covers/`)。那里的文件根本不是书,
+ *     命名却是 `<hash>.pdf`(见 `CoverCache.coverFileStem`), 一旦命中就
+ *     会把用户自己的封面当成一本"书"加进书架。
+ *   - `.trash/` —— Obsidian 的回收站。用户明明已经删掉的书, 又从
+ *     回收站里冒回书架, 而且用户无法解释为什么。
+ *   - `.git/` —— 如果用户把 vault 当 git 仓库用, 历史版本里的 epub
+ *     会被当成 N 本不同的书。
+ *   - `.stfolder` / `.stversions` —— Syncthing 的内部目录。
+ *     `.stversions` 里是同步冲突副本(`book (conflicted copy 2024-01-01).pdf`),
+ *     扫进来就是书架上凭空多出一本重复的书。本项目的用户正好在用 Syncthing。
+ *     (`.stignore` 是文件不是目录, 走不到这里, 所以不在下面的常量里。)
+ *
+ * 判定用的是"任意一级目录名命中", 而不是"路径以 X 开头" —— 用户完全可能有
+ * 一个叫 `我的书/.git-notes/` 的目录, 或者根目录下一个叫 `.trash.pdf` 的
+ * **书**文件。只认目录段, 不认文件名前缀, 两者都不会误伤。
+ */
+const IGNORED_VAULT_DIRS: ReadonlySet<string> = new Set([
+  ".obsidian",
+  ".trash",
+  ".git",
+  ".stfolder",
+  ".stversions",
+  ".smart-env",
+  ".github",
+  "node_modules"
+]);
+
+/** True if any path segment names an ignored metadata directory. */
+export const isIgnoredVaultPath = (path: string): boolean => {
+  const segments = path.split("/");
+  // 最后一段是文件名本身(除非路径以 "/" 结尾 = 目录), 不参与目录判定。
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (IGNORED_VAULT_DIRS.has(segments[i] as string)) return true;
+  }
+  return false;
+};
+
+/**
+ * True when the path names a directory we refuse to descend into.
+ * `adapter.list()` returns full paths, so the folder itself is the last segment.
+ */
+const isIgnoredVaultFolder = (folderPath: string): boolean =>
+  folderPath !== "" && isIgnoredVaultPath(`${folderPath}/x`);
+
+/**
  * Vault-backed implementation of `BookSource`. Reads from Obsidian's Vault
  * adapter; the metadata and cover bytes come from the same blobs the
  * reader would consume.
@@ -40,6 +89,9 @@ export class ObsidianBookSource implements BookSource {
 
     for (const file of this.app.vault.getFiles()) {
       if (!(file instanceof TFile)) continue;
+      // getFiles() 通常已经不含 .obsidian/ 里的东西(它们不是 TFile), 但
+      // `.trash/` 里的书**是**正常的 TFile, 所以这一层过滤是必需的。
+      if (isIgnoredVaultPath(file.path)) continue;
       totalFromGetFiles += 1;
       if (seenPaths.has(file.path)) continue;
       const format = extensionToFormat(file.extension);
@@ -68,6 +120,7 @@ export class ObsidianBookSource implements BookSource {
       }
       for (const filePath of entries.files) {
         if (seenPaths.has(filePath)) continue;
+        if (isIgnoredVaultPath(filePath)) continue;
         const abstract = this.app.vault.getAbstractFileByPath(filePath);
         if (!(abstract instanceof TFile)) continue;
         const format = extensionToFormat(abstract.extension);
@@ -78,6 +131,9 @@ export class ObsidianBookSource implements BookSource {
       }
       for (const subFolder of entries.folders) {
         if (visited.has(subFolder)) continue;
+        // 这里剪枝比在下一轮 list() 之后过滤更省: 整个子树的 adapter.list
+        // 调用都省掉了。大 vault 上 `.git/objects` 能有成千上万次 list。
+        if (isIgnoredVaultFolder(subFolder)) continue;
         visited.add(subFolder);
         adapterFolders.push(subFolder);
       }

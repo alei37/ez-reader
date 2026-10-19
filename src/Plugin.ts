@@ -23,7 +23,8 @@ import type { BookBytesLoader, BookReader } from "./core/ports/BookReader";
 import type { LibraryWriter } from "./core/ports/LibraryWriter";
 import type {
   KeyboardShortcuts,
-  ReaderAppearance
+  ReaderAppearance,
+  ReaderOpenMode
 } from "./core/types/ReaderSettings";
 import {
   DEFAULT_KEYBOARD_SHORTCUTS,
@@ -32,6 +33,7 @@ import {
 import type { Locale } from "./core/types/Locale";
 import { ShelfView, SHELF_VIEW_TYPE } from "./ui/shelf/ShelfView";
 import { READER_VIEW_TYPE, ReaderView } from "./ui/reader/ReaderView";
+import { readerLeafMatchesBook } from "./ui/reader/readerLeafState";
 import { SettingsTab } from "./ui/settings/SettingsTab";
 
 /**
@@ -230,6 +232,24 @@ export default class EzReaderPlugin extends Plugin {
 
   onunload(): void {
     this.library?.dispose();
+    // v0.3.3: 卸载所有 PdfOverlay。之前完全没做这件事, 后果是用户
+    // "禁用插件"之后, 每个开着的 PDF leaf 上仍然跑着:
+    //   - 一个 60fps 的 requestAnimationFrame 循环 (每帧 getBoundingClientRect)
+    //   - 2 个 MutationObserver
+    //   - document 上的 selectionchange / mousedown / visibilitychange listener
+    //   - window 上的 resize / blur / focus listener
+    // 这些全是**闭包持有 view 引用**的, 插件对象被卸载后它们照跑不误,
+    // 而且 rAF 循环会阻止对应页面的 GC —— 禁用一次插件泄漏一整批。
+    //
+    // 用动态 import 是因为 pdfOverlay.ts 是重模块 (只有打开 PDF 时才该加载);
+    // 卸载路径上一个失败不能阻断后面的清理, 所以整段包在 catch 里。
+    void import("./ui/reader/pdfOverlay")
+      .then(({ unmountAllPdfOverlays }) => {
+        unmountAllPdfOverlays();
+      })
+      .catch(() => {
+        // pdfOverlay 从来没被 import 过 (用户没开过 PDF) —— 什么都不用卸载。
+      });
     // 还原用户原本的 "Detect all file extensions" 设置 — 我们只在
     // 插件活跃期间打开它, 退出时恢复原值, 不污染用户的偏好。
     if (typeof this.__ezReaderPreviousShowUnsupported === "boolean") {
@@ -326,6 +346,24 @@ export default class EzReaderPlugin extends Plugin {
     };
   }
 
+  /**
+   * v0.3.3: 读 `readerOpenMode` 设置 (设置页"打开阅读器方式"下拉框)。
+   *
+   * 单开一个方法而不是塞进 `loadReaderSettings`: 后者是 ReaderView 的
+   * `settingsProvider`, 每次开书都要 await 一遍, 而打开方式只被
+   * `openReader` 用一次。读失败 / 字段缺失一律 fallback `"tab"` ——
+   * 这是**默认值也是 Obsidian 的标准行为**, 猜错的话用户会得到一个
+   * 凭空弹出、抢焦点的窗口, 比"没生效"糟糕得多。
+   */
+  private async loadReaderOpenMode(): Promise<ReaderOpenMode> {
+    try {
+      const settings = await this.annotationStore.listSettings();
+      return settings.readerOpenMode === "window" ? "window" : "tab";
+    } catch {
+      return "tab";
+    }
+  }
+
   private async handleProtocol(params: Record<string, string>): Promise<void> {
     const bookId = params.book ?? params.path;
     const excerptId = params.annotation;
@@ -381,9 +419,19 @@ export default class EzReaderPlugin extends Plugin {
       }
       await this.withTimeout(this.openReader(entry), 8000, "openReader");
       if (excerptId) {
-        const leaf = this.findReaderLeafForBook(bookId) ?? this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)[0];
+        // v0.3.3: 只认**这本书**的 leaf。之前的兜底
+        // `?? getLeavesOfType(READER_VIEW_TYPE)[0]` 会抓一个完全不相干的
+        // reader leaf —— 用户正开着 B 书, 点 A 书笔记里的"返回原文",
+        // 旧代码会跳到 B 的 ReaderView 上, 然后 `openExcerptById` 拿
+        // A 的 excerptId 去 B 的书库里查。查不到就静默什么都不做, 用户
+        // 看到的是"点了没反应"; 万一撞上 id 相同(极低但非零), 就在
+        // 错的书上跳。
+        // v0.3.3 兜底: 认不出来就不跳, 而不是跳到错误的书。
+        const leaf = this.findReaderLeafForBook(bookId);
         if (leaf?.view instanceof ReaderView) {
           await this.withTimeout(leaf.view.openExcerptById(excerptId), 30000, "openExcerptById");
+        } else {
+          console.warn("[ez-reader] handleProtocol: reader leaf for book not found", bookId);
         }
       }
     } catch (error) {
@@ -456,8 +504,10 @@ export default class EzReaderPlugin extends Plugin {
 
   private findReaderLeafForBook(bookId: string): WorkspaceLeaf | null {
     for (const leaf of this.app.workspace.getLeavesOfType(READER_VIEW_TYPE)) {
-      const state = leaf.getViewState();
-      if (state.state && (state.state as { file?: unknown }).file === bookId) {
+      const view = leaf.view;
+      const viewBookId = view instanceof ReaderView ? view.getCurrentBookId() : undefined;
+      const layoutState = leaf.getViewState()?.state;
+      if (readerLeafMatchesBook(layoutState, viewBookId, bookId)) {
         return leaf;
       }
     }
@@ -514,11 +564,29 @@ export default class EzReaderPlugin extends Plugin {
       await this.openInBuiltInViewer(entry);
       return;
     }
+    // v0.3.3: 已经开着这本书就复用那个 leaf, 不要新开一个。之前无条件
+    // `getLeaf("tab")`, 后果是: 用户书架上点第 5 次同一本书 → 标签页越开越多,
+    // 每个都持有独立的 foliate iframe / PagedTextSession, 内存直接翻几倍,
+    // 而且切到哪个 leaf 进度会互相打架 (各自 debounce 写同一个 bookId)。
+    const reusable = this.findReaderLeafForBook(entry.book.id);
+    if (reusable) {
+      await this.app.workspace.revealLeaf(reusable);
+      this.app.workspace.setActiveLeaf(reusable);
+      return;
+    }
     // EPUB 走 ez-reader 自己的 ReaderView
-    const leaf = this.app.workspace.getLeaf("tab");
+    //
+    // v0.3.3: 真正读 `readerOpenMode` 设置了。之前 Plugin 硬编码
+    // `getLeaf("tab")`, 设置里的"在新窗口中打开"是个纯装饰的下拉框。
+    const mode = await this.loadReaderOpenMode();
+    const leaf = this.app.workspace.getLeaf(mode === "window" ? "window" : "tab");
     await leaf.setViewState({
       type: READER_VIEW_TYPE,
-      state: { file: entry.book.locator.path },
+      // 存 bookId 而不是 path —— 两者在 ObsidianBookSource.resolveId 里
+      // 是同一个值 (resolveId(locator) => locator.path), 但 ReaderView
+      // 是拿这个字段去 `library.get(...)` 查的, 语义上是 id, 写 path
+      // 只是碰巧相等。
+      state: { file: entry.book.id },
       active: true
     });
     const view = leaf.view;

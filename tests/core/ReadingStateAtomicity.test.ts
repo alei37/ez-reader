@@ -74,7 +74,11 @@ test("concurrent addReadingTime + updatePosition keeps both writes", async () =>
 
   const final = await readingOf(store, "b.epub");
   assert.equal(final.totalReadingMs, 60_000, "reading time must survive");
-  assert.equal(final.position?.cfi, "/6/4", "position must survive");
+  // `position` 是判别联合 (reflow / text / pdf), `cfi` 只存在于 reflow 分支.
+  // 先用 assert.ok 收窄到 reflow 分支再断言字段 —— 不需要任何 `as any`.
+  const pos = final.position;
+  assert.ok(pos !== null && pos.kind === "reflow", "position must be a reflow position");
+  assert.equal(pos.cfi, "/6/4", "position must survive");
 });
 
 test("concurrent openBook + addReadingTime keeps both lastOpenedAt and totalReadingMs", async () => {
@@ -121,7 +125,10 @@ test("concurrent toggleFavorite / setStatus / updatePosition do not clobber each
   assert.equal(final.favorite, true, "favorite flip must survive");
   assert.equal(final.status, "finished", "explicit status must not be re-inferred away");
   assert.equal(final.totalReadingMs, 5_000, "reading time must survive");
-  assert.equal(final.position?.fraction, 0.5, "position must survive");
+  // `fraction` 只存在于 reflow / text 分支, pdf 分支没有 —— 先收窄再断言.
+  const pos = final.position;
+  assert.ok(pos !== null && pos.kind === "reflow", "position must be a reflow position");
+  assert.equal(pos.fraction, 0.5, "position must survive");
 });
 
 test("every ReadingState writer goes through patchReading, not upsertReading", () => {

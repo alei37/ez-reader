@@ -14,7 +14,17 @@ import {
  * 这是纯算法测试 — 不依赖任何 DOM / WebView, 在 Node 里跑就行。
  */
 
-const textBytes = (s: string): Uint8Array => new TextEncoder().encode(s);
+/**
+ * `TextEncoder.encode()` 返回的是 `Uint8Array<ArrayBuffer>` (底座是普通的
+ * ArrayBuffer, 不是 SharedArrayBuffer).
+ *
+ * 这里必须显式写 `<ArrayBuffer>`: 裸 `Uint8Array` 在 TS 5.7+ 里默认是
+ * `Uint8Array<ArrayBufferLike>`, 而 `BufferSource` 的定义是
+ * `ArrayBufferView<ArrayBuffer> | ArrayBuffer` —— 泛型参数对不上, 传给
+ * `bytesFromBufferSource` 就报 TS2345. 写精确类型比到处 `as BufferSource`
+ * 强转好: 签名本身就是真的.
+ */
+const textBytes = (s: string): Uint8Array<ArrayBuffer> => new TextEncoder().encode(s);
 
 test("SHA-1: 空字符串 → da39a3ee5e6b4b0d3255bfef95601890afd80709", () => {
   // FIPS 180-4 Appendix A.1

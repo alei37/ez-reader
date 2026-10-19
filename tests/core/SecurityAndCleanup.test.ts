@@ -21,6 +21,18 @@ import { YoudaoTranslationProvider } from "../../src/adapters/translation/Youdao
 const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(`../../../src/${rel}`, import.meta.url)), "utf8");
 
+/**
+ * 测试往 `globalThis` 上挂的 requestUrl 桩.
+ *
+ * `tests/stubs/obsidian-stub.mjs` 里的 `requestUrl` 就是这么工作的:
+ * 它先看 `globalThis.__obsidianRequestUrl` 有没有被替换, 有就转发过去.
+ * 显式声明这个全局, 而不是到处写 `(globalThis as any).__obsidianRequestUrl` ——
+ * 注入的函数签名也跟着被类型检查.
+ */
+declare global {
+  var __obsidianRequestUrl: ((req: unknown) => Promise<unknown>) | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // P1 security: cleartext API key
 // ---------------------------------------------------------------------------

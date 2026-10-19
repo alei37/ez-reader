@@ -200,10 +200,15 @@ test("ExcerptsPanel: jump button triggers onJump handler", () => {
       createdAt: Date.now()
     }
   ];
-  let jumped: Excerpt | null = null;
+  // 收集回调参数用数组, 不用 `let jumped: Excerpt | null = null` ——
+  // 后者的赋值只发生在回调里, TS 的控制流分析会把它收窄成 `null`,
+  // 于是 `assert.ok(jumped)` 之后 `jumped?.id` 报
+  // "Property 'id' does not exist on type 'never'". 数组的��素类型是声明
+  // 出来的, 不受这种收窄影响.
+  const jumped: Excerpt[] = [];
   const panel = new ExcerptsPanel({
     app: undefined,
-    onJump: (ex) => { jumped = ex; },
+    onJump: (ex) => { jumped.push(ex); },
     onRemove: () => {},
     onClose: undefined
   }, makeHost());
@@ -211,8 +216,8 @@ test("ExcerptsPanel: jump button triggers onJump handler", () => {
   const jumpBtn = panel.root.querySelector<HTMLElement>(".ez-reader__excerpt-card__btn");
   assert.ok(jumpBtn, "jump button exists");
   jumpBtn?.dispatchEvent(new dom.window.Event("click"));
-  assert.ok(jumped, "onJump fired");
-  assert.equal(jumped?.id, "ex-3");
+  assert.equal(jumped.length, 1, "onJump fired");
+  assert.equal(jumped[0]?.id, "ex-3");
 });
 
 test("BookmarksPanel: empty state shows helper text", () => {
@@ -396,13 +401,15 @@ test("SidebarNotesPanel: onUpdateNote wired; toggle-commit saves inline edit (P2
     { id: "th-1", bookId: "book-x", text: "", note: "原始想法", tags: [],
       locator: { position: { kind: "reflow", fraction: 0.5 } }, createdAt: Date.now() }
   ];
-  let saved = null;
+  // 跟上面的 jumped 同理: 用数组收集, 避开 `let saved = null` 的收窄问题
+  // (以及它带来的 TS7034 "implicitly has type 'any'").
+  const saved: Array<{ excerpt: Excerpt; note: string }> = [];
   const panel = new SidebarNotesPanel({
     app: undefined,
     onJump: () => {}, onRemove: () => {}, onEdit: () => {}, onAddThought: () => {},
     onUpdateNote: (excerpt, note) => {
-      saved = { excerpt, note };
-      
+      saved.push({ excerpt, note });
+
       return Promise.resolve();
     }
   }, makeHost());
@@ -427,8 +434,8 @@ test("SidebarNotesPanel: onUpdateNote wired; toggle-commit saves inline edit (P2
   // 保存是 async 的 — 等 microtask 完成
   return new Promise<void>((resolve) => {
     globalThis.setTimeout(() => {
-      assert.ok(saved, "onUpdateNote called on toggle-collapse");
-      assert.equal(saved?.note, "更新后的想法", "new note text passed");
+      assert.equal(saved.length, 1, "onUpdateNote called on toggle-collapse");
+      assert.equal(saved[0]?.note, "更新后的想法", "new note text passed");
       resolve();
     }, 50);
   });

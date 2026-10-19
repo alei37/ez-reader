@@ -103,7 +103,12 @@ test("withDeadline: 超时 reason 本身是 Error", async () => {
 test("Plugin: revealLeaf 的每一处调用都被 await", () => {
   const text = src("Plugin.ts");
   const calls = text.match(/^.*this\.app\.workspace\.revealLeaf\(.*$/gm) ?? [];
-  assert.equal(calls.length, 3, `expected 3 revealLeaf call sites, found ${calls.length}`);
+  // 数量不是重点 —— 重点是**每一处**都被 await。重点不能退化成"只检查一处",
+  // 所以这里保留下限断言: 低于它说明正则没匹配上(文件结构变了), 测试仍然有效。
+  //
+  // 4 = openShelf 的 existing / openShelf 新建 / openInBuiltInViewer /
+  //     openReader 复用已打开的那本书的 leaf (v0.3.3 加的)。
+  assert.ok(calls.length >= 4, `expected at least 4 revealLeaf call sites, found ${calls.length}`);
   for (const call of calls) {
     assert.match(
       call,

@@ -15,6 +15,7 @@ import type { BookInfo } from "../../src/core/entities/BookInfo";
 import type { ReadingSession } from "../../src/core/entities/ReadingSession";
 import type { Disposable } from "../../src/core/utils/Disposable";
 import type { BookDirRef, LibraryWriter } from "../../src/core/ports/LibraryWriter";
+import { renameInSnapshot } from "../../src/core/utils/renameSnapshot";
 
 // ---------------------------------------------------------------------------
 // Test fakes (kept minimal — only what LibraryService + getRichEntry touch)
@@ -200,6 +201,41 @@ class InMemoryAnnotationStore implements AnnotationStore {
   async saveVisitedTocIds(bookId: string, ids: ReadonlyArray<string>): Promise<void> {
     const current = this.snapshot.visitedTocIdsByBookId ?? {};
     this.snapshot = { ...this.snapshot, visitedTocIdsByBookId: { ...current, [bookId]: [...ids] } };
+  }
+  /**
+   * 端口漂移修复: 下面三个方法 AnnotationStore 端口上有, 桩里以前没有 ——
+   * 于是 `implements AnnotationStore` 一直是假的, 端口加方法时没有任何
+   * 东西报错. 全部补成真的 read-modify-write.
+   */
+  /** 只 patch note / tags, 其余字段 (id / text / locator / createdAt) 保持原值. */
+  async updateExcerptNote(
+    bookId: string,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.map((e) => {
+        if (e.bookId !== bookId || e.id !== excerptId) return e;
+        return {
+          ...e,
+          ...(patch.note !== undefined ? { note: patch.note } : {}),
+          ...(patch.tags !== undefined ? { tags: patch.tags } : {})
+        };
+      })
+    };
+  }
+  /** 复用 core 的纯函数, 跟真 adapter 走同一条 re-key 路径. */
+  async renameBookId(fromBookId: string, toBookId: string): Promise<void> {
+    this.snapshot = renameInSnapshot(this.snapshot, fromBookId, toBookId);
+  }
+  /** 迁移标记写在 snapshot 顶层 (不是 settings 里), 跟真 adapter 一致. */
+  async setMigratedToV030(passed: boolean, attempts?: number): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      migratedToV030: passed,
+      ...(attempts === undefined ? {} : { migratedToV030Attempts: attempts })
+    };
   }
 }
 

@@ -87,7 +87,8 @@ const themeLabel = (theme: ReaderTheme): string => {
  *
  * `flush()` is exposed so the host can commit any pending write before
  * the settings tab closes (otherwise the last drag tick is lost — the
- * settings tab's `display()` uses `flush()` instead of `cancel()`).
+ * settings tab's `display()` and `hide()` both use `flush()` instead of
+ * `cancel()`).
  */
 const debounceAsync = <T extends unknown[]>(
   fn: (...args: T) => Promise<void>,
@@ -105,7 +106,9 @@ const debounceAsync = <T extends unknown[]>(
       try {
         await fn(...args);
       } catch (error) {
-        console.error("[ez-reader] debounced settings save failed", error);
+        // debounce 内部的失败走 Notice 而不是 console: Obsidian 的 `no-console`
+        // 是锁死 rule, 而且用户看不到 console —— 他只会觉得"改了没生效"。
+        new Notice(`保存设置失败: ${describeSaveFailure(error)}`);
       }
     }
   };
@@ -126,6 +129,26 @@ const debounceAsync = <T extends unknown[]>(
     pendingArgs = undefined;
   };
   return debounced;
+};
+
+/**
+ * Turn a thrown value into a Chinese, user-actionable sentence.
+ *
+ * 为什么需要它: 设置页的保存路径上真的会抛 —— 上一个 commit 给
+ * `OpenAICompatibleTranslationProvider` 加了"baseUrl 非 https 就拒绝发送"的
+ * 安全闸门, `patchSettings` 之外的校验失败、磁盘满、vault 只读也都会抛。
+ * 这些 Error 的 message 是给开发者看的英文技术描述, 直接
+ * `new Notice(String(err.message))` 怼到界面上, 用户既看不懂也不知道该改哪。
+ *
+ * 特殊处理 https 那条: 它包含当前填错的地址和原因, 但那半句是英文,
+ * 所以换成人话 + 明确指出要改哪个设置项。
+ */
+export const describeSaveFailure = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/https:\/\//i.test(message) || message.includes("API 基础地址")) {
+    return "API 基础地址必须是以 https:// 开头的网址(为避免 API key 明文外发, 已拒绝发送)。请在「翻译服务 → LLM · API 基础地址」里改掉。";
+  }
+  return `保存设置失败: ${message}`;
 };
 
 export class SettingsTab extends PluginSettingTab {
@@ -175,6 +198,57 @@ export class SettingsTab extends PluginSettingTab {
     this.renderTranslationSection(containerEl);
     this.renderUISection(containerEl);
     this.renderAboutSection(containerEl);
+  }
+
+  /**
+   * Flush every pending debounced write. Public so the host can commit
+   * before teardown — `Plugin.onunload()` has the same problem as `hide()`
+   * (an in-flight 300ms timer dies with the process), and that file is
+   * outside this fix's write scope.
+   *
+   * Must never reject: callers fire-and-forget it (`void this.x()`), and a
+   * rejection here would itself become an unhandled rejection.
+   */
+  async flushPendingSaves(): Promise<void> {
+    const pending = this.activeDebouncers;
+    // 先清空再 flush: flush() 是 async 的, 期间如果用户又触发一次 display(),
+    // 新的 debouncer 会注册进来; 提前清空可以避免把那批也一起提前提交
+    // (它们还不到 debounce 窗口, 提前提交会让滑块每一帧都写一次盘)。
+    this.activeDebouncers = [];
+    if (pending.length === 0) return;
+    await Promise.allSettled(pending.map((d) => d.flush()));
+  }
+
+  /**
+   * Obsidian closes the settings modal by calling `hide()`, and the base
+   * implementation does nothing. Without this override, the debounced
+   * writes for the last edit (a slider drag, or the LLM `baseUrl` text
+   * field) die with the modal: the user typed a value, closed settings,
+   * and it was never written to `data.json`. `display()` already flushes
+   * on tab switches; this covers the close-the-whole-modal path.
+   */
+  hide(): void {
+    void this.flushPendingSaves();
+  }
+
+  /**
+   * Run an async settings mutation, converting any rejection into a Notice.
+   *
+   * Every `onChange(async …)` in this file used to be unhandled: it is
+   * handed to Obsidian's dropdown/toggle, which neither awaits nor catches
+   * it. A rejection there is an unhandled promise rejection — invisible to
+   * the user, and `no-console` means there's not even a log line. These
+   * handlers really do throw now (the provider's https security gate, disk
+   * errors from `patchSettings`), so every one of them is wrapped here.
+   *
+   * Resolves (never rejects) so callers can `void this.runSafely(…)`.
+   */
+  async runSafely(label: string, fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (error) {
+      new Notice(`${label}失败: ${describeSaveFailure(error)}`);
+    }
   }
 
   /**
@@ -258,13 +332,15 @@ export class SettingsTab extends PluginSettingTab {
         void this.loadSettings().then((s) => {
           dropdown.setValue(s.defaultAppearance.theme);
         });
-        dropdown.onChange(async (value) => {
-          if (!THEMES.includes(value as ReaderTheme)) return;
-          await this.annotations.patchSettings((s) => ({
-            ...s,
-            defaultAppearance: { ...s.defaultAppearance, theme: value as ReaderTheme }
-          }));
-        });
+        dropdown.onChange((value) =>
+          this.runSafely("保存默认主题", async () => {
+            if (!THEMES.includes(value as ReaderTheme)) return;
+            await this.annotations.patchSettings((s) => ({
+              ...s,
+              defaultAppearance: { ...s.defaultAppearance, theme: value as ReaderTheme }
+            }));
+          })
+        );
       });
     new Setting(containerEl)
       .setName("默认排版")
@@ -275,13 +351,15 @@ export class SettingsTab extends PluginSettingTab {
         void this.loadSettings().then((s) => {
           dropdown.setValue(s.defaultAppearance.flow);
         });
-        dropdown.onChange(async (value) => {
-          if (value !== "paginated" && value !== "scrolled") return;
-          await this.annotations.patchSettings((s) => ({
-            ...s,
-            defaultAppearance: { ...s.defaultAppearance, flow: value }
-          }));
-        });
+        dropdown.onChange((value) =>
+          this.runSafely("保存默认排版", async () => {
+            if (value !== "paginated" && value !== "scrolled") return;
+            await this.annotations.patchSettings((s) => ({
+              ...s,
+              defaultAppearance: { ...s.defaultAppearance, flow: value }
+            }));
+          })
+        );
       });
   }
 
@@ -297,10 +375,12 @@ export class SettingsTab extends PluginSettingTab {
         void this.loadSettings().then((s) => {
           dropdown.setValue(s.readerOpenMode);
         });
-        dropdown.onChange(async (value) => {
-          if (value !== "tab" && value !== "window") return;
-          await this.annotations.patchSettings((s) => ({ ...s, readerOpenMode: value }));
-        });
+        dropdown.onChange((value) =>
+          this.runSafely("保存阅读器打开方式", async () => {
+            if (value !== "tab" && value !== "window") return;
+            await this.annotations.patchSettings((s) => ({ ...s, readerOpenMode: value }));
+          })
+        );
       });
     new Setting(containerEl)
       .setName("记住阅读进度")
@@ -309,9 +389,11 @@ export class SettingsTab extends PluginSettingTab {
         void this.loadSettings().then((s) => {
           toggle.setValue(s.rememberProgress !== false);
         });
-        toggle.onChange(async (value) => {
-          await this.annotations.patchSettings((s) => ({ ...s, rememberProgress: value }));
-        });
+        toggle.onChange((value) =>
+          this.runSafely("保存阅读进度选项", async () => {
+            await this.annotations.patchSettings((s) => ({ ...s, rememberProgress: value }));
+          })
+        );
       });
     new Setting(containerEl)
       .setName("默认双页显示")
@@ -320,9 +402,11 @@ export class SettingsTab extends PluginSettingTab {
         void this.loadSettings().then((s) => {
           toggle.setValue(s.twoPagesByDefault ?? false);
         });
-        toggle.onChange(async (value) => {
-          await this.annotations.patchSettings((s) => ({ ...s, twoPagesByDefault: value }));
-        });
+        toggle.onChange((value) =>
+          this.runSafely("保存双页显示选项", async () => {
+            await this.annotations.patchSettings((s) => ({ ...s, twoPagesByDefault: value }));
+          })
+        );
       });
     new Setting(containerEl)
       .setName("Pad 默认沉浸模式")
@@ -331,9 +415,11 @@ export class SettingsTab extends PluginSettingTab {
         void this.loadSettings().then((s) => {
           toggle.setValue(s.immersiveOnTablet ?? false);
         });
-        toggle.onChange(async (value) => {
-          await this.annotations.patchSettings((s) => ({ ...s, immersiveOnTablet: value }));
-        });
+        toggle.onChange((value) =>
+          this.runSafely("保存沉浸模式选项", async () => {
+            await this.annotations.patchSettings((s) => ({ ...s, immersiveOnTablet: value }));
+          })
+        );
       });
     // 键盘快捷键当前展示但不可编辑 — 自定义 UI 在路线图里. 这里给个只读
     // summary, 用户能看到当前生效的快捷键.
@@ -398,28 +484,30 @@ export class SettingsTab extends PluginSettingTab {
         void this.loadSettings().then((s) => {
           dropdown.setValue(s.translation?.providerId ?? "none");
         });
-        dropdown.onChange(async (value) => {
-          await this.annotations.patchSettings((s) => {
-            if (value === "none") {
-              return { ...s, translation: null };
-            }
-            // 切 provider 时清掉旧 key: 有道是 JSON {appKey, appSecret},
-            // DeepL 是裸字符串, Google 是另一种 JSON. 三者不通用, 留着只会
-            // 让用户看到下一屏"格式不对"的报错, 不如直接清掉让重新填.
-            const prevProvider = s.translation?.providerId;
-            const next: TranslationSettings = {
-              providerId: value,
-              apiKey: prevProvider === value ? (s.translation?.apiKey ?? "") : "",
-              sourceLocale: s.translation?.sourceLocale ?? "auto",
-              targetLocale: s.translation?.targetLocale ?? "zh-CN"
-            };
-            return { ...s, translation: next };
-          });
-          // patchSettings 已经 await, 这时 disk 上是新 provider. 立即重渲染
-          // API key 输入区(有道 = 两个, 其他 = 一个), 老 DOM 留着用户会被旧
-          // placeholder 误导.
-          await this.renderTranslationApiKeyUi(containerEl);
-        });
+        dropdown.onChange((value) =>
+          this.runSafely("保存翻译服务", async () => {
+            await this.annotations.patchSettings((s) => {
+              if (value === "none") {
+                return { ...s, translation: null };
+              }
+              // 切 provider 时清掉旧 key: 有道是 JSON {appKey, appSecret},
+              // DeepL 是裸字符串, Google 是另一种 JSON. 三者不通用, 留着只会
+              // 让用户看到下一屏"格式不对"的报错, 不如直接清掉让重新填.
+              const prevProvider = s.translation?.providerId;
+              const next: TranslationSettings = {
+                providerId: value,
+                apiKey: prevProvider === value ? (s.translation?.apiKey ?? "") : "",
+                sourceLocale: s.translation?.sourceLocale ?? "auto",
+                targetLocale: s.translation?.targetLocale ?? "zh-CN"
+              };
+              return { ...s, translation: next };
+            });
+            // patchSettings 已经 await, 这时 disk 上是新 provider. 立即重渲染
+            // API key 输入区(有道 = 两个, 其他 = 一个), 老 DOM 留着用户会被旧
+            // placeholder 误导.
+            await this.renderTranslationApiKeyUi(containerEl);
+          })
+        );
       });
     const hint = providerSetting.settingEl.createDiv({ cls: "ez-reader__settings-hint is-hidden" });
     const refreshHint = (providerId: string): void => {
@@ -745,14 +833,16 @@ export class SettingsTab extends PluginSettingTab {
         void this.annotations.listSettings().then((settings) => {
           dropdown.setValue(isUiLocale(settings.uiLocale) ? settings.uiLocale : "zh-CN");
         });
-        dropdown.onChange(async (value) => {
-          if (!isUiLocale(value)) return;
-          await this.annotations.patchSettings((s) => ({ ...s, uiLocale: value satisfies UiLocale }));
-          // UI 翻译是 patch 完 settings 不会自动应用 — i18n 字符串
-          // (button / label / desc) 已经在构造时定下来了. 提示用户
-          // 重启让翻译生效. (Obsidian 本身没有 plugin 自刷新 API).
-          new Notice("界面语言将在重启后生效");
-        });
+        dropdown.onChange((value) =>
+          this.runSafely("保存界面语言", async () => {
+            if (!isUiLocale(value)) return;
+            await this.annotations.patchSettings((s) => ({ ...s, uiLocale: value satisfies UiLocale }));
+            // UI 翻译是 patch 完 settings 不会自动应用 — i18n 字符串
+            // (button / label / desc) 已经在构造时定下来了. 提示用户
+            // 重启让翻译生效. (Obsidian 本身没有 plugin 自刷新 API).
+            new Notice("界面语言将在重启后生效");
+          })
+        );
       });
     new Setting(containerEl)
       .setName("书架封面密度")
@@ -765,10 +855,12 @@ export class SettingsTab extends PluginSettingTab {
           const raw = s.shelfDensity ?? "default";
           dropdown.setValue(SHELF_DENSITIES.includes(raw) ? raw : "default");
         });
-        dropdown.onChange(async (value) => {
-          if (!SHELF_DENSITIES.includes(value as ShelfDensity)) return;
-          await this.annotations.patchSettings((s) => ({ ...s, shelfDensity: value as ShelfDensity }));
-        });
+        dropdown.onChange((value) =>
+          this.runSafely("保存封面密度", async () => {
+            if (!SHELF_DENSITIES.includes(value as ShelfDensity)) return;
+            await this.annotations.patchSettings((s) => ({ ...s, shelfDensity: value as ShelfDensity }));
+          })
+        );
       });
   }
 
@@ -790,28 +882,41 @@ export class SettingsTab extends PluginSettingTab {
   }
 
   private async exportData(): Promise<void> {
-    const data = await this.annotations.load();
-    // P0 fix: never write the API key into the exported file. See
-    // `redactSecrets` — for the Google provider that field is a full
-    // service-account JSON with a private key.
-    const json = JSON.stringify(redactSecrets(data), null, 2);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `ez-reader-export-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    const hadKey = typeof (data as { settings?: { translation?: { apiKey?: string } } })
-      ?.settings?.translation?.apiKey === "string" &&
-      !!(data as { settings?: { translation?: { apiKey?: string } } })?.settings?.translation?.apiKey;
-    new Notice(
-      hadKey
-        ? "数据已导出 (API key 已脱敏, 不会写入备份文件)"
-        : "数据已导出"
-    );
+    // 整个导出流程包 try/catch: 调用方是 `exportBtn.onclick = () => void this.exportData()`,
+    // 抛出去就是 unhandled rejection —— 用户点了按钮, 屏幕上什么也没发生,
+    // 也没任何提示, 只能反复点。失败时至少要说一句"导出失败: <原因>"。
+    try {
+      const data = await this.annotations.load();
+      // P0 fix: never write the API key into the exported file. See
+      // `redactSecrets` — for the Google provider that field is a full
+      // service-account JSON with a private key.
+      const json = JSON.stringify(redactSecrets(data), null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `ez-reader-export-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        // 无论 click 成功与否都回收 blob —— 之前失败路径上 URL 永远不释放,
+        // 反复点几次导出就把内存撑住了。
+        URL.revokeObjectURL(url);
+      }
+      const hadKey = typeof (data as { settings?: { translation?: { apiKey?: string } } })
+        ?.settings?.translation?.apiKey === "string" &&
+        !!(data as { settings?: { translation?: { apiKey?: string } } })?.settings?.translation?.apiKey;
+      new Notice(
+        hadKey
+          ? "数据已导出 (API key 已脱敏, 不会写入备份文件)"
+          : "数据已导出"
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`导出失败: ${message}`);
+    }
   }
 
   private async importData(): Promise<void> {

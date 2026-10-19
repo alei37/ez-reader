@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { installObsidianDomHelpers } from "../stubs/obsidian-stub.mjs";
 import { TocPanel, buildTocTree } from "../../src/ui/reader/TocPanel.ts";
+import type { TocItem } from "../../src/core/ports/BookReader";
 
 // ---- DOM 环境准备 ----
 const dom = new JSDOM("<!doctype html><html><body></body></html>");
@@ -184,9 +185,9 @@ test("TocPanel: 深度跳级时 children 容器仍然渲染 (垂直竖线 + togg
 // TocPanel DOM 渲染测试
 // =========================================================
 
-function mountPanel(): { panel: any; host: HTMLElement } {
+function mountPanel(): { panel: TocPanel; host: HTMLElement } {
   const host = document.createElement("div");
-  let jumped: any = null;
+  let jumped: TocItem | null = null;
   const panel = new TocPanel(
     {
       onJump: (item) => {
@@ -196,7 +197,12 @@ function mountPanel(): { panel: any; host: HTMLElement } {
     },
     host
   );
-  return { panel: panel as any, host };
+  // v0.3.3: 之前这里是 `{ panel: any }`。代价是这个文件里 33 处
+  // `panel.root.querySelector<HTMLElement>(...)` 全部报 TS2347
+  // ("Untyped function calls may not accept type arguments") —— 而
+  // `pnpm test` 用 esbuild 跑, 从不做类型检查, 所以这些错误躺了很久没人看见。
+  // 补上类型之后, `panel.setToc` / `panel.root` 才真正开始被校验。
+  return { panel, host };
 }
 
 test("TocPanel: 初始状态 root 存在且 is-hidden", () => {
@@ -836,8 +842,9 @@ test("TocPanel v5: 搜索 case-insensitive 高亮 (中文 label)", () => {
     toc("c8", "Appendix B", 0)
   ]);
   const searchInput = panel.root.querySelector<HTMLInputElement>(".ez-reader__toc-search");
-  searchInput.value = "MET";
-  searchInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  assert.ok(searchInput, "搜索框应该存在 (items >= 8 才渲染)");
+  searchInput!.value = "MET";
+  searchInput!.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
   // "Methods" 应有高亮 — highlight 保留 label 原 case ("Methods" 里的 "Met"),
   // 不是 query 的 "MET". 用户看到的是真实文档字.
   const label = panel.root.querySelector<HTMLElement>(

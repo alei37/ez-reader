@@ -5,8 +5,12 @@ import type {
   AnnotationSnapshot,
   AnnotationStore
 } from "../../src/core/ports/AnnotationStore";
-import type { BookId } from "../../src/core/entities/Book";
+import type { BookId, BookMetadata } from "../../src/core/entities/Book";
+import type { Bookmark } from "../../src/core/entities/Bookmark";
+import type { Excerpt } from "../../src/core/entities/Excerpt";
 import type { ReadingState } from "../../src/core/entities/ReadingState";
+import type { PluginSettings } from "../../src/core/types/ReaderSettings";
+import { renameInSnapshot } from "../../src/core/utils/renameSnapshot";
 
 /**
  * Unit tests for ReadingService state transitions. We don't drive the
@@ -70,25 +74,138 @@ class InMemoryStore implements AnnotationStore {
       reading: [...this.snapshot.reading.filter((r) => r.bookId !== bookId), next]
     };
   }
-  async listBookmarks(): Promise<ReadonlyArray<unknown>> { return []; }
-  async addBookmark(): Promise<void> {}
-  async removeBookmark(): Promise<void> {}
-  async listExcerpts(): Promise<ReadonlyArray<unknown>> { return []; }
-  async addExcerpt(): Promise<void> {}
-  async removeExcerpt(): Promise<void> {}
-  async listSettings(): Promise<unknown> { return undefined; }
-  async saveSettings(): Promise<void> {}
-  async patchSettings(): Promise<void> {}
-  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> { return {}; }
-  async saveCoverPaths(): Promise<void> {}
-  async patchCoverPaths(): Promise<void> {}
-  async getAddedAt(): Promise<number | null> { return null; }
-  async setAddedAt(): Promise<void> {}
-  async markOnboardingDismissed(): Promise<void> {}
-  async hasOnboardingBeenDismissed(): Promise<boolean> { return false; }
-  // P2: visited toc ids mock — 这套测试不验证 visited 行为, 给 noop 即可.
-  async loadVisitedTocIds(): Promise<ReadonlyArray<string>> { return []; }
-  async saveVisitedTocIds(): Promise<void> { /* noop */ }
+  async listBookmarks(bookId: string): Promise<ReadonlyArray<Bookmark>> {
+    return this.snapshot.bookmarks.filter((b) => b.bookId === bookId);
+  }
+  async addBookmark(bookmark: Bookmark): Promise<void> {
+    this.snapshot = { ...this.snapshot, bookmarks: [...this.snapshot.bookmarks, bookmark] };
+  }
+  async removeBookmark(bookId: string, bookmarkId: string): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      bookmarks: this.snapshot.bookmarks.filter((b) => !(b.bookId === bookId && b.id === bookmarkId))
+    };
+  }
+  async listExcerpts(bookId: string): Promise<ReadonlyArray<Excerpt>> {
+    return this.snapshot.excerpts.filter((e) => e.bookId === bookId);
+  }
+  async addExcerpt(excerpt: Excerpt): Promise<void> {
+    this.snapshot = { ...this.snapshot, excerpts: [...this.snapshot.excerpts, excerpt] };
+  }
+  async removeExcerpt(bookId: string, excerptId: string): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.filter((e) => !(e.bookId === bookId && e.id === excerptId))
+    };
+  }
+  /** 只 patch note / tags, 其余字段 (id / text / locator / createdAt) 保持原值. */
+  async updateExcerptNote(
+    bookId: string,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.map((e) => {
+        if (e.bookId !== bookId || e.id !== excerptId) return e;
+        return {
+          ...e,
+          ...(patch.note !== undefined ? { note: patch.note } : {}),
+          ...(patch.tags !== undefined ? { tags: patch.tags } : {})
+        };
+      })
+    };
+  }
+  async listSettings(): Promise<PluginSettings> { return this.snapshot.settings; }
+  async saveSettings(settings: PluginSettings): Promise<void> {
+    this.snapshot = { ...this.snapshot, settings };
+  }
+  async patchSettings(patch: (s: PluginSettings) => PluginSettings): Promise<void> {
+    this.snapshot = { ...this.snapshot, settings: patch(this.snapshot.settings) };
+  }
+  async loadCoverPaths(): Promise<Readonly<Record<string, string>>> { return this.snapshot.coverPaths ?? {}; }
+  async saveCoverPaths(coverPaths: Record<string, string>): Promise<void> {
+    this.snapshot = { ...this.snapshot, coverPaths };
+  }
+  async patchCoverPaths(patch: (paths: Record<string, string>) => Record<string, string>): Promise<void> {
+    this.snapshot = { ...this.snapshot, coverPaths: patch(this.snapshot.coverPaths ?? {}) };
+  }
+  async getAddedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.addedAtByBookId?.[bookId] ?? null;
+  }
+  async setAddedAt(bookId: string, addedAt: number): Promise<void> {
+    const current = this.snapshot.addedAtByBookId ?? {};
+    this.snapshot = { ...this.snapshot, addedAtByBookId: { ...current, [bookId]: addedAt } };
+  }
+  // 端口漂移修复: 下面这几个方法端口上有, 桩里以前没有 —— 补成真的实现.
+  async getPinnedAt(bookId: string): Promise<number | null> {
+    return this.snapshot.pinnedAtByBookId?.[bookId] ?? null;
+  }
+  async setPinnedAt(bookId: string, pinnedAt: number | null): Promise<void> {
+    const current = this.snapshot.pinnedAtByBookId ?? {};
+    const next = { ...current };
+    if (pinnedAt === null) delete next[bookId];
+    else next[bookId] = pinnedAt;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
+  async patchPinnedAt(bookId: string, patch: (current: number | null) => number | null): Promise<void> {
+    const currentMap = this.snapshot.pinnedAtByBookId ?? {};
+    const nextValue = patch(currentMap[bookId] ?? null);
+    const next = { ...currentMap };
+    if (nextValue === null) delete next[bookId];
+    else next[bookId] = nextValue;
+    this.snapshot = { ...this.snapshot, pinnedAtByBookId: next };
+  }
+  async saveRichMetadata(bookId: string, metadata: BookMetadata): Promise<void> {
+    const current = this.snapshot.richMetadataByBookId ?? {};
+    this.snapshot = { ...this.snapshot, richMetadataByBookId: { ...current, [bookId]: metadata } };
+  }
+  async loadRichMetadata(bookId: string): Promise<BookMetadata | null> {
+    return this.snapshot.richMetadataByBookId?.[bookId] ?? null;
+  }
+  async addToLibraryBatchWithStamp(bookIds: ReadonlyArray<BookId>, addedAt: number): Promise<void> {
+    const existing = new Set(this.snapshot.library);
+    const newIds = bookIds.filter((id) => !existing.has(id));
+    if (newIds.length === 0) return;
+    const addedAtByBookId = { ...(this.snapshot.addedAtByBookId ?? {}) };
+    for (const id of newIds) {
+      if (addedAtByBookId[id] === undefined || addedAtByBookId[id]! > addedAt) {
+        addedAtByBookId[id] = addedAt;
+      }
+    }
+    this.snapshot = {
+      ...this.snapshot,
+      library: [...this.snapshot.library, ...newIds],
+      addedAtByBookId
+    };
+  }
+  async markOnboardingDismissed(): Promise<void> {
+    this.snapshot = { ...this.snapshot, onboardingDismissed: true };
+  }
+  async hasOnboardingBeenDismissed(): Promise<boolean> {
+    return this.snapshot.onboardingDismissed === true;
+  }
+  // P2: visited toc ids mock — 这套测试不验证 visited 行为, 但仍走真实的
+  // read-modify-write, 免得桩的行为跟真 adapter 分叉.
+  async loadVisitedTocIds(bookId: string): Promise<ReadonlyArray<string>> {
+    return this.snapshot.visitedTocIdsByBookId?.[bookId] ?? [];
+  }
+  async saveVisitedTocIds(bookId: string, ids: ReadonlyArray<string>): Promise<void> {
+    const current = this.snapshot.visitedTocIdsByBookId ?? {};
+    this.snapshot = { ...this.snapshot, visitedTocIdsByBookId: { ...current, [bookId]: [...ids] } };
+  }
+  /** 复用 core 的纯函数, 跟真 adapter 走同一条 re-key 路径. */
+  async renameBookId(fromBookId: BookId, toBookId: BookId): Promise<void> {
+    this.snapshot = renameInSnapshot(this.snapshot, fromBookId, toBookId);
+  }
+  /** 迁移标记写在 snapshot 顶层 (不是 settings 里), 跟真 adapter 一致. */
+  async setMigratedToV030(passed: boolean, attempts?: number): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      migratedToV030: passed,
+      ...(attempts === undefined ? {} : { migratedToV030Attempts: attempts })
+    };
+  }
 }
 
 const newService = async (): Promise<ReadingService> => {

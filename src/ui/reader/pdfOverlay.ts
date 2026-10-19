@@ -78,12 +78,60 @@ const generateExcerptId = (prefix: "ex"): string => {
 const ATTACHED = new WeakMap<WorkspaceLeaf, PdfOverlay>();
 
 /**
+ * `ATTACHED` 的可遍历镜像。
+ *
+ * 为什么需要: `WeakMap` 不可迭代, 而插件卸载 / vault 重载这类"把当前所有
+ * PDF overlay 拆干净"的场景需要枚举。`WeakMap` 本身是对的 (leaf 被 GC 时
+ * 条目自动消失), 所以这里不是替代它而是补一个索引:
+ * - `attachResources()` 登记, `unmount()` 注销 —— 两边成对, 正常路径不会残留。
+ * - 兜底: 万一某个 overlay 因为 leaf 被 GC 或异常路径没能 unmount,
+ *   `unmountAllPdfOverlays()` 至少能把它扫出来。
+ *
+ * 代价是强引用 (leaf 被 GC 掉但 overlay 没 unmount 时会挂住它) —— 换来的是
+ * 一个能真正"全部卸载"的入口, 值得。
+ */
+const ALL_ATTACHED = new Set<PdfOverlay>();
+
+/**
  * Public lookup — Plugin.handleProtocol 用这个找挂在 PDF leaf 上的 overlay,
  * 然后调 overlay.jumpToExcerpt 让 PDF 跳到对应摘录页 + 画 highlight. 不暴露
  * WeakMap 本身 (内部一致性靠 internal API), 只给一个 read-only 查询入口.
  */
 export const findPdfOverlayForLeaf = (leaf: WorkspaceLeaf): PdfOverlay | undefined => {
   return ATTACHED.get(leaf);
+};
+
+/**
+ * 把当前所有已挂载的 overlay 全部卸载。`Plugin.onunload` 调它。
+ *
+ * 为什么必须有: 用户禁用插件后, 每个开着的 PDF leaf 上仍然跑着
+ *   - 一个 60fps 的 requestAnimationFrame 循环 (每帧 getBoundingClientRect)
+ *   - 2 个 MutationObserver
+ *   - document 上的 selectionchange / mousedown / visibilitychange listener
+ *   - window 上的 resize / blur / focus listener
+ * 这些回调都**闭包持有 view 引用**, 插件对象被卸载后它们照跑不误,
+ * 而且 rAF 循环会让对应页面永远无法 GC —— 禁用一次插件泄漏一整批。
+ *
+ * ⚠️ 必须迭代快照而不是 `ALL_ATTACHED` 本身: `unmount()` 会同步
+ * `ALL_ATTACHED.delete(this)`, 直接遍历同一个 Set 会在迭代中改动它
+ * (Set 的迭代器对 delete 是容忍的, 但那样会漏掉后面的元素)。
+ * `[...ALL_ATTACHED]` 先取快照再逐个卸载, 顺序无关。
+ *
+ * 返回实际卸载了几个 —— 给调用方一个"有没有东西漏掉"的信号, 测试也靠它断言。
+ */
+export const unmountAllPdfOverlays = (): number => {
+  let count = 0;
+  for (const overlay of [...ALL_ATTACHED]) {
+    try {
+      overlay.unmount();
+      count += 1;
+    } catch (error) {
+      // 一个 overlay 卸载失败不能阻断其余的 —— 否则用户在禁用插件时
+      // 会看到后面几个 PDF leaf 的浮层永远留在屏幕上。
+      console.warn("[ez-reader] unmountAllPdfOverlays: one overlay failed to unmount", error);
+    }
+  }
+  return count;
 };
 
 /** Debounce — 合并短时间内的高频触发. */
@@ -165,6 +213,26 @@ export class PdfOverlay {
   private bookTitle = "";
   private targetLocale = "zh-CN";
   private mounted = false;
+  /**
+   * P0: 「mount() 是否已经开始挂资源」—— 跟 `mounted` 分开是刻意的。
+   *
+   * `mounted` 只在 `mount()` 顺利跑到最后一行才置 true, 而 mount() 中途要
+   * 注册十几个 listener、两个 MutationObserver、一条 rAF 循环。任何中途抛出的
+   * 异常 (PDF++ 之类插件改了 PDFView 的 DOM 结构, `container.querySelector(...)`
+   * 拿到 null) 都会让 `mounted` 永远停在 false —— 于是 `unmount()` 第一行
+   * `if (!this.mounted) return;` 直接早退, disposers 里已经注册的 listener、
+   * observer、rAF、六个挂在 document.body 上的元素**全部泄漏**, 而且
+   * `ATTACHED` 里还留着一个半死不活的 overlay, 之后
+   * `attachOverlayToPdfLeafIfLibraryBook` 的 `findPdfOverlayForLeaf(leaf)`
+   * 幂等检查会误判"已经挂过了"从而永远不再补挂。
+   *
+   * 所以拆成两个标志:
+   * - `mountStarted`: 进 mount() 第一行就置 true, 是**清理**的依据。
+   * - `mounted`: mount() 跑完才置 true, 只表示"完全挂载成功", 给
+   *   `onLayoutChange` 那种"活着才干活"的监听用。
+   */
+  private mountStarted = false;
+
   /**
    * P0 修复: 翻译结果 stale 守卫。每次 runTranslation 自增, await 之后只有
    * generation 仍然匹配才写 UI。旧请求不取消网络, 只是不让它覆盖新译文。
@@ -258,14 +326,41 @@ export class PdfOverlay {
     this.targetLocale = await this.opts.reading.getTranslationLocale();
   }
 
-  /** Attach to the PDFView leaf. Idempotent — 同 leaf 重复调用会先卸载旧的. */
+  /**
+   * Attach to the PDFView leaf. Idempotent — 同 leaf 重复调用会先卸载旧的.
+   *
+   * P0: 整体包 try/catch。任何中途抛出的异常都必须把**已经注册的部分资源**
+   * 拆干净再抛出去 —— 之前 `this.mounted = true` 在最后一行, 中途抛异常时
+   * `unmount()` 会被 `!this.mounted` 挡住, 于是 listener / MutationObserver /
+   * rAF / 六个 body 级 DOM 元素全部泄漏, `ATTACHED` 里还留一个死 overlay。
+   * 真实触发场景: PDF++ 之类插件接管 PDFView 后改了 DOM 结构, mount 中途
+   * 某一处解引用拿到 null 就抛。
+   *
+   * 为什么**重抛**而不是吞掉: 调用方 (`Plugin.attachOverlayToPdfLeafIfLibraryBook`)
+   * 已经有 try/catch + 日志, 静默吞会让"这个 PDF 挂不上 overlay"变成一条
+   * 没有线索的静默失败; 而 Plugin 不在本次改动范围内, 不能反过来改它。
+   */
   mount(): void {
-    if (this.mounted) return;
+    if (this.mountStarted) return;
+    this.mountStarted = true;
+    try {
+      this.attachResources();
+    } catch (error) {
+      // 清理必须发生在重抛**之前**, 否则调用方的 catch 里再调 unmount() 也
+      // 什么都没做 (unmount 靠 mountStarted 判断, 而这里刚把它用掉了)。
+      this.unmount();
+      throw error;
+    }
+  }
+
+  /** 真正的挂载逻辑 —— 只由 `mount()` 调用, 不要从别处直接调。 */
+  private attachResources(): void {
     const existing = ATTACHED.get(this.opts.pdfLeaf);
     if (existing && existing !== this) {
       existing.unmount();
     }
     ATTACHED.set(this.opts.pdfLeaf, this);
+    ALL_ATTACHED.add(this);
 
     const onSelectionChange = () => {
       if (!this.isLeafAlive()) {
@@ -845,8 +940,23 @@ export class PdfOverlay {
     }
   }
 
+  /**
+   * 拆卸 overlay。幂等 —— 重复调不抛、不重复 flush。
+   *
+   * P0: 早退条件从 `this.mounted` 改成 `this.mountStarted`。
+   * `mounted` 只在 mount 顺利跑完时才为 true, 于是"mount 中途抛异常"这条
+   * 最需要清理的路径反被自己的守卫挡住 (详见 `mountStarted` 的注释)。
+   * 换成 `mountStarted` 之后两个方向都成立:
+   *   - 从没 mount 过 → 没挂过任何资源, no-op (不去拆构造器建的 DOM,
+   *     那是别的实例也可能共用的 document.body 直属子节点);
+   *   - mount 中途失败 → 已经注册了一部分, 必须拆干净。
+   *
+   * `flushPdfActiveSession()` 自身幂等 (第一行就 `activeSinceMs === null`
+   * 早退), 所以重复调 unmount 不会把同一段阅读时长记两次。
+   */
   unmount(): void {
-    if (!this.mounted) return;
+    if (!this.mountStarted) return;
+    this.mountStarted = false;
     this.mounted = false;
     // 作废在途翻译 — 否则 unmount 之后到达的响应仍会往已 detach 的 popover
     // 写 DOM(跟 TranslationDrawer.hide() 里 bump generation 同一个理由)。
@@ -855,6 +965,10 @@ export class PdfOverlay {
     // 内部 idempotent (activeSinceMs === null 时 no-op), 即便 onLeafChange
     // 已经 flush 过也无副作用。
     this.flushPdfActiveSession();
+    // 30s 静默 timer 也要收 —— 不然它会在 overlay 已经拆掉之后才触发,
+    // 白跑一次 flushPdfActiveSession (虽然那时已经 no-op, 但 timer 本身
+    // 会让页面多活 30 秒)。
+    this.clearPdfInactivityCheck();
     for (const d of this.disposers) {
       try {
         d();
@@ -875,6 +989,7 @@ export class PdfOverlay {
     if (ATTACHED.get(this.opts.pdfLeaf) === this) {
       ATTACHED.delete(this.opts.pdfLeaf);
     }
+    ALL_ATTACHED.delete(this);
   }
 
   private hideMenu(): void {
@@ -884,7 +999,45 @@ export class PdfOverlay {
   private toggleNotesPanel(): void {
     const isOpen = this.notesPanel.classList.toggle("is-open");
     this.notesBtn.classList.toggle("is-active", isOpen);
-    if (isOpen) void this.refreshNotesPanel();
+    if (isOpen) this.requestNotesPanelRefresh();
+  }
+
+  /**
+   * `refreshNotesPanel()` 的 fire-and-forget 入口。
+   *
+   * P0: 之前调用处直接写 `void this.refreshNotesPanel()` —— 面板有 9 个刷新
+   * 触发点 (点开面板 / 点黄条 / 加摘录 / 加想法 / 删书签 / 删摘录 …), 多数是
+   * `void` 丢弃 promise。`void` 不处理 rejection: 读盘失败或渲染中途抛异常
+   * 都会变成 unhandled rejection, 同时面板停在半渲染状态, 用户看到的是一个
+   * 永远空着的侧栏, 没有任何线索。
+   *
+   * 为什么统一收口而不是每个调用点各写 `.catch()`: 触发点还会继续增加, 分散
+   * 的 `.catch` 迟早漏一个, 而漏掉的那个在测试里根本看不见。收口之后"刷新
+   * 面板"只有一条失败语义 —— 给用户一个 Notice, 不产生 unhandled rejection。
+   */
+  private requestNotesPanelRefresh(): void {
+    void this.refreshNotesPanel().catch(() => {
+      new Notice("笔记面板刷新失败");
+    });
+  }
+
+  /**
+   * 把笔记面板里那些"点了就算"的异步回调包一层。
+   *
+   * 渲染函数里全是 `void handlers.onRemoveExcerpt(id)` 这种写法, 而
+   * `removeExcerpt` / `updateExcerptNote` 都要写盘 —— data.json 被占、vault
+   * 只读、同步盘写失败, 任何一个都会让这次点击静默变成 unhandled rejection。
+   * 包一层之后失败有 Notice, 面板还能继续用。
+   *
+   * 用 Notice 而不是 console.warn: `no-console` 是本项目被锁死的 lint rule
+   * (AGENTS.md §3.7), 而且"用户点了删除但什么都没发生"本来就该让用户知道。
+   */
+  private async withPanelNotice(work: () => Promise<void>, message: string): Promise<void> {
+    try {
+      await work();
+    } catch {
+      new Notice(message);
+    }
   }
 
   private async refreshNotesPanel(): Promise<void> {
@@ -896,32 +1049,38 @@ export class PdfOverlay {
       ]);
       renderNotesPanelContent(this.notesPanel, bookmarks, excerpts, {
         onJump: (locator) => this.jumpToLocator(locator),
-        onRemoveBookmark: async (id) => {
-          await this.opts.reading.removeBookmark(this.bookId!, id);
-          await this.refreshNotesPanel();
-          new Notice("书签已删除");
-        },
-        onRemoveExcerpt: async (id) => {
-          await this.opts.reading.removeExcerpt(this.bookId!, id);
-          // 同步清掉 highlight div (包括 multi-rect 摘录的所有 div)
-          const rendered = this.highlightsByExcerpt.get(id);
-          if (rendered) {
-            rendered.div.remove();
-            for (const extra of rendered.extraDivs ?? []) extra.remove();
-            this.highlightsByExcerpt.delete(id);
-          }
-          await this.refreshNotesPanel();
-          new Notice("摘录已删除");
-        },
+        onRemoveBookmark: (id) =>
+          this.withPanelNotice(async () => {
+            await this.opts.reading.removeBookmark(this.bookId!, id);
+            await this.refreshNotesPanel();
+            new Notice("书签已删除");
+          }, "删除书签失败"),
+        onRemoveExcerpt: (id) =>
+          this.withPanelNotice(async () => {
+            await this.opts.reading.removeExcerpt(this.bookId!, id);
+            // 同步清掉 highlight div (包括 multi-rect 摘录的所有 div)
+            const rendered = this.highlightsByExcerpt.get(id);
+            if (rendered) {
+              rendered.div.remove();
+              for (const extra of rendered.extraDivs ?? []) extra.remove();
+              this.highlightsByExcerpt.delete(id);
+            }
+            await this.refreshNotesPanel();
+            new Notice("摘录已删除");
+          }, "删除摘录失败"),
         // P2: 让面板里的 note 字段可内联编辑 — 用户点黄线 → 跳到这条摘录 →
         // 自动进编辑模式; blur 保存走 reading.updateExcerptNote (不动 highlight /
-        // createdAt / locator, 只 patch note).
-        onUpdateNote: async (id, note) => {
-          await this.opts.reading.updateExcerptNote(this.bookId!, id, { note });
-        }
+        // createdAt / locator, 只 patch note)。
+        //
+        // 这里也必须包 withPanelNotice: attachInlineNoteEditor 的 blur 回调是
+        // `void onUpdate(...)`, 写盘失败照样是 unhandled rejection。
+        onUpdateNote: (id, note) =>
+          this.withPanelNotice(async () => {
+            await this.opts.reading.updateExcerptNote(this.bookId!, id, { note });
+          }, "保存想法失败")
       });
-    } catch (error) {
-      console.warn("[ez-reader] failed to refresh notes panel", error);
+    } catch {
+      new Notice("笔记面板刷新失败");
     }
   }
 
@@ -1669,12 +1828,125 @@ interface NotesRenderHandlers {
   onUpdateNote?: (id: string, note: string) => Promise<void>;
 }
 
+/** 笔记面板里 note 节点的 class —— capture / restore 都要靠它定位。 */
+const PDF_NOTE_CLS = "ez-reader__pdf-overlay-notes-panel__note";
+
+/**
+ * `NodeFilter.SHOW_TEXT` 的数值。
+ * 直接用全局 `NodeFilter` 在两个环境下都有坑 (jsdom 只在 window 上挂它,
+ * Obsidian 旧 WebView 未必有), 而 `createTreeWalker` 的第二个参数只认这个
+ * 数字 —— 用常量最省事。
+ */
+const SHOW_TEXT = 4;
+
+/** 用户正在编辑、还没提交的 inline note 内容。 */
+interface NoteDraft {
+  /** 已经敲进去但还没 blur 提交的文本。 */
+  readonly text: string;
+  /** 光标在 `text` 里的偏移 —— 重渲染后要放回去, 否则用户每次刷新都得
+   *  重新把光标拉到刚才的位置。 */
+  readonly caretOffset: number;
+}
+
+/**
+ * 量出光标相对 noteEl 内容开头的偏移。
+ *
+ * 用 Range 量 (`selectNodeContents` + `setEnd(caret)` 再 `toString().length`)
+ * 而不是遍历 text node 数字符 —— noteEl 是 contenteditable, 用户可能敲进
+ * `<br>` 或粘贴进富文本, 只有 Range 知道那些节点该怎么折算成字符串长度。
+ */
+const caretOffsetIn = (el: HTMLElement): number => {
+  const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
+  if (!sel || sel.rangeCount === 0) return 0;
+  const range = sel.getRangeAt(0);
+  if (!el.contains(range.startContainer)) return 0;
+  const probe = range.cloneRange();
+  probe.selectNodeContents(el);
+  probe.setEnd(range.startContainer, range.startOffset);
+  return probe.toString().length;
+};
+
+/** 把光标放回 `offset` 位置 (越界则落到末尾)。 */
+const setCaretIn = (el: HTMLElement, offset: number): void => {
+  const sel = typeof document.getSelection === "function" ? document.getSelection() : null;
+  if (!sel) return;
+  let remaining = Math.max(0, Math.trunc(offset));
+  let target: Text | null = null;
+  const walker = document.createTreeWalker(el, SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const length = node.textContent?.length ?? 0;
+    if (remaining <= length) {
+      target = node as Text;
+      break;
+    }
+    remaining -= length;
+    node = walker.nextNode();
+  }
+  const range = document.createRange();
+  if (target) {
+    range.setStart(target, Math.min(remaining, target.textContent?.length ?? 0));
+  } else {
+    // 文本被清空 / offset 越界 — 光标落末尾
+    range.selectNodeContents(el);
+    range.collapse(false);
+    return;
+  }
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+};
+
+/**
+ * 重渲染前抓取「正在编辑」的 note 节点。
+ *
+ * P0: `renderNotesPanelContent` 每次都 `panel.empty()` 重建整个面板, 而笔记
+ * 面板有 9 个刷新触发点 (点开面板 / 点黄条 / 加摘录 / 加想法 / 删书签 …)。
+ * 用户在某个 inline note 里敲了一半, 一次刷新就把输入框连同未提交的内容一起
+ * 吞掉 —— 而且是静默丢失, 用户以为存上了。SidebarNotesPanel (EPUB 侧) 已经
+ * 用 "用户点 ▸ 展开才进编辑态 + blur/Cmd+Enter 提交" 处理过同类问题, PDF 侧
+ * 之前没有等价保护。
+ *
+ * 只抓 `data-editing="1"` 的节点 —— 已退出编辑态的显示的是 store 里的值,
+ * 应当以 store 为准, 拿旧 DOM 覆盖反而会显示过期内容。
+ */
+const captureNoteDrafts = (panel: HTMLElement): Map<string, NoteDraft> => {
+  const drafts = new Map<string, NoteDraft>();
+  for (const row of Array.from(panel.querySelectorAll<HTMLElement>("[data-excerpt-id]"))) {
+    const id = row.getAttribute("data-excerpt-id");
+    if (!id) continue;
+    const noteEl = row.querySelector<HTMLElement>(`.${PDF_NOTE_CLS}`);
+    if (!noteEl || noteEl.getAttribute("data-editing") !== "1") continue;
+    drafts.set(id, {
+      text: noteEl.textContent ?? "",
+      caretOffset: caretOffsetIn(noteEl)
+    });
+  }
+  return drafts;
+};
+
+/** 把抓到的草稿写回重渲染后的新节点, 并恢复编辑态 + 光标。 */
+const restoreNoteDraft = (noteEl: HTMLElement, draft: NoteDraft): void => {
+  noteEl.contentEditable = "true";
+  noteEl.setAttribute("data-editing", "1");
+  noteEl.addClass("is-editing");
+  noteEl.toggleClass("has-content", draft.text.length > 0);
+  noteEl.toggleClass("is-placeholder", draft.text.length === 0);
+  noteEl.setText(draft.text);
+  // 焦点回到原处, 用户可以接着敲。jsdom 不给普通 div 焦点, 失败也无妨 ——
+  // 真正的用户在 Obsidian (Chromium) 里能拿回焦点。
+  noteEl.focus();
+  setCaretIn(noteEl, draft.caretOffset);
+};
+
 const renderNotesPanelContent = (
   panel: HTMLElement,
   bookmarks: ReadonlyArray<Bookmark>,
   excerpts: ReadonlyArray<Excerpt>,
   handlers: NotesRenderHandlers
 ): void => {
+  // 重建之前先把用户正在输入的东西抓下来 (见 captureNoteDrafts 的说明)。
+  const drafts = captureNoteDrafts(panel);
   panel.empty();
   panel.createEl("div", { cls: "ez-reader__pdf-overlay-notes-panel__heading", text: "笔记" });
 
@@ -1704,14 +1976,22 @@ const renderNotesPanelContent = (
       row.createEl("div", { text: ex.text, cls: "excerpt" });
       // 想法 / 评论 (note) — 内联编辑. 初始只读, click 进编辑; blur 保存.
       // 没传 handlers.onUpdateNote 时 fallback 只读显示.
+      const draft = drafts.get(ex.id);
       const noteEl = row.createEl("div", {
-        cls: "ez-reader__pdf-overlay-notes-panel__note",
-        text: ex.note || ""
+        cls: PDF_NOTE_CLS,
+        text: draft ? draft.text : ex.note || ""
       });
-      noteEl.setAttribute("data-editing", "0");
-      if (ex.note) noteEl.addClass("has-content");
-      else noteEl.addClass("is-placeholder");
+      if (draft) {
+        // 重渲染前后是同一条摘录 → 原样恢复编辑态, 不让用户输入被吞。
+        restoreNoteDraft(noteEl, draft);
+      } else {
+        noteEl.setAttribute("data-editing", "0");
+        if (ex.note) noteEl.addClass("has-content");
+        else noteEl.addClass("is-placeholder");
+      }
       if (handlers.onUpdateNote) {
+        // 仍然拿 `ex` (store 里的旧值) 当基线 —— blur 时拿它做对比决定要不要
+        // 提交, Esc 时拿它还原, 这两个语义都要求基线是"上次存盘的内容"。
         attachInlineNoteEditor(noteEl, ex, handlers.onUpdateNote);
       }
       const pos = ex.locator.position;

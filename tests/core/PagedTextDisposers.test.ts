@@ -19,10 +19,15 @@ for (const key of DOM_GLOBALS) {
 }
 
 const makeContent = (pages: number): PagedTextContent => ({
+  // PagedTextPage 的正文字段叫 `html`, 不是 `text` —— 之前写成 `text`,
+  // 端口一进类型检查就报 TS2322 (缺 `id` / `html`).
   pages: Array.from({ length: pages }, (_, i) => ({
-    text: `page ${i + 1}`,
+    id: `page${i + 1}`,
+    html: `page ${i + 1}`,
     css: []
-  }))
+  })),
+  toc: [],
+  chapterStartPages: []
 });
 
 const makeSession = (pages: number): PagedTextSession => {

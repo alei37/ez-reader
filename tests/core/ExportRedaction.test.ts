@@ -80,7 +80,18 @@ test("import: a redacted export restores the key already in the vault", () => {
     "my-real-key",
     "importing a backup must not wipe the key the user already configured"
   );
-  assert.equal((merged.settings.translation as Record<string, unknown>).__redactedApiKey, undefined);
+  // `__redactedApiKey` 是导出时打的标记 (redactSecrets 盖的), 不在
+  // `TranslationSettings` 类型里 —— 之前靠 `as Record<string, unknown>`
+  // 硬转 (TS2352: 两种类型没有足够重叠). 用 `in` 运算符直接问"这个 key
+  // 在不在", 既不用强转, 断言还更严 (原写法在"属性存在但值是 undefined"
+  // 时也会通过).
+  const restored = merged.settings.translation;
+  assert.ok(restored, "translation must be present after restore");
+  assert.equal(
+    "__redactedApiKey" in restored,
+    false,
+    "the redaction marker must be gone after import"
+  );
 });
 
 test("import: a hand-edited file with a real key is NOT overridden", () => {

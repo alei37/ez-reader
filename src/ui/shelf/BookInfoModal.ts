@@ -122,6 +122,51 @@ const statusBadge = (status: ReadingStatus): { label: string; cls: string } => {
   }
 };
 
+/**
+ * 单个 per-book 文件的读取探测结果。
+ *
+ * 为什么需要它: `LibraryService.getRichEntry` 内部对 readBookInfo /
+ * loadReadingSessions 都 `catch {}` 吞掉异常, 失败时返回一个**全空的快照**。
+ * 于是 vault IO 真挂了(权限、同步冲突把文件搞坏)时, UI 拿到的形状跟
+ * "用户从来没打开过这本书"**完全一样**。这等于告诉用户"你的阅读记录没了",
+ * 而真相是"我们没读到"—— 掩盖数据丢失, 是最恶劣的一类 bug。
+ *
+ * LibraryService 在我的写入范围之外, 所以不改它, 而是在 modal 层自己
+ * 再探一次磁盘。代价是多一次 exists + read(两个小文件, 只在打开弹窗时发生);
+ * 换来的是"没读过"和"没读到"在 UI 上彻底分开。
+ *
+ * 四态:
+ *  - `ok`      文件在, 读到了内容(或已在上游成功解析出数据)
+ *  - `absent`  文件不在 / 是空文件 —— 这是**正常的没读过**
+ *  - `error`   IO 失败, 或者"磁盘上有内容但上游没解析出来" —— 必须在 UI 上报警
+ *  - `unknown` 这套探测跑不了(老 adapter / 没装 LibraryWriter) —— 保持沉默,
+ *              不假装自己知道
+ */
+interface FileProbe {
+  readonly state: "ok" | "absent" | "error" | "unknown";
+  /** 探测用的 vault 相对路径, 出错时展示给用户方便排查。 */
+  readonly path: string;
+  /** state === "error" 时的可读原因。 */
+  readonly message?: string;
+}
+
+/** Minimal shape of the vault adapter bits we touch. */
+interface ProbeAdapter {
+  exists(path: string): Promise<boolean>;
+  read(path: string): Promise<string>;
+}
+
+const describeError = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/** Readable label for the per-book file, shown in the warning banner. */
+const PROBE_LABELS = {
+  sessions: "阅读记录 (sessions)",
+  info: "书籍信息 (info)"
+} as const;
+
+type ProbeKind = keyof typeof PROBE_LABELS;
+
 export class BookInfoModal extends Modal {
   private readonly deps: BookInfoModalDeps;
   private readonly bookId: BookId;
@@ -129,6 +174,18 @@ export class BookInfoModal extends Modal {
   private rich: RichLibraryEntry | null = null;
   /** True when getRichEntry returned null (book removed mid-flight). */
   private missing = false;
+  /**
+   * Bug 3 修复: getRichEntry **reject**(加载失败) 的错误信息。
+   *
+   * 之前它和 `missing` 共用一个标记(失败时置 missing = true), 结果 vault
+   * IO 挂掉时用户看到的是"找不到这本书 — 可能已被移除或刷新过库" ——
+   * 把"插件没读到"说成"你的书没了", 用户第一反应是去 vault 里找文件,
+   * 甚至以为自己误删了。两条路径必须分开: `missing` 只表示 getRichEntry
+   * 正常返回了 null(书真的不在库里), `loadError` 才表示读取过程炸了。
+   */
+  private loadError: string | null = null;
+  /** 磁盘探测结果 — 见 FileProbe 注释。null = 还没探测 / 探测不可用。 */
+  private readonly probes = new Map<ProbeKind, FileProbe>();
   /** Active load promise so re-opening the modal re-fetches. */
   private readonly loadPromise: Promise<void>;
   /** Set of copy-feedback timers so onClose can cancel them. */
@@ -150,17 +207,94 @@ export class BookInfoModal extends Modal {
         this.missing = true;
       } else {
         this.rich = result;
+        this.missing = false;
+        this.loadError = null;
+        // 拿到快照后再探磁盘 —— 顺序不能反: 探测结论要跟这份快照比对
+        // ("磁盘有内容但快照是空的" 才是上游吞异常的证据)。
+        await this.probeBookFiles(result);
       }
       // If the modal already opened before us, re-render now.
       if (this.contentEl.children.length > 0) {
         this.render();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeError(error);
       new Notice(`加载书籍详情失败: ${message}`);
-      this.missing = true;
+      // 注意: 这里**不**置 missing —— 见 loadError 字段注释。
+      this.loadError = message;
+      this.missing = false;
       if (this.contentEl.children.length > 0) this.render();
     }
+  }
+
+  /**
+   * 自己再读一次 ezreader/ 下的 per-book 文件, 把 IO 状态和 LibraryService
+   * 返回的快照对照, 从而区分"没读过"和"没读到"。
+   */
+  private async probeBookFiles(rich: RichLibraryEntry): Promise<void> {
+    const title =
+      rich.bookInfo?.title ?? rich.entry.book.metadata?.title ?? rich.entry.book.locator.path;
+    const stem = bookFileStem(title, this.bookId);
+
+    // sessions 额外传 hasUsableData: 磁盘上有内容但 recentSessions 是空数组,
+    // 只能解释成上游 loadReadingSessions 抛了异常被 catch {} 吞掉 —— 判为 error。
+    //
+    // info 传 null: LibraryService 在 info.md 缺失时会用 buildFallbackBookInfo
+    // 合成一份**看起来完全正常**的 BookInfo, 所以"快照非空"在这里不构成证据,
+    // 只能靠探测本身有没有抛错。合成 vs 真实的区分需要 LibraryService 暴露
+    // 更多字段, 已在上报里标注为需要改 core 的遗留项。
+    const [sessions, info] = await Promise.all([
+      this.probeBookFile(`ezreader/sessions/${stem}.jsonl`, {
+        hasUsableData: rich.recentSessions.length > 0
+      }),
+      this.probeBookFile(`ezreader/info/${stem}.md`, { hasUsableData: null })
+    ]);
+    this.probes.set("sessions", sessions);
+    this.probes.set("info", info);
+  }
+
+  /**
+   * 探测单个文件。**绝不抛出** —— 探测本身失败就是它要报告的信息之一,
+   * 任何意外都收敛成 state:"error" / "unknown", 不能让弹窗整个打不开。
+   *
+   * @param hasUsableData 上游是否真的解析出了数据。sessions 传布尔值:
+   *   "磁盘有内容但 false" 只能解释成上游吞了异常, 判为 error。
+   *   info 传 null: LibraryService 会用 fallback 合成一份看起来正常的
+   *   BookInfo, 快照本身不构成证据(见 probeBookFiles 注释)。
+   */
+  private async probeBookFile(
+    path: string,
+    opts: { readonly hasUsableData: boolean | null }
+  ): Promise<FileProbe> {
+    const adapter = this.readProbeAdapter();
+    // adapter 没有 exists/read → 探测不可用。保持 unknown(沉默), 绝不
+    // 把"我探测不了"渲染成"读取失败"(那是在制造假警报) 或"没读过"。
+    if (adapter === null) return { state: "unknown", path };
+    try {
+      const exists = await adapter.exists(path);
+      if (!exists) return { state: "absent", path };
+    } catch (error) {
+      return { state: "error", path, message: describeError(error) };
+    }
+    try {
+      const raw = await adapter.read(path);
+      // 空白文件等价于没写过 —— 归到 absent(正常的"没读过")。
+      if (raw.trim().length === 0) return { state: "absent", path };
+      if (opts.hasUsableData === false) {
+        return { state: "error", path, message: "文件里有内容, 但详情页没解析出来" };
+      }
+      return { state: "ok", path };
+    } catch (error) {
+      return { state: "error", path, message: describeError(error) };
+    }
+  }
+
+  /** Grab the adapter, or null when it can't support the probe. */
+  private readProbeAdapter(): ProbeAdapter | null {
+    const adapter = this.deps.app?.vault?.adapter as unknown as Partial<ProbeAdapter> | undefined;
+    if (!adapter) return null;
+    if (typeof adapter.exists !== "function" || typeof adapter.read !== "function") return null;
+    return adapter as ProbeAdapter;
   }
 
   onOpen(): void {
@@ -183,6 +317,13 @@ export class BookInfoModal extends Modal {
   private render(): void {
     const { contentEl } = this;
     contentEl.empty();
+    // Bug 3: 加载失败优先于"书被删了"。顺序有讲究: 失败时 rich 必然还是
+    // null, 如果先判 rich === null 就会把加载失败渲染成"加载中…"——
+    // 一个永远转不完的进度条, 比报错更让人困惑。
+    if (this.loadError !== null) {
+      this.renderLoadError();
+      return;
+    }
     if (this.missing) {
       this.renderMissing();
       return;
@@ -211,6 +352,10 @@ export class BookInfoModal extends Modal {
     // Header — cover + title + authors + primary action row.
     this.renderHeader(contentEl, rich, entry);
 
+    // Bug 2: 磁盘探测发现的 IO 失败 —— 放在最上面, 用户不用往下翻就能看到
+    // "下面这些数字可能不全", 而不是自己脑补为什么时长是 0。
+    this.renderDataWarnings(contentEl);
+
     // Meta section — publisher, ISBN, file path, etc.
     this.renderMeta(contentEl, info);
 
@@ -225,6 +370,48 @@ export class BookInfoModal extends Modal {
 
     // Footer — open notes.md / info.md in Obsidian.
     this.renderFooter(contentEl, info);
+  }
+
+  /**
+   * Bug 2: 把"没读到"的文件集中告警一次。
+   *
+   * 为什么要有这层而不是各自在段落里提示: sessions 和 info 的失败会同时
+   * 影响"阅读时长统计"和"最近 session 明细"两块, 用户看到的是两个都空,
+   * 分不清是一个原因还是两个。集中一条横幅说清楚"哪些文件没读到", 比让
+   * 用户自己拼图可靠。
+   */
+  private renderDataWarnings(root: HTMLElement): void {
+    const failed: Array<{ readonly kind: ProbeKind; readonly probe: FileProbe }> = [];
+    for (const kind of ["sessions", "info"] as const) {
+      const probe = this.probes.get(kind);
+      if (probe && probe.state === "error") failed.push({ kind, probe });
+    }
+    if (failed.length === 0) return;
+
+    const alert = root.createDiv({ cls: "ez-reader__book-info-alert is-error" });
+    alert.setAttribute("role", "alert");
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__title",
+      // "读取失败" 四字跟 renderSessions 里的行内警告、renderLoadError 里的
+      // 标题保持一致 —— 同一个概念在弹窗里只该有一种说法, 否则用户会以为是
+      // 两个不同的问题。
+      text: "⚠ 读取失败 — 有数据没能读出来, 下面的统计可能不完整。"
+    });
+    for (const { kind, probe } of failed) {
+      alert.createEl("p", {
+        cls: "ez-reader__book-info-alert__detail",
+        text: `${PROBE_LABELS[kind]}: ${probe.message ?? "读取失败"} — ${probe.path}`
+      });
+    }
+    // 刻意强调"不是你的错也不是数据没了": 用户看到空的时长统计第一反应
+    // 是"我是不是白读了", 进而可能去删文件/重置库, 那才是真的制造损失。
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__hint",
+      text:
+        "这通常不是数据被删了 —— 更可能是 vault 同步冲突把文件搞坏、文件被其他程序占用, " +
+        "或读写权限异常。建议检查 vault 里的 ezreader/ 目录, 确认这些文件完整, " +
+        "关掉其他正在同步的客户端之后再打开一次。"
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -482,9 +669,16 @@ export class BookInfoModal extends Modal {
     const hasAnyActivity = buckets.some((b) => b.totalMs > 0 || b.sessionCount > 0);
     if (buckets.length === 0 || !hasAnyActivity) {
       chart.addClass("is-empty");
+      // Bug 2: 同样的三态问题在这一处最误导人 —— 30 根 2px 的灰条配上
+      // "暂无阅读记录", 视觉上就是"这人一次都没读过"。读失败时必须换文案。
+      const sessionsFailed = this.probes.get("sessions")?.state === "error";
       chart.createDiv({
-        cls: "ez-reader__book-info-bar-chart__placeholder",
-        text: "暂无阅读记录 — 在阅读器里读一会儿就会出现在这里"
+        cls: sessionsFailed
+          ? "ez-reader__book-info-bar-chart__placeholder is-error"
+          : "ez-reader__book-info-bar-chart__placeholder",
+        text: sessionsFailed
+          ? "⚠ 阅读记录没读出来 — 这张图可能不完整, 不代表你没有读过。"
+          : "暂无阅读记录 — 在阅读器里读一会儿就会出现在这里"
       });
       // Styles live in styles.css (`.ez-reader__book-info-bar-chart__placeholder`)
       // — Obsidian lint `no-static-styles-assignment` forbids inline style.X = Y.
@@ -538,10 +732,25 @@ export class BookInfoModal extends Modal {
 
     const list = section.createDiv({ cls: "ez-reader__book-info-sessions" });
     if (rich.recentSessions.length === 0) {
+      // Bug 2: 三态里的关键分叉。空数组有两种来源, 必须分开说:
+      //   ① 磁盘上本来就没有记录(用户真没读过) —— 正常空态
+      //   ② 磁盘上有但我们没读出来(IO 挂了)     —— 红色警告
+      // 旧代码对两者一视同仁, 等于把"没读到"谎报成"你没读过"。
+      const sessionsProbe = this.probes.get("sessions");
+      if (sessionsProbe && sessionsProbe.state === "error") {
+        list.addClass("is-error");
+        list.createDiv({
+          cls: "ez-reader__book-info-sessions__error",
+          text:
+            `⚠ 读取失败 — 没能读出这本书的阅读记录(${sessionsProbe.message ?? "未知原因"})。` +
+            "你的记录很可能还在, 只是这次没读到; 请检查 vault 同步或 ezreader/sessions/ 目录后重新打开。"
+        });
+        return;
+      }
       list.addClass("is-empty");
       list.createDiv({
         cls: "ez-reader__book-info-sessions__placeholder",
-        text: "暂无 session 记录 — sessions.jsonl 在第一次关闭阅读器时创建"
+        text: "暂无 session 记录 — 读一会儿再关掉阅读器, 这里就会记下这次阅读。"
       });
       return;
     }
@@ -618,6 +827,56 @@ export class BookInfoModal extends Modal {
     section.createEl("p", {
       text: "找不到这本书 — 可能已被移除或刷新过库。"
     });
+    this.titleEl.setText("书籍详情");
+  }
+
+  /**
+   * Bug 3: `getRichEntry` reject 的独立展示。
+   *
+   * 复用 renderMissing 的文案是这次 bug 的根源: 加载失败 ≠ 书被删。
+   * 弹窗是从书架右键菜单打开的, 用户刚点完, 书十有八九还在库里 ——
+   * 报"找不到这本书"会让用户跑去 vault 里翻文件, 甚至以为是自己误删的。
+   *
+   * 这里给重试按钮是因为加载失败往往是瞬时的(同步冲突 / 文件被占用),
+   * 关掉重开要重新走一遍右键菜单, 成本比点一下高。
+   */
+  private renderLoadError(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    const section = contentEl.createDiv({ cls: "ez-reader__book-info-section" });
+    const alert = section.createDiv({ cls: "ez-reader__book-info-alert is-error" });
+    alert.setAttribute("role", "alert");
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__title",
+      text: "读取这本书的详情失败 — 你的书还在书架上, 是插件没能读出数据。"
+    });
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__detail",
+      text: `错误: ${this.loadError ?? "未知原因"}`
+    });
+    // 明确排除"用户自己的问题", 避免无谓的自责 + 乱动文件。
+    alert.createEl("p", {
+      cls: "ez-reader__book-info-alert__hint",
+      text:
+        "这通常不是你的操作问题 — 更可能是 vault 同步冲突、文件被其他程序占用, 或读写权限异常。" +
+        "建议先点重试; 如果反复失败, 检查 vault 里的 ezreader/ 目录是否完整, " +
+        "以及是否有多个同步客户端在同时写这个 vault。"
+    });
+    const retry = alert.createEl("button", { text: "重试", attr: { type: "button" } });
+    retry.addClass("mod-cta");
+    retry.onclick = (): void => {
+      // 复位到 in-flight 态再拉一次。rich / probes 必须显式清掉:
+      // load() 的成功路径只在 `contentEl.children.length > 0` 时才重渲染,
+      // 而这里 contentEl 此刻非空, 所以复位是为了让 renderLoading() 拿到
+      // 一个干净的快照 — 万一这次 load 又炸了, 用户看到的仍然是新的错误,
+      // 而不是上一次的残留数据。
+      this.loadError = null;
+      this.missing = false;
+      this.rich = null;
+      this.probes.clear();
+      this.renderLoading();
+      void this.load();
+    };
     this.titleEl.setText("书籍详情");
   }
 }

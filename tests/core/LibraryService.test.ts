@@ -7,12 +7,15 @@ import type {
   AnnotationStore
 } from "../../src/core/ports/AnnotationStore";
 import type { BookLocator, BookMetadata, CoverImage, BookFormat } from "../../src/core/entities/Book";
+import type { Bookmark } from "../../src/core/entities/Bookmark";
+import type { Excerpt } from "../../src/core/entities/Excerpt";
 import type { ReadingState } from "../../src/core/entities/ReadingState";
 import type {
   BookChangeHandler,
   BookSource
 } from "../../src/core/ports/BookSource";
 import type { Disposable } from "../../src/core/utils/Disposable";
+import { renameInSnapshot } from "../../src/core/utils/renameSnapshot";
 
 class FakeBookSource implements BookSource {
   readonly handlers: BookChangeHandler[] = [];
@@ -86,7 +89,11 @@ class InMemoryAnnotationStore implements AnnotationStore {
       // A1 测试配套: 之前构造器没拷 pinnedAtByBookId, getPinnedAt 始终
       // 返回 null, 跟持久化路径上 A1 修复同步 — 让测试也能验证恢复逻辑.
       pinnedAtByBookId: initial.pinnedAtByBookId,
-      onboardingDismissed: initial.onboardingDismissed
+      richMetadataByBookId: initial.richMetadataByBookId,
+      visitedTocIdsByBookId: initial.visitedTocIdsByBookId,
+      onboardingDismissed: initial.onboardingDismissed,
+      migratedToV030: initial.migratedToV030,
+      migratedToV030Attempts: initial.migratedToV030Attempts
     };
   }
 
@@ -128,23 +135,74 @@ class InMemoryAnnotationStore implements AnnotationStore {
       reading: [...this.snapshot.reading.filter((r) => r.bookId !== bookId), next]
     };
   }
-  async listBookmarks(): Promise<ReadonlyArray<never>> {
-    return [];
+  // 书签 / 摘录: 之前是空壳 no-op, 端口签名一旦演进就没人发现.
+  // 补成真的 read-modify-write, 行为跟 ObsidianAnnotationStore 对齐.
+  async listBookmarks(bookId: string): Promise<ReadonlyArray<Bookmark>> {
+    return this.snapshot.bookmarks.filter((b) => b.bookId === bookId);
   }
-  async addBookmark(): Promise<void> {
-    /* noop */
+  async addBookmark(bookmark: Bookmark): Promise<void> {
+    if (this.snapshot.bookmarks.some((b) => b.id === bookmark.id)) return;
+    this.snapshot = { ...this.snapshot, bookmarks: [...this.snapshot.bookmarks, bookmark] };
   }
-  async removeBookmark(): Promise<void> {
-    /* noop */
+  async removeBookmark(bookId: string, bookmarkId: string): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      bookmarks: this.snapshot.bookmarks.filter((b) => !(b.bookId === bookId && b.id === bookmarkId))
+    };
   }
-  async listExcerpts(): Promise<ReadonlyArray<never>> {
-    return [];
+  async listExcerpts(bookId: string): Promise<ReadonlyArray<Excerpt>> {
+    return this.snapshot.excerpts.filter((e) => e.bookId === bookId);
   }
-  async addExcerpt(): Promise<void> {
-    /* noop */
+  async addExcerpt(excerpt: Excerpt): Promise<void> {
+    if (this.snapshot.excerpts.some((e) => e.id === excerpt.id)) return;
+    this.snapshot = { ...this.snapshot, excerpts: [...this.snapshot.excerpts, excerpt] };
   }
-  async removeExcerpt(): Promise<void> {
-    /* noop */
+  async removeExcerpt(bookId: string, excerptId: string): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.filter((e) => !(e.bookId === bookId && e.id === excerptId))
+    };
+  }
+  /**
+   * 端口漂移修复: AnnotationStore 端口有 updateExcerptNote, 桩里以前没有.
+   * 这里补成真的 read-modify-write —— 只改 note / tags, 其余字段
+   * (id / text / locator / createdAt) 保持原值, 跟真 adapter 语义一致.
+   */
+  async updateExcerptNote(
+    bookId: string,
+    excerptId: string,
+    patch: { note?: string; tags?: ReadonlyArray<string> }
+  ): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      excerpts: this.snapshot.excerpts.map((e) => {
+        if (e.bookId !== bookId || e.id !== excerptId) return e;
+        return {
+          ...e,
+          ...(patch.note !== undefined ? { note: patch.note } : {}),
+          ...(patch.tags !== undefined ? { tags: patch.tags } : {})
+        };
+      })
+    };
+  }
+  /**
+   * 端口漂移修复: renameBookId 之前桩里没有. 复用 core 的纯函数
+   * renameInSnapshot, 跟真实 adapter (ObsidianAnnotationStore.renameBookId)
+   * 走同一条代码路径, 避免桩和真实现出现行为分叉.
+   */
+  async renameBookId(fromBookId: string, toBookId: string): Promise<void> {
+    this.snapshot = renameInSnapshot(this.snapshot, fromBookId, toBookId);
+  }
+  /**
+   * 端口漂移修复: v0.3.0 迁移标记写在 snapshot 顶层 (不是 settings 里),
+   * 跟真 adapter 的字段位置保持一致.
+   */
+  async setMigratedToV030(passed: boolean, attempts?: number): Promise<void> {
+    this.snapshot = {
+      ...this.snapshot,
+      migratedToV030: passed,
+      ...(attempts === undefined ? {} : { migratedToV030Attempts: attempts })
+    };
   }
   async listSettings() {
     return this.snapshot.settings;
@@ -203,9 +261,6 @@ class InMemoryAnnotationStore implements AnnotationStore {
   }
   async loadRichMetadata(bookId: string): Promise<BookMetadata | null> {
     return this.snapshot.richMetadataByBookId?.[bookId] ?? null;
-  }
-  async getAddedAt(bookId: string): Promise<number | null> {
-    return this.snapshot.addedAtByBookId?.[bookId] ?? null;
   }
   async addToLibraryBatchWithStamp(bookIds: ReadonlyArray<string>, addedAt: number): Promise<void> {
     const existingLibrary = new Set(this.snapshot.library);
@@ -469,7 +524,13 @@ test("LibraryEntry shape", () => {
       id: "x",
       locator: makeLocator("x.epub"),
       metadata: null,
-      sourceModifiedAt: 0
+      sourceModifiedAt: 0,
+      // Book 实体上这三个字段是必填的 (允许 null): 加入书架时间 /
+      // 封面缓存路径 / 置顶时间. 之前测试手写的字面量漏了它们, 类型检查
+      // 一开就报 TS2739 —— 补上 null 表示"还没加入书架 / 没有封面 / 没置顶".
+      addedToLibraryAt: null,
+      coverPath: null,
+      pinnedAt: null
     },
     reading: {
       bookId: "x",

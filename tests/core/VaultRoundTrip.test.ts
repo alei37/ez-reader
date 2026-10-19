@@ -38,6 +38,7 @@ import { ObsidianLibraryWriter } from "../../src/adapters/obsidian/ObsidianLibra
 import { ReadingService } from "../../src/core/services/ReadingService";
 import { LibraryService } from "../../src/core/services/LibraryService";
 import type { ReadingSession } from "../../src/core/entities/ReadingSession";
+import type { BookLocator } from "../../src/core/entities/Book";
 import type { BookLocatorInfo } from "../../src/core/ports/LibraryWriter";
 import { hexFromBuffer, sha1Bytes } from "../../src/platform/Sha1";
 import { defaultBookInfo } from "../../src/core/entities/BookInfo";
@@ -47,12 +48,19 @@ import { defaultBookInfo } from "../../src/core/entities/BookInfo";
 // ---------------------------------------------------------------------------
 
 class MemoryTFile extends TFile {
+  /**
+   * Mirrors Obsidian's `TFile.basename` (the stub TFile is empty).
+   *
+   * 写成普通属性而不是 getter: Obsidian 的 `TFile` 里 `basename` 是**属性**
+   * (不是 accessor), 子类用 getter 覆盖属性会触发 TS2611
+   * ("'basename' is defined as a property in class 'TFile', but is overridden
+   * here as an accessor"). 端口一进类型检查就报.
+   */
+  basename: string;
+
   constructor(public path: string) {
     super();
-  }
-  /** Mirrors Obsidian's `TFile.basename` (the stub TFile is empty). */
-  get basename(): string {
-    return this.path.split("/").pop() ?? "";
+    this.basename = path.split("/").pop() ?? "";
   }
 }
 
@@ -579,12 +587,17 @@ test("P0-2: LibraryService.getRichEntry returns analytics when given a writer", 
   );
 
   // Build a LibraryService whose 5th ctor arg (libraryWriter) is present.
-  const locator = {
+  //
+  // 字段名用 BookLocator 的真名 (`sizeBytes` / `modifiedAt`) —— 之前写的是
+  // `size` / `mtime` 并且用 `as never` 压掉类型错误, 结果 spread 一个
+  // `never` 又报 "Spread types may only be created from object types".
+  // 直接按真实接口写, 两处类型错误一起消失.
+  const locator: BookLocator = {
     path: bookId,
     format: "epub",
-    size: 1,
-    mtime: Date.UTC(2026, 0, 1)
-  } as never;
+    sizeBytes: 1,
+    modifiedAt: Date.UTC(2026, 0, 1)
+  };
   const source = {
     scan: async function* () {
       yield locator;
@@ -593,7 +606,7 @@ test("P0-2: LibraryService.getRichEntry returns analytics when given a writer", 
     readCover: async () => null,
     lookup: async (p: string) => (p === bookId ? locator : null),
     resolveId: (l: { path: string }) => l.path,
-    resolveLocator: async (id: string) => ({ path: id, ...locator }),
+    resolveLocator: async (id: string) => (id === bookId ? locator : null),
     readMetadata: async () => null,
     watch: () => () => {}
   } as never;
